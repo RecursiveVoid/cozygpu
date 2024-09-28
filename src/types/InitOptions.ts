@@ -10,6 +10,7 @@ interface InitOptions {
   usage?: GPUTextureUsageFlags; // Optional: usage flags for the texture
   viewFormat?: GPUTextureFormat; // Optional: view format for the texture
   isOffscreenCanvas?: boolean;
+  hello?: boolean;
 }
 
 export { InitOptions };
