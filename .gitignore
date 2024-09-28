@@ -1,0 +1,52 @@
+# Node modules
+node_modules/
+
+# Log files
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Dependency directories
+jspm_packages/
+.pnpm-store/
+
+# Output directories (commonly used by Rollup)
+dist/
+build/
+public/
+
+# Temporary build files
+*.tmp
+*.cache
+.cache/
+
+# Rollup cache
+.rollup.cache/
+
+# Mac system files
+.DS_Store
+
+# VSCode settings (optional)
+.vscode/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# IDE specific files
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Operating system generated files
+Thumbs.db
+Desktop.ini
+
+# npm package-lock
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Coverage files
+coverage/
