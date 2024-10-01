@@ -1,1 +1,1 @@
-export type Canvas =  HTMLCanvasElement | OffscreenCanvas;
+export type Canvas = HTMLCanvasElement | OffscreenCanvas;
