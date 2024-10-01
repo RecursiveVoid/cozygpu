@@ -26,12 +26,13 @@ module.exports = {
     typescript(),
     json(),
     serve({
-      open: true, // Automatically opens the browser
-      contentBase: path.join(__dirname, 'dist'), // Serve the files from 'dist'
-      port: 3000, // Specify the port for the server
+      open: true, 
+      contentBase: path.join(__dirname, 'dist'), 
+      port: 3000, 
     }),
     livereload({
-      watch: 'dist', // Watch the 'dist' folder for changes
+      watch: 'dist', 
     }),
+    text({include: '**/*.wgsl'}),
   ],
 };
