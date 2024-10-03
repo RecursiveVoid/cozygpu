@@ -4,6 +4,7 @@ const typescript = require('@rollup/plugin-typescript');
 const json = require('@rollup/plugin-json');
 const serve = require('rollup-plugin-serve');
 const livereload = require('rollup-plugin-livereload');
+const string = require('rollup-plugin-string').string;
 const path = require('path');
 
 module.exports = {
@@ -25,14 +26,16 @@ module.exports = {
     commonjs(),
     typescript(),
     json(),
+    string({
+      include: '**/*.wgsl', // Correct plugin usage for .wgsl files
+    }),
     serve({
-      open: true, 
-      contentBase: path.join(__dirname, 'dist'), 
-      port: 3000, 
+      open: true,
+      contentBase: path.join(__dirname, 'dist'),
+      port: 3000,
     }),
     livereload({
-      watch: 'dist', 
+      watch: 'dist',
     }),
-    text({include: '**/*.wgsl'}),
   ],
 };
