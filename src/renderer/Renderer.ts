@@ -1,5 +1,6 @@
 import { IRendererOptions } from '../types/IRendererOptions';
 import { Canvas } from '../types/types';
+import shader from '../shaders/shaders.wgsl';
 
 class Renderer {
   private _canvas: Canvas;
@@ -11,8 +12,14 @@ class Renderer {
     this._canvas = initDeviceType.canvas;
     this._device = initDeviceType.device;
     this._context = initDeviceType.context;
+    this.render();
+  }
+
+  public render(): void {
     const { passEncoder, commandEncoder } = this._beginRenderPass();
-    // Whatever you put here will be drawn.
+    const pipeline = this._createPipeline();
+    passEncoder.setPipeline(pipeline);
+    passEncoder.draw(3, 1, 0, 0);
     passEncoder.end();
     const buffer = this._getCommandBuffer(commandEncoder);
     this._submitCommand(buffer);
@@ -31,7 +38,6 @@ class Renderer {
     commandEncoder: GPUCommandEncoder;
   } {
     const encoder = this._createEncoder();
-    // TODO use color array instead [0,0.5,1.0,1.0]
     const clearColor = { r: 0.0, g: 0.5, b: 1.0, a: 1.0 };
     return {
       commandEncoder: encoder,
@@ -46,6 +52,32 @@ class Renderer {
         ],
       }),
     };
+  }
+
+  private _createPipeline(): GPURenderPipeline {
+    return this._device.createRenderPipeline({
+      vertex: {
+        module: this._device.createShaderModule({
+          code: shader,
+        }),
+        entryPoint: 'vs_main',
+      },
+      fragment: {
+        module: this._device.createShaderModule({
+          code: shader,
+        }),
+        entryPoint: 'fs_main',
+        targets: [
+          {
+            format: 'bgra8unorm', // TODO fetch it from the init option
+          },
+        ],
+      },
+      primitive: {
+        topology: 'triangle-list',
+      },
+      layout: 'auto',
+    });
   }
 
   private _getCommandBuffer(encoder: GPUCommandEncoder) {
