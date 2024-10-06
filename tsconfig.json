@@ -5,14 +5,16 @@
     "moduleResolution": "node",
     "strict": true,
     "declaration": true,
-    "outDir": "dist",
+    "outDir": "./dist",
     "sourceMap": true,
     "lib": ["ESNext", "dom"],
     "types": ["@webgpu/types"],
     "importHelpers": true,
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
-    "resolveJsonModule": true
+    "resolveJsonModule": true,
+    "declarationDir": "./dist",
+    "skipLibCheck": true
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules"]

@@ -24,7 +24,9 @@ module.exports = {
   plugins: [
     resolve(),
     commonjs(),
-    typescript(),
+    typescript({
+      tsconfig: './tsconfig.json',
+    }),
     json(),
     string({
       include: '**/*.wgsl', // Correct plugin usage for .wgsl files
