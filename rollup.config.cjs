@@ -33,8 +33,11 @@ module.exports = {
     }),
     serve({
       open: true,
-      contentBase: path.join(__dirname, 'dist'),
-      port: 3000,
+      contentBase: [
+        path.join(__dirname, 'public'),
+        path.join(__dirname, 'dist'),
+      ],
+      port: 3002,
     }),
     livereload({
       watch: 'dist',
