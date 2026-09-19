@@ -56,3 +56,11 @@ examples/_screenshots/
 
 # scripts/size.mjs scratch outdir (esbuild write:false, but the path is named)
 .size-out/
+
+# Local tooling / assistant files (never published)
+CLAUDE.md
+.claude/
+
+# Internal planning docs (kept locally, not published)
+docs/reports/
+ROADMAP.md

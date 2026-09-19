@@ -7,7 +7,7 @@
 // No vertex buffers: 4-vertex triangle strip per instance, geometry from
 // vertex_index, per-object data read from storage (hot, cold, frames).
 // Output is premultiplied alpha. fs_pick (M2 picking, ARCHITECTURE §14.5)
-// writes vec2u(pickId, slot + 1) into the rg32uint pick target.
+// writes vec4u(pickId, slot + 1, user, 0) into the rgba32uint pick target.
 
 //@FLAGS
 
@@ -39,6 +39,8 @@ struct SwarmVertex {
   @location(1) color: vec4f,
   // object slot (picking)
   @location(2) @interpolate(flat) slot: u32,
+  // cold.user, the instance user id (picking, ARCHITECTURE §19.3)
+  @location(3) @interpolate(flat) user: u32,
 }
 
 @vertex
@@ -56,6 +58,7 @@ fn vs_main(
     return out;
   }
   let c = cold[slot];
+  out.user = c.user;
   let q = vec2f(f32(vi & 1u), f32((vi >> 1u) & 1u));
   let t = 1.0 - clamp(h.age / h.life, 0.0, 1.0);
 
@@ -107,10 +110,10 @@ fn fs_main(in: SwarmVertex) -> @location(0) vec4f {
 }
 
 @fragment
-fn fs_pick(in: SwarmVertex) -> @location(0) vec2u {
+fn fs_pick(in: SwarmVertex) -> @location(0) vec4u {
   let color = swarm_color(in);
   if (color.a < SWARM_PICK_ALPHA) {
     discard;
   }
-  return vec2u(swarmPick.id, in.slot + 1u);
+  return vec4u(swarmPick.id, in.slot + 1u, in.user, 0u);
 }

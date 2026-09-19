@@ -17,6 +17,11 @@ export const OP_WRITE_COLD = 5; // [op, first, count, ...count*4 words]
 export const OP_STEP = 6; // [op, dt(f32), substeps, count]
 /** allocation 'gpu': fill the free list with [capacity-1 … 0]. */
 export const OP_INIT_FREE = 7; // [op]
+/**
+ * M2.5 SWARM_SET_SOURCE (WebGPU core): switch hot/cold to external buffers
+ * (0 = own). Ordered like a write: never after a dispatch of the same frame.
+ */
+export const OP_SOURCE = 8; // [op, hotExternalId, coldExternalId, flags]
 
 export const SPAWN_WORDS = SWARM_SPAWN_BYTES / 4;
 export const HOT_WORDS = SWARM_HOT_BYTES / 4;
@@ -59,7 +64,7 @@ export class OpQueue {
       case OP_INIT_FREE:
         return 1;
       default:
-        return 4; // OP_STEP
+        return 4; // OP_STEP, OP_SOURCE
     }
   }
 

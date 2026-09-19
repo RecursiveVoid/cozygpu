@@ -32,9 +32,11 @@ layout(location = 6) in uint a_user;
 out vec2 v_uv;
 out vec4 v_color;
 flat out uint v_slot;
+flat out uint v_user;
 
 void main() {
   v_slot = uint(gl_InstanceID);
+  v_user = a_user;
   v_uv = vec2(0.0);
   v_color = vec4(0.0);
   float age = a_h2.x;

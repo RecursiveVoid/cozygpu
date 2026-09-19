@@ -1,5 +1,5 @@
 /**
- * Swarm-internal constants (owner: "swarm"). Not part of the public API.
+ * Swarm-internal constants. Not part of the public API.
  * Normative layouts live in src/types/layouts.ts; these are implementation
  * details shared by the front (Swarm.ts), the composer and the core.
  */

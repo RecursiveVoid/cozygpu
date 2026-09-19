@@ -23,6 +23,13 @@
  *
  * Steady-state frames allocate nothing: scratch arrays grow only, bind groups
  * are rebuilt only when a referenced buffer changes.
+ *
+ * External sources (M2.5, ARCHITECTURE §19.4): SWARM_SET_SOURCE points hot
+ * (and optionally cold) at buffers registered through renderer interop
+ * (`CoreContext.getExternalBuffer`). The switch is queued like a write, so
+ * ops queued before it still target the own buffers. The ids are resolved
+ * every frame (two map lookups); a released or lost buffer makes the swarm
+ * draw and dispatch nothing until a new source arrives.
  */
 import { bufferAllocated } from '../backend/allocation';
 import { BufferUsage, ShaderStage } from '../backend/types';
@@ -39,7 +46,12 @@ import type {
   RhiRenderPipeline,
   RhiShaderModule,
 } from '../backend/types';
-import { Op, OpcodeRange, ReadbackSource } from '../commands/opcodes';
+import {
+  Op,
+  OpcodeRange,
+  ReadbackSource,
+  SwarmSourceFlag,
+} from '../commands/opcodes';
 import type { CommandReader } from '../commands/types';
 import { CozyGPUError } from '../types/errors';
 import type { CozyGPUErrorCode } from '../types/errors';
@@ -71,6 +83,7 @@ import {
   OP_INIT_FREE,
   OP_KILL_LIST,
   OP_KILL_RANGE,
+  OP_SOURCE,
   OP_SPAWN,
   OP_STEP,
   OP_WRITE_COLD,
@@ -130,8 +143,12 @@ interface GpuSwarm {
   readonly id: number;
   readonly capacity: number;
   readonly gpuAlloc: boolean;
-  readonly hot: RhiBuffer;
-  readonly cold: RhiBuffer;
+  /** The swarm's own hot/cold buffers. */
+  readonly ownHot: RhiBuffer;
+  readonly ownCold: RhiBuffer;
+  /** Bound hot/cold: the own buffers or an external source (M2.5). */
+  hot: RhiBuffer;
+  cold: RhiBuffer;
   readonly draw: RhiBuffer;
   /** capacity × u32 for allocation 'gpu', a 4-byte dummy otherwise. */
   readonly free: RhiBuffer;
@@ -145,6 +162,12 @@ interface GpuSwarm {
   args: RhiBuffer | null;
   pickBuffer: RhiBuffer | null;
   pickId: number;
+  /** M2.5 external source: hot / cold external ids (0 = own buffer) and flags. */
+  srcHot: number;
+  srcCold: number;
+  srcFlags: number;
+  /** Records drawable from the bound buffers (capacity for own buffers). */
+  srcLimit: number;
   /** Bumped whenever a buffer referenced by bind groups is replaced. */
   resourceVersion: number;
   active: Program | null;
@@ -459,12 +482,14 @@ export function createWebGPUSwarmCore(): SwarmCoreSystem {
     if (p.groupsVersion === s.resourceVersion) return;
     const b = backend!;
     p.groupsVersion = s.resourceVersion;
+    const hot = s.hot;
+    const cold = s.cold;
     p.stepGroup = b.createBindGroup({
       label: `swarm${s.id}.step`,
       layout: stepLayout!,
       entries: [
-        { binding: 0, resource: { buffer: s.hot } },
-        { binding: 1, resource: { buffer: s.cold } },
+        { binding: 0, resource: { buffer: hot } },
+        { binding: 1, resource: { buffer: cold } },
         {
           binding: 2,
           resource: { buffer: s.arena, offset: 0, size: SWARM_SIM_BYTES },
@@ -478,8 +503,8 @@ export function createWebGPUSwarmCore(): SwarmCoreSystem {
       label: `swarm${s.id}.op`,
       layout: opLayout!,
       entries: [
-        { binding: 0, resource: { buffer: s.hot } },
-        { binding: 4, resource: { buffer: s.cold } },
+        { binding: 0, resource: { buffer: hot } },
+        { binding: 4, resource: { buffer: cold } },
         {
           binding: 5,
           resource: { buffer: s.arena, offset: 0, size: SWARM_SPAWN_BYTES },
@@ -493,7 +518,7 @@ export function createWebGPUSwarmCore(): SwarmCoreSystem {
       label: `swarm${s.id}.count`,
       layout: countLayout!,
       entries: [
-        { binding: 0, resource: { buffer: s.hot } },
+        { binding: 0, resource: { buffer: hot } },
         {
           binding: 2,
           resource: { buffer: s.arena, offset: 0, size: SWARM_SIM_BYTES },
@@ -506,7 +531,7 @@ export function createWebGPUSwarmCore(): SwarmCoreSystem {
         label: `swarm${s.id}.cull`,
         layout: cullLayout!,
         entries: [
-          { binding: 0, resource: { buffer: s.hot } },
+          { binding: 0, resource: { buffer: hot } },
           {
             binding: 2,
             resource: { buffer: s.arena, offset: 0, size: SWARM_SIM_BYTES },
@@ -520,8 +545,8 @@ export function createWebGPUSwarmCore(): SwarmCoreSystem {
     }
     const visible = p.compact && s.visible !== null;
     const renderEntries = [
-      { binding: 0, resource: { buffer: s.hot } },
-      { binding: 1, resource: { buffer: s.cold } },
+      { binding: 0, resource: { buffer: hot } },
+      { binding: 1, resource: { buffer: cold } },
       { binding: 2, resource: { buffer: s.frames } },
       { binding: 3, resource: { buffer: s.draw } },
     ];
@@ -786,8 +811,8 @@ export function createWebGPUSwarmCore(): SwarmCoreSystem {
 
   function destroySwarm(s: GpuSwarm, error?: CozyGPUError): void {
     s.destroyed = true;
-    s.hot.destroy();
-    s.cold.destroy();
+    s.ownHot.destroy();
+    s.ownCold.destroy();
     s.draw.destroy();
     s.free.destroy();
     s.counters.destroy();
@@ -874,22 +899,24 @@ export function createWebGPUSwarmCore(): SwarmCoreSystem {
       );
     }
 
+    const hot = b.createBuffer({
+      label: `swarm${id}.hot`,
+      size: hotBytes,
+      usage: BufferUsage.STORAGE | BufferUsage.COPY_DST | BufferUsage.COPY_SRC,
+    });
+    const cold = b.createBuffer({
+      label: `swarm${id}.cold`,
+      size: capacity * SWARM_COLD_BYTES,
+      usage: BufferUsage.STORAGE | BufferUsage.COPY_DST | BufferUsage.COPY_SRC,
+    });
     const s: GpuSwarm = {
       id,
       capacity,
       gpuAlloc,
-      hot: b.createBuffer({
-        label: `swarm${id}.hot`,
-        size: hotBytes,
-        usage:
-          BufferUsage.STORAGE | BufferUsage.COPY_DST | BufferUsage.COPY_SRC,
-      }),
-      cold: b.createBuffer({
-        label: `swarm${id}.cold`,
-        size: capacity * SWARM_COLD_BYTES,
-        usage:
-          BufferUsage.STORAGE | BufferUsage.COPY_DST | BufferUsage.COPY_SRC,
-      }),
+      ownHot: hot,
+      ownCold: cold,
+      hot,
+      cold,
       draw: b.createBuffer({
         label: `swarm${id}.draw`,
         size: SWARM_DRAW_BYTES,
@@ -927,6 +954,10 @@ export function createWebGPUSwarmCore(): SwarmCoreSystem {
       args: null,
       pickBuffer: null,
       pickId: 0,
+      srcHot: 0,
+      srcCold: 0,
+      srcFlags: 0,
+      srcLimit: capacity,
       resourceVersion: 0,
       active: null,
       pending: null,
@@ -960,8 +991,8 @@ export function createWebGPUSwarmCore(): SwarmCoreSystem {
 
   function watchAllocation(s: GpuSwarm): void {
     // Capacity-sized buffers only; the small ones cannot realistically fail.
-    const hot = bufferAllocated(s.hot);
-    const cold = bufferAllocated(s.cold);
+    const hot = bufferAllocated(s.ownHot);
+    const cold = bufferAllocated(s.ownCold);
     const visible = s.visible ? bufferAllocated(s.visible) : undefined;
     const free = s.gpuAlloc ? bufferAllocated(s.free) : undefined;
     if (!hot && !cold && !visible && !free) return;
@@ -1035,6 +1066,46 @@ export function createWebGPUSwarmCore(): SwarmCoreSystem {
     backend!.writeBuffer(s.pickBuffer, 0, smallU8, 0, SWARM_PICK_UNIFORM_BYTES);
     if (s.active) buildPick(s, s.active);
     if (s.pending) buildPick(s, s.pending);
+  }
+
+  /** A released or lost external source, or one without COPY_SRC. */
+  function unreadableSource(id: number): CozyGPUError {
+    return new CozyGPUError('UNSUPPORTED', `swarm ${id}: source unreadable`);
+  }
+
+  /** Applies a SWARM_SET_SOURCE (ids resolved by `syncSource`). */
+  function applySource(s: GpuSwarm, u32: Uint32Array, at: number): void {
+    s.srcHot = u32[at];
+    s.srcCold = u32[at + 1];
+    s.srcFlags = u32[at + 2];
+    s.hot = s.ownHot;
+    s.cold = s.ownCold;
+    s.srcLimit = s.capacity;
+    s.resourceVersion++;
+  }
+
+  /**
+   * Resolves the external source of `s` for this frame. False when a source
+   * is set but one of its buffers is unknown (released, or dropped by a device
+   * loss): the swarm then draws and dispatches nothing. Allocation-free.
+   */
+  function syncSource(s: GpuSwarm): boolean {
+    if (s.srcHot === 0) return true;
+    const c = ctx!;
+    const hot = c.getExternalBuffer?.(s.srcHot);
+    const cold = s.srcCold ? c.getExternalBuffer?.(s.srcCold) : s.ownCold;
+    if (!hot || !cold) return false;
+    if (hot !== s.hot || cold !== s.cold) {
+      s.hot = hot;
+      s.cold = cold;
+      s.resourceVersion++;
+      s.srcLimit = Math.min(
+        s.capacity,
+        (hot.size / SWARM_HOT_BYTES) | 0,
+        (cold.size / SWARM_COLD_BYTES) | 0,
+      );
+    }
+    return true;
   }
 
   function writeRecords(
@@ -1127,6 +1198,18 @@ export function createWebGPUSwarmCore(): SwarmCoreSystem {
       }
       return;
     }
+    // Apply source switches queued at the front (they dispatch nothing).
+    while (ops.length > 0 && ops.u32[0] === OP_SOURCE) {
+      applySource(s, ops.u32, 1);
+      ops.u32.copyWithin(0, 4, ops.length);
+      ops.length -= 4;
+    }
+    if (!syncSource(s)) {
+      // External buffer gone: keep writes/switches, drop steps, dispatch
+      // nothing. Alive counts wait until the swarm has buffers again.
+      if (ops.length > 0) ops.retainFrom(0);
+      return;
+    }
     const countRequested = s.countState === COUNT_REQUESTED;
     if (
       ops.length === 0 &&
@@ -1145,8 +1228,15 @@ export function createWebGPUSwarmCore(): SwarmCoreSystem {
     let dispatched = false;
     for (let k = 0; k < ops.length; k += ops.sizeAt(k)) {
       const op = u32[k];
-      if (op === OP_WRITE_HOT || op === OP_WRITE_COLD) {
+      if (op === OP_WRITE_HOT || op === OP_WRITE_COLD || op === OP_SOURCE) {
         if (dispatched) {
+          stop = k;
+          break;
+        }
+        // A source switch changes the bind groups: stop there and apply it
+        // first next frame (with syncSource), so ops before and after it bind
+        // the right buffers.
+        if (op === OP_SOURCE) {
           stop = k;
           break;
         }
@@ -1227,7 +1317,12 @@ export function createWebGPUSwarmCore(): SwarmCoreSystem {
         e++;
       } else if (op === OP_STEP) {
         const substeps = Math.max(1, u32[k + 2]);
-        const n = Math.min(u32[k + 3], s.capacity);
+        if (s.srcHot !== 0 && (s.srcFlags & SwarmSourceFlag.SIMULATE) === 0) {
+          // A draw-only external source is moved by outside code: no step.
+          e += substeps;
+          continue;
+        }
+        const n = Math.min(u32[k + 3], s.srcLimit);
         const dt = ops.f32[k + 1] / substeps;
         s.drawCount = n;
         for (let sub = 0; sub < substeps; sub++) {
@@ -1320,7 +1415,7 @@ export function createWebGPUSwarmCore(): SwarmCoreSystem {
     const s = swarms.get(reader.u32());
     if (!s) return null;
     for (let k = 0; k < 7; k++) drawF32[k] = reader.f32(); // a b c d tx ty alpha
-    s.drawCount = s.gpuAlloc ? s.capacity : Math.min(reader.u32(), s.capacity);
+    s.drawCount = s.gpuAlloc ? s.capacity : Math.min(reader.u32(), s.srcLimit);
     return s;
   }
 
@@ -1456,6 +1551,18 @@ export function createWebGPUSwarmCore(): SwarmCoreSystem {
         case Op.SWARM_SET_PICK:
           setPick(s, reader.u32());
           break;
+        case Op.SWARM_SET_SOURCE: {
+          // allocation 'gpu' swarms never get one (the front refuses it).
+          const at = reader.blob(12) >> 2;
+          if (ops.length === 0) {
+            applySource(s, reader.u32View, at);
+            break;
+          }
+          const w = ops.reserve(4);
+          ops.u32[w] = OP_SOURCE;
+          ops.u32.set(reader.u32View.subarray(at, at + 3), w + 1);
+          break;
+        }
         default:
           break;
       }
@@ -1480,6 +1587,7 @@ export function createWebGPUSwarmCore(): SwarmCoreSystem {
       if (!prog || !prog.ready || !prog.render || s.allocation !== null) {
         return;
       }
+      if (!syncSource(s)) return;
       drawU32[7] = prog.renderFlags;
       backend.writeBuffer(s.draw, 0, drawU8, 0, SWARM_DRAW_BYTES);
       ensureGroups(s, prog);
@@ -1502,6 +1610,7 @@ export function createWebGPUSwarmCore(): SwarmCoreSystem {
       if (!s || s.pickId === 0) return;
       const prog = s.active;
       if (!prog || !prog.ready || s.allocation !== null) return;
+      if (!syncSource(s)) return;
       if (!prog.pick) {
         buildPick(s, prog);
         return;
@@ -1589,18 +1698,19 @@ export function createWebGPUSwarmCore(): SwarmCoreSystem {
           }
         });
       }
-      const recordBytes =
-        srcKind === SwarmReadbackKind.HOT ? SWARM_HOT_BYTES : SWARM_COLD_BYTES;
-      const start = Math.min(first, s.capacity);
-      const n = Math.min(count, s.capacity - start);
+      const isHot = srcKind === SwarmReadbackKind.HOT;
+      const recordBytes = isHot ? SWARM_HOT_BYTES : SWARM_COLD_BYTES;
+      const ok = syncSource(s);
+      const buffer = isHot ? s.hot : s.cold;
+      if (!ok || !(buffer.usage & BufferUsage.COPY_SRC)) {
+        return Promise.reject(unreadableSource(srcId));
+      }
+      const start = Math.min(first, s.srcLimit);
+      const n = Math.min(count, s.srcLimit - start);
       const read = (): Promise<ArrayBuffer> =>
         s.destroyed
           ? Promise.reject(unreadable(srcId))
-          : b.readBuffer(
-              srcKind === SwarmReadbackKind.HOT ? s.hot : s.cold,
-              start * recordBytes,
-              n * recordBytes,
-            );
+          : b.readBuffer(buffer, start * recordBytes, n * recordBytes);
       return s.allocation ? s.allocation.then(read) : read();
     },
 

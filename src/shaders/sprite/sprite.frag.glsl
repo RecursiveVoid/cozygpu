@@ -1,6 +1,6 @@
 #version 300 es
 // cozygpu sprite fragment shader, GLSL ES 3.0 twin of sprite.wgsl fs_main
-// (owner "webgl2"). Textures hold premultiplied texels; output is
+// Textures hold premultiplied texels; output is
 // premultiplied.
 precision highp float;
 precision highp int;

@@ -1,5 +1,5 @@
 /**
- * Ticker — owner: "sprites". requestAnimationFrame-driven loop that calls
+ * Ticker. requestAnimationFrame-driven loop that calls
  * callbacks with (dt, time) and then renderer.render(). Optional helper.
  * Per tick it allocates nothing: the frame callback is bound once and the
  * callback list is only compacted after removals.

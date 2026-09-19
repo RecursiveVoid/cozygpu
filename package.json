@@ -33,6 +33,7 @@
     "prettier:check": "prettier --check 'src/**/*.{ts,js,json,css,md}' 'examples/**/*.{ts,html}' 'docs/**/*.md' 'scripts/**/*.{mjs,cjs}' 'benchmarks/**/*.{ts,mjs,js}' 'rollup.config.cjs' 'jest.config.cjs' '*.md'",
     "build": "rollup -c rollup.config.cjs",
     "size": "node scripts/size.mjs",
+    "size:baseline": "node scripts/size.mjs --update-baseline",
     "check:sources": "node scripts/check-sources.mjs",
     "build:examples": "EXAMPLES=1 rollup -c rollup.config.cjs",
     "dev": "rollup -c rollup.config.cjs --watch",

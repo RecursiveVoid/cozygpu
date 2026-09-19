@@ -1,5 +1,5 @@
 /**
- * Math contracts — owner: "sprites".
+ * Math contracts.
  * Zero-allocation, offset-based helpers so matrices can live inside large
  * shared typed arrays (SoA stores, instance buffers).
  *

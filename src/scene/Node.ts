@@ -1,5 +1,5 @@
 /**
- * NodeBase — owner: "sprites". Shared implementation of SceneNode.
+ * NodeBase. Shared implementation of SceneNode.
  *
  * A node is a small handle: `_slot` indexes the NodeStore, and every numeric
  * property reads/writes the shared typed arrays and sets a dirty bit. No
@@ -96,6 +96,7 @@ export abstract class NodeBase implements SceneNode {
     if (o.alpha !== undefined) L[lo + L_ALPHA] = o.alpha;
     if (o.visible !== undefined) this._visible = o.visible;
     if (o.pickable !== undefined) this._pickable = o.pickable;
+    if (o.userId !== undefined) nodeStore.userId[this._slot] = o.userId;
   }
 
   get parent(): ContainerNode | null {
@@ -199,6 +200,18 @@ export abstract class NodeBase implements SceneNode {
     this._pickable = v;
     this._writePickId(v);
     markDirty(this._slot, Dirty.SPRITE);
+  }
+
+  /**
+   * M2.5 (ARCHITECTURE §19.3). A caller-owned u32 returned as
+   * `PickHit.userId`; the Uint32Array store coerces like `>>> 0`. Never
+   * drawn, so it marks nothing dirty.
+   */
+  get userId(): number {
+    return nodeStore.userId[this._slot];
+  }
+  set userId(v: number) {
+    nodeStore.userId[this._slot] = v;
   }
 
   setPosition(x: number, y: number): this {

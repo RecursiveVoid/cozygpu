@@ -1,0 +1,509 @@
+{
+  "meta": {
+    "label": "m25-a3s2",
+    "date": "2026-09-19T09:14:43.436Z",
+    "chrome": "Google Chrome 153.0.8010.48",
+    "chromeFlags": [
+      "--enable-unsafe-webgpu",
+      "--use-angle=metal",
+      "--ignore-gpu-blocklist",
+      "--enable-precise-memory-info",
+      "--js-flags=--expose-gc",
+      "--disable-background-timer-throttling",
+      "--disable-renderer-backgrounding",
+      "--disable-backgrounding-occluded-windows",
+      "--no-first-run",
+      "--no-default-browser-check",
+      "--window-size=1280,720",
+      "--disable-gpu-vsync",
+      "--disable-frame-rate-limit"
+    ],
+    "vsyncScenarios": [
+      "a2"
+    ],
+    "headful": false,
+    "vsync": false,
+    "warmupSec": 2,
+    "durationSec": 5,
+    "repeat": 1,
+    "width": 1280,
+    "height": 720,
+    "scenarios": [
+      "a3",
+      "s2"
+    ],
+    "filter": "churn.*cozygpu|swarm/1000000/cozygpu-webgpu",
+    "versions": {
+      "pixi.js": "8.20.1",
+      "three": "0.186.0",
+      "puppeteer-core": "25.11.0",
+      "esbuild": "0.28.2",
+      "cozygpu": "0.0.1"
+    },
+    "gpu": "apple metal-3",
+    "machine": {
+      "cpu": "Apple M4",
+      "cores": 10,
+      "memGB": 16,
+      "platform": "darwin 27.0.0 arm64"
+    }
+  },
+  "bundles": [],
+  "results": [
+    {
+      "id": "swarm-churn/1000000/cozygpu-webgpu-gpu",
+      "scenarioKey": "a3",
+      "vsync": false,
+      "status": "ok",
+      "params": {
+        "lib": "cozygpu",
+        "renderer": "webgpu",
+        "variant": "gpu",
+        "scenario": "swarm-churn",
+        "count": 1000000,
+        "warmupSec": 2,
+        "durationSec": 5,
+        "width": 1280,
+        "height": 720,
+        "seed": 1337
+      },
+      "tool": "Swarm churn (allocation 'gpu')",
+      "init": {
+        "rendererMs": 63.79999999888241,
+        "populateMs": 1.969999998807907,
+        "firstFrameMs": 3.7200000006705523,
+        "totalMs": 69.48999999836087
+      },
+      "frame": {
+        "frames": 967,
+        "elapsedMs": 5008.355000000447,
+        "fps": 193.0773677185251,
+        "avgMs": 5.179270941055271,
+        "p50Ms": 4.935000000521541,
+        "p95Ms": 6.675000000745058,
+        "p99Ms": 12.150000000372529,
+        "maxMs": 197.85500000044703
+      },
+      "cpu": {
+        "avgMs": 0.06782316447706602,
+        "p50Ms": 0.03500000014901161,
+        "p99Ms": 0.2050000000745058,
+        "maxMs": 4.9400000013411045
+      },
+      "swapWait": {
+        "avgMs": 2.132569803495149,
+        "p50Ms": 0.009999999776482582,
+        "p99Ms": 6.4599999990314245,
+        "maxMs": 197.26500000059605
+      },
+      "heap": {
+        "precise": true,
+        "baselineBytes": 43322086,
+        "afterInitBytes": 43718631,
+        "afterPopulateBytes": 43876888,
+        "endBytes": 44874698,
+        "perObjectBytes": 0.158257,
+        "growthPerFrameBytes": -314.77662874870737
+      },
+      "info": {
+        "version": "0.0.1",
+        "backend": "webgpu",
+        "worker": false,
+        "sharedMemory": true,
+        "drawCalls": 1,
+        "packetBytes": 232,
+        "frontCpuMs": 0,
+        "skippedFrames": 147,
+        "measuredSkippedFrames": 0,
+        "frameId": 1877,
+        "aliveAtEnd": 475698,
+        "spawnPerFrame": 8000,
+        "activeCount": 1000000
+      },
+      "env": {
+        "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.0.0 Safari/537.36",
+        "devicePixelRatio": 1,
+        "crossOriginIsolated": true,
+        "hardwareConcurrency": 10,
+        "gpu": {
+          "vendor": "apple",
+          "architecture": "metal-3",
+          "device": "",
+          "description": ""
+        }
+      },
+      "destroyMs": 1.0600000005215406,
+      "loadedJs": {
+        "files": 18,
+        "min": 207456,
+        "gzip": 72815
+      },
+      "logs": [
+        "log: [bench] cozygpu/webgpu/gpu swarm-churn 1000000 → ok 193.1 fps"
+      ],
+      "wallMs": 11435
+    },
+    {
+      "id": "swarm-churn/1000000/cozygpu-webgpu-ring",
+      "scenarioKey": "a3",
+      "vsync": false,
+      "status": "ok",
+      "params": {
+        "lib": "cozygpu",
+        "renderer": "webgpu",
+        "variant": "ring",
+        "scenario": "swarm-churn",
+        "count": 1000000,
+        "warmupSec": 2,
+        "durationSec": 5,
+        "width": 1280,
+        "height": 720,
+        "seed": 1337
+      },
+      "tool": "Swarm churn (allocation 'ring')",
+      "init": {
+        "rendererMs": 14.390000000596046,
+        "populateMs": 1.0800000000745058,
+        "firstFrameMs": 2.125,
+        "totalMs": 17.595000000670552
+      },
+      "frame": {
+        "frames": 775,
+        "elapsedMs": 5005.339999999851,
+        "fps": 154.83463660810716,
+        "avgMs": 6.458503225806259,
+        "p50Ms": 6.25,
+        "p95Ms": 7.775000000372529,
+        "p99Ms": 14.059999998658895,
+        "maxMs": 193.6900000013411
+      },
+      "cpu": {
+        "avgMs": 0.066703225852501,
+        "p50Ms": 0.02500000037252903,
+        "p99Ms": 0.1399999987334013,
+        "maxMs": 7.494999999180436
+      },
+      "swapWait": {
+        "avgMs": 3.6579225805882483,
+        "p50Ms": 5.740000000223517,
+        "p99Ms": 7.720000000670552,
+        "maxMs": 176.625
+      },
+      "heap": {
+        "precise": true,
+        "baselineBytes": 43322088,
+        "afterInitBytes": 43718633,
+        "afterPopulateBytes": 43869961,
+        "endBytes": 44726311,
+        "perObjectBytes": 0.151328,
+        "growthPerFrameBytes": -512.4451612903226
+      },
+      "info": {
+        "version": "0.0.1",
+        "backend": "webgpu",
+        "worker": false,
+        "sharedMemory": true,
+        "drawCalls": 1,
+        "packetBytes": 232,
+        "frontCpuMs": 0,
+        "skippedFrames": 179,
+        "measuredSkippedFrames": 0,
+        "frameId": 1634,
+        "aliveAtEnd": 476173,
+        "spawnPerFrame": 8000,
+        "activeCount": 1000000
+      },
+      "env": {
+        "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.0.0 Safari/537.36",
+        "devicePixelRatio": 1,
+        "crossOriginIsolated": true,
+        "hardwareConcurrency": 10,
+        "gpu": {
+          "vendor": "apple",
+          "architecture": "metal-3",
+          "device": "",
+          "description": ""
+        }
+      },
+      "destroyMs": 0.5050000008195639,
+      "loadedJs": {
+        "files": 18,
+        "min": 207456,
+        "gzip": 72815
+      },
+      "logs": [
+        "log: [bench] cozygpu/webgpu/ring swarm-churn 1000000 → ok 154.8 fps"
+      ],
+      "wallMs": 10880
+    },
+    {
+      "id": "swarm-churn/1000000/cozygpu-webgl2-ring",
+      "scenarioKey": "a3",
+      "vsync": false,
+      "status": "ok",
+      "params": {
+        "lib": "cozygpu",
+        "renderer": "webgl2",
+        "variant": "ring",
+        "scenario": "swarm-churn",
+        "count": 1000000,
+        "warmupSec": 2,
+        "durationSec": 5,
+        "width": 1280,
+        "height": 720,
+        "seed": 1337
+      },
+      "tool": "Swarm churn (allocation 'ring')",
+      "init": {
+        "rendererMs": 52.75,
+        "populateMs": 1.1150000002235174,
+        "firstFrameMs": 2.25,
+        "totalMs": 56.11500000022352
+      },
+      "frame": {
+        "frames": 921,
+        "elapsedMs": 5000.614999998361,
+        "fps": 184.17734618647944,
+        "avgMs": 5.429549402821238,
+        "p50Ms": 5.2650000005960464,
+        "p95Ms": 7.505000000819564,
+        "p99Ms": 8.955000000074506,
+        "maxMs": 10.094999998807907
+      },
+      "cpu": {
+        "avgMs": 5.304983713331427,
+        "p50Ms": 5.160000000149012,
+        "p99Ms": 8.845000000670552,
+        "maxMs": 9.974999999627471
+      },
+      "swapWait": {
+        "avgMs": 0,
+        "p50Ms": 0,
+        "p99Ms": 0,
+        "maxMs": 0
+      },
+      "heap": {
+        "precise": true,
+        "baselineBytes": 43322088,
+        "afterInitBytes": 43836880,
+        "afterPopulateBytes": 43975516,
+        "endBytes": 46286734,
+        "perObjectBytes": 0.138636,
+        "growthPerFrameBytes": 87.70358306188925
+      },
+      "info": {
+        "version": "0.0.1",
+        "backend": "webgl2",
+        "worker": false,
+        "sharedMemory": true,
+        "drawCalls": 1,
+        "packetBytes": 232,
+        "frontCpuMs": 0.009999999776482582,
+        "skippedFrames": 282,
+        "measuredSkippedFrames": 0,
+        "frameId": 3188,
+        "aliveAtEnd": 483699,
+        "spawnPerFrame": 8000,
+        "activeCount": 1000000
+      },
+      "env": {
+        "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.0.0 Safari/537.36",
+        "devicePixelRatio": 1,
+        "crossOriginIsolated": true,
+        "hardwareConcurrency": 10,
+        "gpu": {
+          "vendor": "apple",
+          "architecture": "metal-3",
+          "device": "",
+          "description": ""
+        }
+      },
+      "destroyMs": 0.47499999962747097,
+      "loadedJs": {
+        "files": 21,
+        "min": 227462,
+        "gzip": 81359
+      },
+      "logs": [
+        "log: [bench] cozygpu/webgl2/ring swarm-churn 1000000 → ok 184.2 fps"
+      ],
+      "wallMs": 12680
+    },
+    {
+      "id": "swarm/1000000/cozygpu-webgpu-auto",
+      "scenarioKey": "s2",
+      "vsync": false,
+      "status": "ok",
+      "params": {
+        "lib": "cozygpu",
+        "renderer": "webgpu",
+        "variant": "auto",
+        "scenario": "swarm",
+        "count": 1000000,
+        "warmupSec": 2,
+        "durationSec": 5,
+        "width": 1280,
+        "height": 720,
+        "seed": 1337
+      },
+      "tool": "Swarm (GPU compute)",
+      "init": {
+        "rendererMs": 12.190000001341105,
+        "populateMs": 1.2900000009685755,
+        "firstFrameMs": 2.0299999993294477,
+        "totalMs": 15.510000001639128
+      },
+      "frame": {
+        "frames": 667,
+        "elapsedMs": 5000.370000001043,
+        "fps": 133.3901291304165,
+        "avgMs": 7.496806596703213,
+        "p50Ms": 7.134999999776483,
+        "p95Ms": 9.470000000670552,
+        "p99Ms": 14.480000000447035,
+        "maxMs": 263.9950000010431
+      },
+      "cpu": {
+        "avgMs": 0.07260119943213517,
+        "p50Ms": 0.02500000037252903,
+        "p99Ms": 0.10500000044703484,
+        "maxMs": 7.294999999925494
+      },
+      "swapWait": {
+        "avgMs": 6.010704647671471,
+        "p50Ms": 6.949999999254942,
+        "p99Ms": 10.315000001341105,
+        "maxMs": 263.06000000052154
+      },
+      "heap": {
+        "precise": true,
+        "baselineBytes": 43321099,
+        "afterInitBytes": 43718621,
+        "afterPopulateBytes": 43869161,
+        "endBytes": 45183155,
+        "perObjectBytes": 0.15054,
+        "growthPerFrameBytes": 495.9505247376312
+      },
+      "info": {
+        "version": "0.0.1",
+        "backend": "webgpu",
+        "worker": false,
+        "sharedMemory": true,
+        "drawCalls": 1,
+        "packetBytes": 108,
+        "frontCpuMs": 0,
+        "skippedFrames": 0,
+        "measuredSkippedFrames": 0,
+        "frameId": 1414
+      },
+      "env": {
+        "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.0.0 Safari/537.36",
+        "devicePixelRatio": 1,
+        "crossOriginIsolated": true,
+        "hardwareConcurrency": 10,
+        "gpu": {
+          "vendor": "apple",
+          "architecture": "metal-3",
+          "device": "",
+          "description": ""
+        }
+      },
+      "destroyMs": 0.5950000006705523,
+      "loadedJs": {
+        "files": 18,
+        "min": 207456,
+        "gzip": 72815
+      },
+      "logs": [
+        "log: [bench] cozygpu/webgpu/auto swarm 1000000 → ok 133.4 fps"
+      ],
+      "wallMs": 11356
+    }
+  ],
+  "analysis": {
+    "baseline": "m1-final",
+    "winners": [
+      {
+        "key": "swarm-churn/1000000",
+        "metric": "frame ms",
+        "winner": "swarm-churn/1000000/cozygpu-webgpu-gpu",
+        "winnerTool": "Swarm churn (allocation 'gpu')",
+        "winnerAvg": 5.179270941055271,
+        "cozygpu": {
+          "id": "swarm-churn/1000000/cozygpu-webgpu-gpu",
+          "avg": 5.179270941055271,
+          "p99": 12.150000000372529
+        },
+        "competitor": null,
+        "avgVsCompetitorPct": null,
+        "p99VsCompetitorPct": null,
+        "byBackend": {
+          "webgpu": {
+            "id": "swarm-churn/1000000/cozygpu-webgpu-gpu",
+            "avg": 5.179270941055271,
+            "p99": 12.150000000372529,
+            "vsCompetitorPct": null
+          },
+          "webgl2": {
+            "id": "swarm-churn/1000000/cozygpu-webgl2-ring",
+            "avg": 5.429549402821238,
+            "p99": 8.955000000074506,
+            "vsCompetitorPct": null
+          }
+        }
+      },
+      {
+        "key": "swarm/1000000",
+        "metric": "frame ms",
+        "winner": "swarm/1000000/cozygpu-webgpu-auto",
+        "winnerTool": "Swarm (GPU compute)",
+        "winnerAvg": 7.496806596703213,
+        "cozygpu": {
+          "id": "swarm/1000000/cozygpu-webgpu-auto",
+          "avg": 7.496806596703213,
+          "p99": 14.480000000447035
+        },
+        "competitor": null,
+        "avgVsCompetitorPct": null,
+        "p99VsCompetitorPct": null,
+        "byBackend": {
+          "webgpu": {
+            "id": "swarm/1000000/cozygpu-webgpu-auto",
+            "avg": 7.496806596703213,
+            "p99": 14.480000000447035,
+            "vsCompetitorPct": null
+          }
+        }
+      }
+    ],
+    "sinceBaseline": [
+      {
+        "id": "swarm/1000000/cozygpu-webgpu-auto",
+        "status": "ok",
+        "m1": {
+          "avg": 6.954631432704368,
+          "p99": 13.960000038146973,
+          "cpu": 0.22904033256339762,
+          "init": 9.809999942779541,
+          "heapPerObj": 0.157536,
+          "range": [
+            6.905868965675091,
+            7.156080114653864
+          ]
+        },
+        "m2": {
+          "avg": 7.496806596703213,
+          "p99": 14.480000000447035,
+          "cpu": 0.07260119943213517,
+          "init": 15.510000001639128,
+          "heapPerObj": 0.15054
+        },
+        "avgPct": 7.79588637076078,
+        "p99Pct": 3.724928086526611,
+        "cpuPct": -68.30200226327415,
+        "initPct": 58.103976474076944,
+        "regressed": false
+      }
+    ]
+  }
+}

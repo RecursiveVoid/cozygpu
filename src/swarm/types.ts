@@ -1,7 +1,8 @@
 /**
- * Swarm public API. SHARED + FROZEN during the M2 build; implemented by owner
- * "swarm". M2 additions: GLSL behavior variants (WebGL2 transform feedback),
- * behavior groups, allocation 'gpu' (GPU free list), aliveCount(), picking.
+ * Swarm public API. M2 additions: GLSL behavior variants (WebGL2 transform
+ * feedback), behavior groups, allocation 'gpu' (GPU free list), aliveCount(),
+ * picking. M2.5 additions: instance user ids in picks and external instance
+ * sources (`setSource`, ARCHITECTURE §19.3, §19.4).
  *
  * Tier 2 of cozygpu, the headline feature: millions of objects whose state
  * lives ONLY in GPU storage buffers (hot: pos/vel/scale/rot/age/life, cold:
@@ -18,6 +19,7 @@
 import type { BlendMode } from '../backend/types';
 import type { ColorSource } from '../math/types';
 import type { NodeOptions, SceneNode, TextureHandle } from '../scene/types';
+import type { ExternalInstanceBuffer } from '../types/interop';
 
 /** A scalar or an inclusive random range [min, max]. */
 export type Range = number | readonly [number, number];
@@ -56,7 +58,11 @@ export interface SpawnOptions {
   alpha?: Range;
   /** Frame index (into SwarmOptions.frames) or [first, count] random. */
   frame?: number | readonly [number, number];
-  /** Written to cold.user for custom behaviors. */
+  /**
+   * u32 written to `cold.user` of every spawned object. M2.5: it is the
+   * instance's user id, returned as `PickHit.userId` when the instance is
+   * picked (custom behaviors may still read it). Default 0.
+   */
   user?: number;
   /**
    * M2. Behavior group bits 0–7 (stored in cold.flags bits 8–15). A behavior
@@ -223,7 +229,11 @@ export interface SwarmOptions extends NodeOptions {
 export interface SwarmNode extends SceneNode {
   readonly kind: 'swarm';
   readonly capacity: number;
-  /** Highest used slot + 1: compute dispatch and draw instance count. */
+  /**
+   * Highest used slot + 1 of the Swarm's own buffers: compute dispatch and
+   * draw instance count. While an external source is set (M2.5 `setSource`)
+   * it keeps this meaning; the source's draw count is `setSourceCount`'s.
+   */
   readonly activeCount: number;
   readonly allocation: 'ring' | 'manual' | 'gpu';
   blendMode: BlendMode;
@@ -260,6 +270,45 @@ export interface SwarmNode extends SceneNode {
    * [0, activeCount) on the GPU (WebGPU) or CPU after readHot (WebGL2).
    */
   aliveCount(): Promise<number>;
+
+  /**
+   * M2.5, main-thread mode (ARCHITECTURE §19.4). Draws (and optionally
+   * simulates) instances from buffers owned by outside GPU code, registered
+   * through `renderer.interop().registerInstanceBuffer`. `null` returns to
+   * the swarm's own buffers (their contents are kept). While a source is
+   * set, `spawn`, `kill`, `killList`, `write` and `clear` throw
+   * INVALID_ARGUMENT (the external code owns the data), and allocation
+   * 'gpu' is refused. Throws INVALID_ARGUMENT when a buffer is invalid, has
+   * the wrong layout or fewer records than `count`.
+   */
+  setSource(source: SwarmExternalSource | null): void;
+  /**
+   * M2.5. Instances drawn (and stepped, with `simulate`) from the external
+   * source: [0, count), clamped to `capacity`. Cheap; call it every frame if
+   * the external count changes. Throws INVALID_ARGUMENT without a source.
+   */
+  setSourceCount(count: number): void;
+}
+
+/** M2.5. External instance buffers for `SwarmNode.setSource`. */
+export interface SwarmExternalSource {
+  /** Layout 'swarm-hot'. Drawn from directly (no copy). */
+  readonly hot: ExternalInstanceBuffer;
+  /**
+   * Layout 'swarm-cold'. Omitted: the swarm's own cold buffer is used
+   * (colors, frames, user ids as last spawned or written).
+   */
+  readonly cold?: ExternalInstanceBuffer;
+  /** Initial draw count (see `setSourceCount`). */
+  readonly count: number;
+  /**
+   * Also run this swarm's behaviors on the external hot buffer every step
+   * (WebGPU only: needs STORAGE read_write). Default false: the external
+   * code simulates, cozygpu only draws. WebGL2 has no external sources in
+   * M2.5: `setSource` throws UNSUPPORTED there (a draw-only path is a later
+   * addition).
+   */
+  readonly simulate?: boolean;
 }
 
 /** M2. Hard capacity ceiling on WebGL2 (transform feedback per frame over every slot). */

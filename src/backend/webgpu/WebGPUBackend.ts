@@ -41,7 +41,11 @@ import type {
   ShaderSource,
   TextureDesc,
   TextureFormat,
+  ImportBufferDesc,
+  ReadbackRingDesc,
+  RhiReadbackRing,
 } from '../types';
+import { BufferUsage } from '../types';
 import { WebGPUCommandList, type CommandHost } from './commands';
 import {
   GPU_BUFFER_USAGE,
@@ -60,7 +64,7 @@ import {
   getGPU,
   preferredCanvasFormat,
 } from './device';
-import { DedupLogger, formatCompilationMessages } from './diagnostics';
+import { DedupLogger } from './diagnostics';
 import {
   alignDown4,
   COMPRESSED_BLOCK_SIZE,
@@ -68,11 +72,16 @@ import {
   isDebugEnabled,
   textureBytesPerRow,
 } from '../utils';
+import type { WebGPUReadbackRing } from './readbackRing';
+
+/** The readback ring chunk once loaded (see loadReadbackRing). */
+let ringModule: typeof import('./readbackRing') | null = null;
 import {
   WebGPUBindGroup,
   WebGPUBindGroupLayout,
   WebGPUBuffer,
   WebGPUComputePipeline,
+  WebGPUImportedBuffer,
   WebGPURenderPipeline,
   WebGPUSampler,
   WebGPUShaderModule,
@@ -106,18 +115,18 @@ struct VOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f }
 
 /**
  * Readback pacing (see `backlogged`). Chrome does not throttle submits in an
- * uncapped loop, so the queue can grow to hundreds of frames and a readback
- * (picking, swarm counters) waits for all of them. While readbacks are in
- * use, frames submitted closer together than PACE_FAST_MS are fenced, and a
- * frame is held (the front skips) once a fence is PACE_MAX_LAG_MS old.
- * Chrome reports a finished fence about 3 ms late even on an idle GPU, and a
- * skipped frame costs a display tick, so pacing stays off otherwise: a
- * vsync-paced loop, or one without readbacks, never fences or allocates.
+ * uncapped loop (100k static sprites submit every ~0.06 ms), so the queue
+ * grows to hundreds of frames and a readback (picking, swarm counters) waits
+ * for all of them. M2.5: while a readback is in flight, at most PACE_FRAMES
+ * more frames are submitted; later ones are held (the front skips) until it
+ * lands. Nothing is paced without a readback in flight, and a vsync-paced
+ * loop never holds (a pick lands in about 5 ms). A held frame costs a
+ * display tick (Chrome sends the next rAF on its ~16.7 ms timer once a
+ * callback produced no frame), so RenderCore answers picks when it releases
+ * a held frame instead of waiting for the next render(). M2 fenced every
+ * fast submit for 1 s after each request and held on fence age.
  */
-const PACE_FAST_MS = 6;
-const PACE_MAX_LAG_MS = 4;
-/** How long pacing stays on after the last readback request (ms). */
-const PACE_WINDOW_MS = 1000;
+const PACE_FRAMES = 3;
 
 export class WebGPUBackend implements Backend, CommandHost {
   readonly kind = 'webgpu' as const;
@@ -142,20 +151,15 @@ export class WebGPUBackend implements Backend, CommandHost {
 
   private mipmapSampler: GPUSampler | null = null;
 
-  // Readback pacing (see PACE_FAST_MS).
-  private paceUntil = 0;
-  private fenceTime = 0;
-  private fencePending = false;
-  private lastSubmitTime = -1e9;
+  // Readback pacing (see PACE_FRAMES).
+  /** Readbacks in flight: readBuffer / readTexture calls and mapping ring slots. */
+  reads = 0;
+  /** Live readback rings (afterSubmit starts their maps). */
+  readonly rings: WebGPUReadbackRing[] = [];
+  /** Submits so far, and their count when `reads` last left 0. */
+  private submits = 0;
+  private readSubmit = 0;
   private caughtUp: (() => void) | null = null;
-  private readonly onFence = (): void => {
-    this.fencePending = false;
-    const callback = this.caughtUp;
-    if (callback !== null) {
-      this.caughtUp = null;
-      callback();
-    }
-  };
 
   // Creation-time caches (per device; cleared by installDevice). Keys are
   // built only when creating resources, never per frame.
@@ -228,7 +232,7 @@ export class WebGPUBackend implements Backend, CommandHost {
       device.destroy();
       throw new CozyGPUError(
         'UNSUPPORTED',
-        'canvas.getContext("webgpu") returned null (the canvas may already have a 2d/webgl context).',
+        'canvas.getContext("webgpu") returned null (the canvas has another context?)',
       );
     }
     return new WebGPUBackend(
@@ -257,17 +261,9 @@ export class WebGPUBackend implements Backend, CommandHost {
   afterSubmit(): void {
     this.canvasTexture = null;
     this.canvasTextureView = null;
-    const t = globalThis.performance.now();
-    if (
-      !this.fencePending &&
-      t < this.paceUntil &&
-      t - this.lastSubmitTime < PACE_FAST_MS
-    ) {
-      this.fencePending = true;
-      this.fenceTime = t;
-      this.device.queue.onSubmittedWorkDone().then(this.onFence, this.onFence);
-    }
-    this.lastSubmitTime = t;
+    this.submits++;
+    const rings = this.rings;
+    for (let i = 0; i < rings.length; i++) rings[i].submitted();
     if (this.frameScoped) {
       this.frameScoped = false;
       this.popScope('frame', undefined);
@@ -277,25 +273,39 @@ export class WebGPUBackend implements Backend, CommandHost {
 
   /**
    * @internal Frame pacing (not part of the RHI; RenderCore duck-types it).
-   * True when the GPU has not reached a fence issued more than
-   * PACE_MAX_LAG_MS ago (see PACE_FAST_MS).
+   * True while a readback is in flight and PACE_FRAMES frames were
+   * submitted since it started.
    */
   backlogged(): boolean {
-    return (
-      this.fencePending &&
-      globalThis.performance.now() - this.fenceTime > PACE_MAX_LAG_MS
-    );
+    return this.reads > 0 && this.submits - this.readSubmit >= PACE_FRAMES;
   }
 
-  /** @internal A readback was requested: pace frames for a while. */
-  paceReadbacks(): void {
-    this.paceUntil = globalThis.performance.now() + PACE_WINDOW_MS;
+  /** @internal A readback starts (ring slot mapping, readBuffer, readTexture). */
+  readStarted(): void {
+    if (this.reads++ === 0) this.readSubmit = this.submits;
   }
 
-  /** @internal Calls `callback` once the pending fence resolves (or now). */
+  /**
+   * @internal A readback landed (RingHost too): a held frame goes once
+   * nothing is in flight, so the next render() polls the ring.
+   */
+  landed(): void {
+    const callback = this.caughtUp;
+    if (callback !== null && (this.reads === 0 || this.lost)) {
+      this.caughtUp = null;
+      callback();
+    } else {
+      this.onReadbackLanded?.();
+    }
+  }
+
+  /** @internal Set by RenderCore: answers landed picks (ARCHITECTURE §19.6). */
+  onReadbackLanded: (() => void) | null = null;
+
+  /** @internal Calls `callback` once no readback is in flight (or now). */
   whenCaughtUp(callback: () => void): void {
-    if (this.fencePending && !this.lost) this.caughtUp = callback;
-    else callback();
+    this.caughtUp = callback;
+    this.landed();
   }
 
   // ─── Size ──────────────────────────────────────────────────────────────────
@@ -386,15 +396,37 @@ export class WebGPUBackend implements Backend, CommandHost {
     // Copies must be 4-byte aligned; buffer sizes already are.
     const start = alignDown4(offset);
     const end = Math.min(src.size, align4(offset + byteLength));
+    const skip = offset - start;
+    return this.readStaging(
+      'readBuffer',
+      end - start,
+      (enc, staging) =>
+        enc.copyBufferToBuffer(src.raw, start, staging, 0, end - start),
+      mapped => mapped.slice(skip, skip + byteLength),
+    );
+  }
+
+  /**
+   * @internal One-shot readback shared by readBuffer / readTexture
+   * (allocates per call; picking uses the readback ring). Counts as a read
+   * for pacing.
+   */
+  async readStaging(
+    what: string,
+    size: number,
+    record: (enc: GPUCommandEncoder, staging: GPUBuffer) => void,
+    extract: (mapped: ArrayBuffer) => ArrayBuffer,
+  ): Promise<ArrayBuffer> {
     const device = this.device;
     const staging = device.createBuffer({
-      label: 'cozygpu readback',
-      size: end - start,
+      label: `cozygpu ${what}`,
+      size: align4(size),
       usage: GPU_BUFFER_USAGE.MAP_READ | GPU_BUFFER_USAGE.COPY_DST,
     });
+    this.readStarted();
     try {
-      const enc = device.createCommandEncoder({ label: 'cozygpu readback' });
-      enc.copyBufferToBuffer(src.raw, start, staging, 0, end - start);
+      const enc = device.createCommandEncoder();
+      record(enc, staging);
       device.queue.submit([enc.finish()]);
       try {
         await staging.mapAsync(GPU_MAP_MODE_READ);
@@ -402,15 +434,16 @@ export class WebGPUBackend implements Backend, CommandHost {
         if (await this.deviceLostSoon(device)) {
           throw new CozyGPUError(
             'DEVICE_LOST',
-            `readBuffer: ${(err as Error)?.message ?? String(err)}`,
+            `${what}: ${(err as Error)?.message ?? String(err)}`,
           );
         }
         throw err;
       }
-      const skip = offset - start;
-      return staging.getMappedRange().slice(skip, skip + byteLength);
+      return extract(staging.getMappedRange());
     } finally {
       staging.destroy();
+      if (device === this.device) this.reads--;
+      this.landed();
     }
   }
 
@@ -610,13 +643,16 @@ export class WebGPUBackend implements Backend, CommandHost {
     const debug = this.debug;
     raw.getCompilationInfo().then(
       info => {
-        const text = formatCompilationMessages(
-          source.label,
-          code,
-          info.messages,
-          debug ? 'warning' : 'error',
-        );
-        if (text) this.log.error(`WGSL compilation:\n${text}`);
+        if (info.messages.length === 0) return;
+        import('./compileMessages').then(m => {
+          const text = m.formatCompilationMessages(
+            source.label,
+            code,
+            info.messages,
+            debug ? 'warning' : 'error',
+          );
+          if (text) this.log.error(`WGSL compilation:\n${text}`);
+        });
       },
       () => {},
     );
@@ -768,10 +804,67 @@ export class WebGPUBackend implements Backend, CommandHost {
     );
   }
 
+  // ─── M2.5: readback ring and interop (ARCHITECTURE §19.4, §19.6) ───────────
+
   /**
-   * M2 (RHI parity): copyTextureToBuffer into a MAP_READ staging buffer,
-   * then strip WebGPU's 256-byte row alignment so rows come back tight,
-   * top row first.
+   * RHI (M2.5): loads the readback ring implementation, a lazy chunk kept
+   * off the minimal program. `createReadbackRing` needs it; picking awaits
+   * it first, and `readTexture` loads it on its first call.
+   */
+  loadReadbackRing(): Promise<void> {
+    return import('./readbackRing').then(m => {
+      ringModule = m;
+    });
+  }
+
+  createReadbackRing(desc: ReadbackRingDesc): RhiReadbackRing {
+    if (!ringModule) {
+      throw new CozyGPUError('INTERNAL', 'call loadReadbackRing() first');
+    }
+    return new ringModule.WebGPUReadbackRing(
+      this,
+      desc.slots,
+      desc.slotBytes,
+      desc.label,
+    );
+  }
+
+  native(): unknown {
+    return this.device;
+  }
+
+  /**
+   * Wraps an outside GPUBuffer. WebGPU cannot tell which device made it, so
+   * only its size and usage are checked; `destroy()` just forgets it.
+   */
+  importBuffer(native: unknown, desc: ImportBufferDesc): RhiBuffer {
+    const raw = native as GPUBuffer;
+    const need = toGPUBufferUsage(desc.usage);
+    if (
+      typeof raw?.usage !== 'number' ||
+      raw.size < desc.size ||
+      (raw.usage & need) !== need
+    ) {
+      throw new CozyGPUError(
+        'INVALID_ARGUMENT',
+        `importBuffer "${desc.label ?? ''}": need a GPUBuffer of >= ${desc.size} B with usage 0x${need.toString(16)}`,
+      );
+    }
+    return new WebGPUImportedBuffer(
+      raw,
+      desc.size,
+      desc.usage |
+        (raw.usage & GPU_BUFFER_USAGE.COPY_SRC ? BufferUsage.COPY_SRC : 0),
+      desc.label,
+    );
+  }
+
+  /** WebGPU keeps no native state between frames. */
+  resetState(): void {}
+
+  /**
+   * M2 (RHI parity). The implementation lives in the readback ring chunk
+   * (rare; kept off the minimal program), so the first call loads it.
    */
   async readTexture(
     texture: RhiTexture,
@@ -780,77 +873,8 @@ export class WebGPUBackend implements Backend, CommandHost {
     width: number,
     height: number,
   ): Promise<ArrayBuffer> {
-    const tex = texture as WebGPUTexture;
-    if (
-      x < 0 ||
-      y < 0 ||
-      width < 0 ||
-      height < 0 ||
-      x + width > tex.width ||
-      y + height > tex.height
-    ) {
-      throw new CozyGPUError(
-        'INVALID_ARGUMENT',
-        `readTexture rect ${x},${y} ${width}×${height} is outside texture "${tex.label ?? ''}" (${tex.width}×${tex.height})`,
-      );
-    }
-    if (
-      compressedBlockBytes(tex.format) > 0 ||
-      isDepthFormat(tex.format) ||
-      tex.sampleCount > 1
-    ) {
-      throw new CozyGPUError(
-        'UNSUPPORTED',
-        `readTexture: ${tex.sampleCount > 1 ? 'multisampled' : tex.format} textures cannot be read back`,
-      );
-    }
-    if (width === 0 || height === 0) return new ArrayBuffer(0);
-    const bpp = bytesPerTexel(tex.format);
-    const rowBytes = width * bpp;
-    const paddedRow = Math.ceil(rowBytes / 256) * 256;
-    const size = paddedRow * (height - 1) + rowBytes;
-    const device = this.device;
-    const staging = device.createBuffer({
-      label: 'cozygpu texture readback',
-      size: align4(size),
-      usage: GPU_BUFFER_USAGE.MAP_READ | GPU_BUFFER_USAGE.COPY_DST,
-    });
-    try {
-      const enc = device.createCommandEncoder({
-        label: 'cozygpu texture readback',
-      });
-      enc.copyTextureToBuffer(
-        { texture: tex.raw, mipLevel: 0, origin: { x, y, z: 0 } },
-        {
-          buffer: staging,
-          offset: 0,
-          bytesPerRow: paddedRow,
-          rowsPerImage: height,
-        },
-        { width, height, depthOrArrayLayers: 1 },
-      );
-      device.queue.submit([enc.finish()]);
-      try {
-        await staging.mapAsync(GPU_MAP_MODE_READ);
-      } catch (err) {
-        if (await this.deviceLostSoon(device)) {
-          throw new CozyGPUError(
-            'DEVICE_LOST',
-            `readTexture: ${(err as Error)?.message ?? String(err)}`,
-          );
-        }
-        throw err;
-      }
-      const mapped = new Uint8Array(staging.getMappedRange());
-      const out = new Uint8Array(rowBytes * height);
-      for (let row = 0; row < height; row++) {
-        const from = row * paddedRow;
-        out.set(mapped.subarray(from, from + rowBytes), row * rowBytes);
-      }
-      return out.buffer;
-    } finally {
-      staging.destroy();
-    }
+    if (!ringModule) await this.loadReadbackRing();
+    return ringModule!.readTexture(this, texture, x, y, width, height);
   }
 
   async createComputePipeline(
@@ -981,7 +1005,9 @@ export class WebGPUBackend implements Backend, CommandHost {
     this.device = device;
     this.lost = false;
     this.frameScoped = false;
-    this.fencePending = false;
+    // Rings and reads of the old device are dead (their owners recreate them).
+    this.reads = 0;
+    this.rings.length = 0;
     this.list.abandon();
     this.canvasTexture = null;
     this.canvasTextureView = null;
@@ -1008,7 +1034,7 @@ export class WebGPUBackend implements Backend, CommandHost {
       this.simulatingLoss = false;
       this.lost = true;
       this.list.abandon();
-      this.onFence(); // releases a held frame
+      this.landed(); // releases a held frame
       const callback = this.lostCallback;
       if (!callback) return;
       callback({
@@ -1079,7 +1105,8 @@ export class WebGPUBackend implements Backend, CommandHost {
     let details = '';
     try {
       const info = await shader.raw.getCompilationInfo();
-      details = formatCompilationMessages(
+      const m = await import('./compileMessages');
+      details = m.formatCompilationMessages(
         shader.label ?? label,
         shader.source,
         info.messages,

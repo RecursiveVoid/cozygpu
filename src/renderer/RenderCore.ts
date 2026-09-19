@@ -1,5 +1,5 @@
 /**
- * Owner: "backend". Render-thread executor: the same code runs on the main
+ * Owner: "renderer-hooks" (M2.5). Render-thread executor: the same code runs on the main
  * thread (LocalTransport) and in the worker (src/worker/entry.ts).
  *
  * Per packet (ARCHITECTURE §2 "Frame lifecycle"):
@@ -10,6 +10,9 @@
  *   3. one main render pass (MSAA-resolved when antialias) replaying the DRAW
  *      commands in stream order
  *   4. submit, system.endFrame(), post frameDone (buffer handed back)
+ * M2.5: step 0 polls in-flight pick readbacks (ARCHITECTURE §19.6), and the
+ * core keeps the table of external buffers registered through interop
+ * (§19.4).
  *
  * Steady state allocates nothing: the frame state, pass descriptor, clear
  * color, draw-offset list and the frameDone message are reused.
@@ -76,11 +79,19 @@ const MAX_LOSS_RETRIES = 3;
 
 type CoreStateValue = (typeof CoreState)[keyof typeof CoreState];
 
-/** Optional backend hooks for readback pacing (WebGPU; not part of the RHI). */
+/**
+ * Optional backend hooks for readback pacing (not part of the RHI). Backends
+ * pace only while a readback is in flight (ARCHITECTURE §7.1, §19.5).
+ */
 interface FramePacer {
-  paceReadbacks(): void;
   backlogged(): boolean;
   whenCaughtUp(callback: () => void): void;
+  /**
+   * Set by the core once picking exists: the backend calls it when a
+   * readback lands (WebGPU: a ring slot's map; WebGL2: a ring fence seen by
+   * a 1 ms timer), so picks are answered then, not in a later render().
+   */
+  onReadbackLanded: (() => void) | null;
 }
 
 class FrameState implements CoreFrameState {
@@ -95,7 +106,7 @@ class FrameState implements CoreFrameState {
 }
 
 /** Mutable CoreContext: GPU objects are replaced after a device restore. */
-class Context implements CoreContext {
+export class Context implements CoreContext {
   viewLayout!: RhiBindGroupLayout;
   viewBindGroup!: RhiBindGroup;
   textureLayout!: RhiBindGroupLayout;
@@ -120,6 +131,15 @@ class Context implements CoreContext {
 
   getShared(sharedId: number): ArrayBuffer | SharedArrayBuffer | undefined {
     return this.shared.get(sharedId);
+  }
+
+  /** M2.5 interop: imported buffers by external id (dropped on device loss). */
+  ext = new Map<number, RhiBuffer>();
+  /** Device losses so far (readbacks and interop registrations older than one fail). */
+  lossEpoch = 0;
+
+  getExternalBuffer(externalId: number): RhiBuffer | undefined {
+    return this.ext.get(externalId);
   }
 }
 
@@ -261,9 +281,14 @@ export class RenderCoreImpl implements RenderCore {
     }
   }
 
-  /** @internal For tests and the device-loss example. */
-  get context(): CoreContext {
+  /** @internal For tests, the device-loss example and interop (coreInterop.ts). */
+  get context(): Context {
     return this.ctx;
+  }
+
+  /** @internal False while the device is lost or after destroy. */
+  get ready(): boolean {
+    return this.state === CoreState.READY;
   }
 
   /** @internal Resolves when an in-flight device restore finishes. */
@@ -287,6 +312,8 @@ export class RenderCoreImpl implements RenderCore {
       this.dropPacket(packet);
       return;
     }
+    // 0. Answer pick readbacks that finished since the last packet.
+    this.picking?.poll!();
     const decoder = this.decoder;
     try {
       decoder.reset(packet);
@@ -345,12 +372,14 @@ export class RenderCoreImpl implements RenderCore {
       }
     }
     if (this.picking) {
+      (this.backend as Partial<FramePacer>).onReadbackLanded = null;
       this.picking.failAll('DESTROYED', 'renderer was destroyed');
       this.picking.destroy();
       this.picking = null;
     }
     this.destroyCoreResources();
     this.ctx.shared.clear();
+    this.ctx.ext.clear();
     this.backend.destroy();
   }
 
@@ -427,13 +456,6 @@ export class RenderCoreImpl implements RenderCore {
           list.submit();
         } catch (err) {
           this.report(err, 'submit');
-        }
-        if (this.picking) {
-          try {
-            this.picking.afterSubmit();
-          } catch (err) {
-            this.report(err, 'pick readback');
-          }
         }
       }
     }
@@ -585,7 +607,6 @@ export class RenderCoreImpl implements RenderCore {
         const srcId = reader.u32();
         const first = reader.u32();
         const count = reader.u32();
-        (this.backend as Partial<FramePacer>).paceReadbacks?.();
         this.readback(requestId, srcKind, srcId, first, count);
         return;
       }
@@ -593,8 +614,11 @@ export class RenderCoreImpl implements RenderCore {
         const requestId = reader.u32();
         const x = reader.f32();
         const y = reader.f32();
-        if (!this.picking) this.picking = createCorePicking(this.ctx);
-        (this.backend as Partial<FramePacer>).paceReadbacks?.();
+        if (!this.picking) {
+          this.picking = createCorePicking(this.ctx);
+          (this.backend as Partial<FramePacer>).onReadbackLanded =
+            this.pollPicks;
+        }
         this.picking.request(requestId, x, y);
         return;
       }
@@ -624,9 +648,6 @@ export class RenderCoreImpl implements RenderCore {
     this.recreateTargets();
   }
 
-  /** Device losses seen so far (readbacks started before one fail quietly). */
-  private lossCount = 0;
-
   private readback(
     requestId: number,
     srcKind: number,
@@ -652,7 +673,7 @@ export class RenderCoreImpl implements RenderCore {
       });
       return;
     }
-    const readbackEpoch = this.lossCount;
+    const readbackEpoch = this.ctx.lossEpoch;
     pending.then(
       data => post({ type: 'readback', requestId, data }, [data]),
       err => {
@@ -661,7 +682,7 @@ export class RenderCoreImpl implements RenderCore {
         // internal error (the front already hears deviceLost).
         if (
           this.state !== CoreState.READY ||
-          readbackEpoch !== this.lossCount ||
+          readbackEpoch !== this.ctx.lossEpoch ||
           (err instanceof CozyGPUError && err.code === 'DEVICE_LOST')
         ) {
           post({
@@ -740,11 +761,28 @@ export class RenderCoreImpl implements RenderCore {
     // queueing more work in front of the readback.
     const pacer = this.backend as Partial<FramePacer>;
     if (pacer.backlogged !== undefined && pacer.backlogged()) {
-      pacer.whenCaughtUp!(this.postFrameDone);
+      pacer.whenCaughtUp!(this.releaseHeld);
       return;
     }
     this.postFrameDone();
   }
+
+  /**
+   * A held frame goes (its readback landed): answer finished picks now. The
+   * next render() may come a display tick later (ARCHITECTURE §19.5).
+   */
+  private readonly releaseHeld = (): void => {
+    if (this.state === CoreState.READY) this.picking?.poll!();
+    this.postFrameDone();
+  };
+
+  /**
+   * FramePacer.onReadbackLanded: a readback landed between packets; answer
+   * finished picks now instead of in a later render() (ARCHITECTURE §19.6).
+   */
+  private readonly pollPicks = (): void => {
+    if (this.state === CoreState.READY) this.picking?.poll!();
+  };
 
   private readonly postFrameDone = (): void => {
     const msg = this.frameDone;
@@ -850,7 +888,8 @@ export class RenderCoreImpl implements RenderCore {
       return;
     }
     this.state = CoreState.LOST;
-    this.lossCount++;
+    this.ctx.lossEpoch++;
+    this.ctx.ext.clear();
     this.picking?.failAll('DEVICE_LOST', message);
     this.ctx.post({ type: 'deviceLost', message });
     this.restoring = this.recover().finally(() => {
@@ -924,9 +963,7 @@ export class RenderCoreImpl implements RenderCore {
     const bit = 1 << (opcode & 7);
     if ((this.warnedOpcodes[byte] & bit) !== 0) return;
     this.warnedOpcodes[byte] |= bit;
-    this.warnOnce(
-      `unknown opcode 0x${opcode.toString(16).padStart(4, '0')} skipped (payload ignored)`,
-    );
+    this.warnOnce(`unknown opcode 0x${opcode.toString(16)} skipped`);
   }
 
   private warnOnce(message: string): void {

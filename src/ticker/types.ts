@@ -1,4 +1,4 @@
-/** Ticker public API — owner: "sprites". Optional helper; not required to use a Renderer. */
+/** Ticker public API. Optional helper; not required to use a Renderer. */
 
 export interface TickerOptions {
   /** Start immediately (default true). */

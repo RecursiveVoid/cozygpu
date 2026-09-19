@@ -69,5 +69,5 @@ npm run dev                                  # watch + http://localhost:3002/exa
 `?worker=1&swarm=1`).
 
 Status: pre-release (M1 complete, not yet published). See
-[docs/API.md](docs/API.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md),
-[ROADMAP.md](ROADMAP.md) and [benchmarks/README.md](benchmarks/README.md).
+[docs/API.md](docs/API.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+and [benchmarks/README.md](benchmarks/README.md).

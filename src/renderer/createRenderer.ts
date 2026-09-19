@@ -1,5 +1,5 @@
 /**
- * Owner: "worker+build". Public entry point.
+ * Owner: "renderer-hooks" (M2.5; was "worker+build"). Public entry point.
  *  main-thread: createLocalTransport(canvas, coreOptions) → new RendererImpl(...)
  *  worker:      import('../worker/WorkerTransport') (a separate chunk, §18.1),
  *               createWorkerTransport(canvas, coreOptions, url, size) → new RendererImpl(...)
@@ -81,6 +81,7 @@ export function resolveRendererConfig(
     onDeviceLost: options.onDeviceLost,
     onDeviceRestored: options.onDeviceRestored,
     assets: options.assets,
+    events: options.events,
   };
 }
 
@@ -103,7 +104,7 @@ export async function createRenderer(
     if (!isHTMLCanvas(canvas)) {
       throw new CozyGPUError(
         'INVALID_ARGUMENT',
-        'worker mode needs an HTMLCanvasElement (it is transferred with transferControlToOffscreen())',
+        'worker mode needs an HTMLCanvasElement',
       );
     }
     if (typeof canvas.transferControlToOffscreen !== 'function') {

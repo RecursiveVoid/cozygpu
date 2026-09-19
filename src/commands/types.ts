@@ -1,5 +1,5 @@
 /**
- * Command stream encoder / decoder contracts — owner: "worker".
+ * Command stream encoder / decoder contracts.
  * Spec: docs/ARCHITECTURE.md §3.
  *
  * Performance contract:

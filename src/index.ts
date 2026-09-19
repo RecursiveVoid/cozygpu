@@ -1,6 +1,6 @@
 /**
  * cozygpu public entry. EXPORTS ONLY — no side effects (package.json
- * "sideEffects": false). SHARED + FROZEN during the M1 and M2 build phases.
+ * "sideEffects": false).
  *
  *   import * as GPU from 'cozygpu';
  *   const renderer = await GPU.createRenderer({ canvas });
@@ -17,18 +17,30 @@ export type {
   RendererInfo,
   RendererStats,
 } from './types/renderer';
+// M2.5 integration hooks (types only; ARCHITECTURE §19)
+export type { EventName, Events, EventSink } from './types/events';
+export type {
+  ExternalInstanceBuffer,
+  ExternalInstanceBufferDesc,
+  ExternalLayout,
+  RendererInterop,
+} from './types/interop';
 
 // ─── Scene graph (tier 1) ────────────────────────────────────────────────────
 export { Container, Sprite, Texture, loadTexture } from './scene';
 export { BulkField } from './scene/types';
 export type {
+  BindColumnsOptions,
   BulkChildren,
+  ColumnBinding,
+  ColumnSource,
   ContainerOptions,
   ContainerNode,
   DestroyOptions,
   NodeKind,
   NodeOptions,
   SceneNode,
+  SpriteColumns,
   SpriteNode,
   SpriteOptions,
   TextureFrame,
@@ -51,6 +63,7 @@ export type {
   ParamValues,
   Range,
   SpawnOptions,
+  SwarmExternalSource,
   SwarmNode,
   SwarmOptions,
 } from './swarm';

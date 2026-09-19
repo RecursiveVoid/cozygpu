@@ -3,7 +3,7 @@
  * tests and the swarm GPU harness (examples/swarm/harness). Implements the
  * CommandWriter / CommandReader contracts from src/commands/types.ts well
  * enough for opcode range 0x03; the real implementation lives in
- * src/commands (owner: worker).
+ * src/commands.
  */
 import {
   COMMAND_HEADER_BYTES,

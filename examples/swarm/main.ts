@@ -10,6 +10,9 @@
 //                     feedback; M2, ARCHITECTURE §14.2)
 //   ?allocation=gpu   'ring' (default), 'manual', or 'gpu' (GPU free list +
 //                     compacted indirect draw; WebGPU compute only, §14.3)
+//   ?external=1       M2.5: outside WebGPU compute owns and moves the hot
+//                     records; the swarm draws them (renderer.interop(),
+//                     swarm.setSource; WebGPU main thread only, §19.4)
 // Hold the mouse button to attract. The per-frame loop allocates nothing;
 // the HUD text is rebuilt twice a second.
 import * as GPU from 'cozygpu';
@@ -27,6 +30,7 @@ const BACKEND =
     : params.get('backend') === 'webgpu'
       ? 'webgpu'
       : 'auto';
+const EXTERNAL = params.get('external') === '1';
 const ALLOCATION =
   params.get('allocation') === 'gpu'
     ? 'gpu'
@@ -133,6 +137,14 @@ async function main(): Promise<void> {
 
   fill(swarm);
 
+  // ?external=1: outside code owns the hot records (their own WebGPU calls
+  // allocate native objects each frame; cozygpu's side allocates nothing).
+  const external = EXTERNAL
+    ? await import('./external').then(m =>
+        m.useExternalSource(renderer, swarm, COUNT, w, h),
+      )
+    : null;
+
   const attractor = swarm.behavior<{
     point: 'vec2f';
     strength: 'f32';
@@ -220,6 +232,8 @@ async function main(): Promise<void> {
       burst.disc.y = lastH * 0.8;
     }
 
+    external?.step(Math.min(dt, 0.1), lastW, lastH);
+
     if (fountain) {
       spawnCarry += perSecond * Math.min(dt, 0.1);
       const n = Math.floor(spawnCarry);
@@ -256,7 +270,8 @@ async function main(): Promise<void> {
       }
       hud.textContent =
         `swarm ${COUNT.toLocaleString()} ${SHAPE} ${MODE}` +
-        `${CULL ? ' cull' : ''}${WORKER ? ' worker' : ''}\n` +
+        `${CULL ? ' cull' : ''}${WORKER ? ' worker' : ''}` +
+        `${external ? ' external' : ''}\n` +
         `${renderer.info.backend} · ${allocation} alloc` +
         `${demoted ? ' (gpu needs compute)' : ''}\n` +
         `fps ${stats.fps.toFixed(1)} · frame ${stats.frameMs.toFixed(2)} ms` +

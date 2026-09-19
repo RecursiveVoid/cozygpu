@@ -3,6 +3,9 @@
 //   ?add=5000       sprites added per click / key press
 //   ?rotate=1       also spin every sprite (exercises the trig path)
 //   ?bulk=1         write positions through container.bulkChildren (M2)
+//   ?columns=1      keep x, y (and rotation) in caller-owned typed arrays and
+//                   commit them through container.bindColumns (M2.5); picks
+//                   then report the sprite's userId (its index + 1)
 //   ?pick=1         click picks the sprite under the cursor instead of adding
 //   ?backend=webgl2 force a backend ('auto' by default, 'webgpu' also valid)
 //   ?worker=1       run the core in a worker (needs the worker bundle built)
@@ -14,6 +17,7 @@ const INITIAL = Math.max(0, Number(params.get('count') ?? 100_000) | 0);
 const ADD = Math.max(1, Number(params.get('add') ?? 5_000) | 0);
 const ROTATE = params.get('rotate') === '1';
 const BULK = params.get('bulk') === '1';
+const COLUMNS = !BULK && params.get('columns') === '1';
 const PICK = params.get('pick') === '1';
 const backendParam = params.get('backend');
 const backend: 'auto' | 'webgpu' | 'webgl2' =
@@ -83,6 +87,14 @@ async function main(): Promise<void> {
   let vx = new Float32Array(0);
   let vy = new Float32Array(0);
   let spin = new Float32Array(0);
+  // ?columns=1: the caller owns the state (as an ECS archetype would); the
+  // container binds the arrays once and commits them per frame (M2.5,
+  // ARCHITECTURE §19.1). Re-bound only when the arrays are replaced.
+  let px = new Float32Array(0);
+  let py = new Float32Array(0);
+  let rot = new Float32Array(0);
+  let uid = new Uint32Array(0);
+  let columns: GPU.ColumnBinding | null = null;
   // ?bulk=1: one typed-array writer for every child, re-acquired only when
   // the children list changes (M2, ARCHITECTURE §16.1).
   let bulk: GPU.BulkChildren | null = null;
@@ -100,6 +112,19 @@ async function main(): Promise<void> {
       vx = grow(vx);
       vy = grow(vy);
       spin = grow(spin);
+      if (COLUMNS) {
+        px = grow(px);
+        py = grow(py);
+        rot = grow(rot);
+        const u = new Uint32Array(cap);
+        u.set(uid);
+        uid = u;
+        columns = world.bindColumns(
+          ROTATE
+            ? { x: px, y: py, rotation: rot, userId: uid }
+            : { x: px, y: py, userId: uid },
+        );
+      }
     }
     for (let i = count; i < next; i++) {
       const s = new GPU.Sprite({
@@ -113,7 +138,15 @@ async function main(): Promise<void> {
       vy[i] = (Math.random() - 0.5) * 400;
       spin[i] = (Math.random() - 0.5) * 6;
       sprites.push(world.addChild(s));
+      if (COLUMNS) {
+        px[i] = s.x;
+        py[i] = s.y;
+        rot[i] = 0;
+        uid[i] = i + 1;
+      }
     }
+    // user ids never change afterwards: commit them once, for the new rows.
+    if (columns !== null) columns.commit(n, count, GPU.BulkField.USER_ID);
     count = next;
   }
   add(INITIAL);
@@ -123,7 +156,7 @@ async function main(): Promise<void> {
       .pick(x, y)
       .then(hit => {
         pickInfo = hit
-          ? ` · picked #${hit.node.id} at ${hit.x.toFixed(0)},${hit.y.toFixed(0)}`
+          ? ` · picked #${hit.node.id} (userId ${hit.userId}) at ${hit.x.toFixed(0)},${hit.y.toFixed(0)}`
           : ' · picked nothing';
         if (hit && hit.node.kind === 'sprite') {
           (hit.node as GPU.Sprite).tint = 0xff2020;
@@ -168,8 +201,8 @@ async function main(): Promise<void> {
     const pos = bulk !== null ? bulk.position : null;
     for (let i = 0; i < count; i++) {
       const s = sprites[i];
-      let x = pos !== null ? pos[i * 2] : s.x;
-      let y = pos !== null ? pos[i * 2 + 1] : s.y;
+      let x = COLUMNS ? px[i] : pos !== null ? pos[i * 2] : s.x;
+      let y = COLUMNS ? py[i] : pos !== null ? pos[i * 2 + 1] : s.y;
       x += vx[i] * dt;
       y += vy[i] * dt;
       let vyi = vy[i] + GRAVITY * dt;
@@ -189,6 +222,12 @@ async function main(): Promise<void> {
         vyi = 0;
       }
       vy[i] = vyi;
+      if (COLUMNS) {
+        px[i] = x;
+        py[i] = y;
+        if (ROTATE) rot[i] += spin[i] * dt;
+        continue;
+      }
       if (pos !== null) {
         pos[i * 2] = x;
         pos[i * 2 + 1] = y;
@@ -198,6 +237,10 @@ async function main(): Promise<void> {
       if (ROTATE) s.rotation += spin[i] * dt;
     }
     if (bulk !== null) bulk.commit(GPU.BulkField.POSITION);
+    // One copy into the node store, one dirty range for the next render().
+    if (columns !== null) {
+      columns.commit(count, 0, GPU.BulkField.POSITION | GPU.BulkField.ROTATION);
+    }
     const k = 0.05;
     updateMsAvg += (performance.now() - t0 - updateMsAvg) * k;
     frameMsAvg += (dt * 1000 - frameMsAvg) * k;
@@ -211,6 +254,7 @@ async function main(): Promise<void> {
         ` · update ${updateMsAvg.toFixed(2)} ms · render cpu ${st.cpuMs.toFixed(2)} ms` +
         ` · draws ${st.drawCalls} · packet ${(st.packetBytes / 1024).toFixed(1)} KB` +
         (BULK ? ' · bulk' : '') +
+        (COLUMNS ? ' · columns' : '') +
         pickInfo +
         ` — ${PICK ? 'click: pick' : `click/space: +${ADD}`}, backspace: −${ADD}`;
     }

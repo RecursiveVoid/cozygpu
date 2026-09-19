@@ -48,6 +48,7 @@ export function bytesPerTexel(format: TextureFormat): number {
     case 'rg32uint':
       return 8;
     case 'rgba32float':
+    case 'rgba32uint':
       return 16;
     default:
       return compressedBlockBytes(format) || 4;

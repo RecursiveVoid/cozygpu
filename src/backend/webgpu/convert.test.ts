@@ -11,7 +11,7 @@ import {
   toGPUShaderStage,
   toGPUTextureUsage,
 } from './convert';
-import { formatCompilationMessages } from './diagnostics';
+import { formatCompilationMessages } from './compileMessages';
 
 describe('webgpu convert', () => {
   it('maps buffer usage flags', () => {

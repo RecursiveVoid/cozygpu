@@ -1,6 +1,5 @@
 /**
- * Asset loader public API (M2). SHARED + FROZEN during the M2 build;
- * implemented by owner "assets" (src/assets/**). Spec: docs/ARCHITECTURE.md
+ * Asset loader public API (M2), implemented in src/assets/**. Spec: docs/ARCHITECTURE.md
  * §15 and docs/API.md "Assets".
  *
  * Design decisions (normative):

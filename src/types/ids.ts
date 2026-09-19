@@ -37,4 +37,6 @@ export const ids = {
   shared: createIdAllocator(),
   readback: createIdAllocator(),
   node: createIdAllocator(),
+  /** M2.5. External instance buffers registered through renderer interop (§19.4). */
+  external: createIdAllocator(),
 } as const;

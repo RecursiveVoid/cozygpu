@@ -1,0 +1,2010 @@
+{
+  "meta": {
+    "label": "m25-pick",
+    "date": "2026-09-19T09:11:06.768Z",
+    "chrome": "Google Chrome 153.0.8010.48",
+    "chromeFlags": [
+      "--enable-unsafe-webgpu",
+      "--use-angle=metal",
+      "--ignore-gpu-blocklist",
+      "--enable-precise-memory-info",
+      "--js-flags=--expose-gc",
+      "--disable-background-timer-throttling",
+      "--disable-renderer-backgrounding",
+      "--disable-backgrounding-occluded-windows",
+      "--no-first-run",
+      "--no-default-browser-check",
+      "--window-size=1280,720",
+      "--disable-gpu-vsync",
+      "--disable-frame-rate-limit"
+    ],
+    "vsyncScenarios": [
+      "a2"
+    ],
+    "headful": false,
+    "vsync": false,
+    "warmupSec": 2,
+    "durationSec": 5,
+    "repeat": 2,
+    "width": 1280,
+    "height": 720,
+    "scenarios": [
+      "a2",
+      "a2u"
+    ],
+    "filter": "cozygpu",
+    "versions": {
+      "pixi.js": "8.20.1",
+      "three": "0.186.0",
+      "puppeteer-core": "25.11.0",
+      "esbuild": "0.28.2",
+      "cozygpu": "0.0.1"
+    },
+    "gpu": "apple metal-3",
+    "machine": {
+      "cpu": "Apple M4",
+      "cores": 10,
+      "memGB": 16,
+      "platform": "darwin 27.0.0 arm64"
+    }
+  },
+  "bundles": [],
+  "results": [
+    {
+      "id": "picking/100000/cozygpu-webgpu-auto",
+      "scenarioKey": "a2",
+      "vsync": true,
+      "status": "ok",
+      "params": {
+        "lib": "cozygpu",
+        "renderer": "webgpu",
+        "variant": "auto",
+        "scenario": "picking",
+        "count": 100000,
+        "warmupSec": 2,
+        "durationSec": 5,
+        "width": 1280,
+        "height": 720,
+        "seed": 1337
+      },
+      "tool": "Sprite + renderer.pick()",
+      "init": {
+        "rendererMs": 19.987499999813735,
+        "populateMs": 18.199999999254942,
+        "firstFrameMs": 27.00499999988824,
+        "totalMs": 65.19249999895692
+      },
+      "frame": {
+        "frames": 301,
+        "elapsedMs": 5016.1775000002235,
+        "fps": 60.00585124594862,
+        "avgMs": 16.665041528239946,
+        "p50Ms": 16.665000000037253,
+        "p95Ms": 17.99500000011176,
+        "p99Ms": 18.552500000223517,
+        "maxMs": 18.649999999441206
+      },
+      "cpu": {
+        "avgMs": 0.08579734220259214,
+        "p50Ms": 0.08499999903142452,
+        "p99Ms": 0.12250000052154064,
+        "maxMs": 0.15000000037252903
+      },
+      "heap": {
+        "precise": true,
+        "baselineBytes": 20531399,
+        "afterInitBytes": 20928976,
+        "afterPopulateBytes": 56917315,
+        "endBytes": 77064196,
+        "perObjectBytes": 359.88338999999996,
+        "growthPerFrameBytes": 29782.661129568107
+      },
+      "info": {
+        "version": "0.0.1",
+        "backend": "webgpu",
+        "worker": false,
+        "sharedMemory": true,
+        "drawCalls": 1,
+        "packetBytes": 88,
+        "frontCpuMs": 0.007499999366700649,
+        "skippedFrames": 0,
+        "frameId": 423,
+        "pick": {
+          "picks": 301,
+          "hitRate": 1,
+          "latencyAvgMs": 3.968654485054289,
+          "latencyP50Ms": 3.985000000335276,
+          "latencyP99Ms": 5.635000000707805,
+          "latencyMaxMs": 5.834999999962747,
+          "framesAvg": 1,
+          "framesP99": 1
+        }
+      },
+      "env": {
+        "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.0.0 Safari/537.36",
+        "devicePixelRatio": 1,
+        "crossOriginIsolated": true,
+        "hardwareConcurrency": 10,
+        "gpu": {
+          "vendor": "apple",
+          "architecture": "metal-3",
+          "device": "",
+          "description": ""
+        }
+      },
+      "destroyMs": 3.0975000001490116,
+      "loadedJs": {
+        "files": 21,
+        "min": 182195,
+        "gzip": 66137
+      },
+      "logs": [
+        "log: [bench] cozygpu/webgpu/auto picking 100000 → ok 60.0 fps"
+      ],
+      "wallMs": 8631,
+      "reps": {
+        "n": 2,
+        "ok": 2,
+        "statuses": [
+          "ok",
+          "ok"
+        ],
+        "range": {
+          "avgMs": [
+            16.664136212622356,
+            16.665946843857533
+          ],
+          "p99Ms": [
+            18.550000000745058,
+            18.554999999701977
+          ],
+          "cpuAvgMs": [
+            0.08544850497324007,
+            0.08614617943194419
+          ]
+        }
+      },
+      "runs": [
+        {
+          "id": "picking/100000/cozygpu-webgpu-auto",
+          "scenarioKey": "a2",
+          "vsync": true,
+          "status": "ok",
+          "params": {
+            "lib": "cozygpu",
+            "renderer": "webgpu",
+            "variant": "auto",
+            "scenario": "picking",
+            "count": 100000,
+            "warmupSec": 2,
+            "durationSec": 5,
+            "width": 1280,
+            "height": 720,
+            "seed": 1337
+          },
+          "tool": "Sprite + renderer.pick()",
+          "init": {
+            "rendererMs": 26.990000000223517,
+            "populateMs": 18.609999999403954,
+            "firstFrameMs": 25.78999999910593,
+            "totalMs": 71.3899999987334
+          },
+          "frame": {
+            "frames": 301,
+            "elapsedMs": 5016.450000001118,
+            "fps": 60.002591474037004,
+            "avgMs": 16.665946843857533,
+            "p50Ms": 16.665000000968575,
+            "p95Ms": 17.83500000089407,
+            "p99Ms": 18.550000000745058,
+            "maxMs": 18.644999999552965
+          },
+          "cpu": {
+            "avgMs": 0.08544850497324007,
+            "p50Ms": 0.08499999903142452,
+            "p99Ms": 0.12000000104308128,
+            "maxMs": 0.1550000011920929
+          },
+          "heap": {
+            "precise": true,
+            "baselineBytes": 20531781,
+            "afterInitBytes": 20928976,
+            "afterPopulateBytes": 56917399,
+            "endBytes": 76854958,
+            "perObjectBytes": 359.88423,
+            "growthPerFrameBytes": 29087.23920265781
+          },
+          "info": {
+            "version": "0.0.1",
+            "backend": "webgpu",
+            "worker": false,
+            "sharedMemory": true,
+            "drawCalls": 1,
+            "packetBytes": 88,
+            "frontCpuMs": 0.009999999776482582,
+            "skippedFrames": 0,
+            "frameId": 423,
+            "pick": {
+              "picks": 301,
+              "hitRate": 1,
+              "latencyAvgMs": 3.4150498339046176,
+              "latencyP50Ms": 3.105000000447035,
+              "latencyP99Ms": 4.780000001192093,
+              "latencyMaxMs": 4.849999999627471,
+              "framesAvg": 1,
+              "framesP99": 1
+            }
+          },
+          "env": {
+            "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.0.0 Safari/537.36",
+            "devicePixelRatio": 1,
+            "crossOriginIsolated": true,
+            "hardwareConcurrency": 10,
+            "gpu": {
+              "vendor": "apple",
+              "architecture": "metal-3",
+              "device": "",
+              "description": ""
+            }
+          },
+          "destroyMs": 3.275000000372529,
+          "loadedJs": {
+            "files": 21,
+            "min": 182195,
+            "gzip": 66137
+          },
+          "wallMs": 9086
+        },
+        {
+          "id": "picking/100000/cozygpu-webgpu-auto",
+          "scenarioKey": "a2",
+          "vsync": true,
+          "status": "ok",
+          "params": {
+            "lib": "cozygpu",
+            "renderer": "webgpu",
+            "variant": "auto",
+            "scenario": "picking",
+            "count": 100000,
+            "warmupSec": 2,
+            "durationSec": 5,
+            "width": 1280,
+            "height": 720,
+            "seed": 1337
+          },
+          "tool": "Sprite + renderer.pick()",
+          "init": {
+            "rendererMs": 12.984999999403954,
+            "populateMs": 17.78999999910593,
+            "firstFrameMs": 28.220000000670552,
+            "totalMs": 58.994999999180436
+          },
+          "frame": {
+            "frames": 301,
+            "elapsedMs": 5015.904999999329,
+            "fps": 60.009111017860235,
+            "avgMs": 16.664136212622356,
+            "p50Ms": 16.66499999910593,
+            "p95Ms": 18.154999999329448,
+            "p99Ms": 18.554999999701977,
+            "maxMs": 18.654999999329448
+          },
+          "cpu": {
+            "avgMs": 0.08614617943194419,
+            "p50Ms": 0.08499999903142452,
+            "p99Ms": 0.125,
+            "maxMs": 0.14499999955296516
+          },
+          "heap": {
+            "precise": true,
+            "baselineBytes": 20531017,
+            "afterInitBytes": 20928976,
+            "afterPopulateBytes": 56917231,
+            "endBytes": 77273434,
+            "perObjectBytes": 359.88255,
+            "growthPerFrameBytes": 30478.083056478405
+          },
+          "info": {
+            "version": "0.0.1",
+            "backend": "webgpu",
+            "worker": false,
+            "sharedMemory": true,
+            "drawCalls": 1,
+            "packetBytes": 88,
+            "frontCpuMs": 0.004999998956918716,
+            "skippedFrames": 0,
+            "frameId": 423,
+            "pick": {
+              "picks": 301,
+              "hitRate": 1,
+              "latencyAvgMs": 4.522259136203961,
+              "latencyP50Ms": 4.865000000223517,
+              "latencyP99Ms": 6.490000000223517,
+              "latencyMaxMs": 6.820000000298023,
+              "framesAvg": 1,
+              "framesP99": 1
+            }
+          },
+          "env": {
+            "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.0.0 Safari/537.36",
+            "devicePixelRatio": 1,
+            "crossOriginIsolated": true,
+            "hardwareConcurrency": 10,
+            "gpu": {
+              "vendor": "apple",
+              "architecture": "metal-3",
+              "device": "",
+              "description": ""
+            }
+          },
+          "destroyMs": 2.919999999925494,
+          "loadedJs": {
+            "files": 21,
+            "min": 182195,
+            "gzip": 66137
+          },
+          "wallMs": 8176
+        }
+      ]
+    },
+    {
+      "id": "picking/100000/cozygpu-webgl2-auto",
+      "scenarioKey": "a2",
+      "vsync": true,
+      "status": "ok",
+      "params": {
+        "lib": "cozygpu",
+        "renderer": "webgl2",
+        "variant": "auto",
+        "scenario": "picking",
+        "count": 100000,
+        "warmupSec": 2,
+        "durationSec": 5,
+        "width": 1280,
+        "height": 720,
+        "seed": 1337
+      },
+      "tool": "Sprite + renderer.pick()",
+      "init": {
+        "rendererMs": 56.982499999925494,
+        "populateMs": 17.884999999776483,
+        "firstFrameMs": 26.165000000037253,
+        "totalMs": 101.03249999973923
+      },
+      "frame": {
+        "frames": 300,
+        "elapsedMs": 5000.382500000298,
+        "fps": 59.99541068404315,
+        "avgMs": 16.66794166666766,
+        "p50Ms": 16.674999998882413,
+        "p95Ms": 18.237499999813735,
+        "p99Ms": 18.477500000037253,
+        "maxMs": 18.49500000011176
+      },
+      "cpu": {
+        "avgMs": 0.10150833339119951,
+        "p50Ms": 0.0849999999627471,
+        "p99Ms": 0.19750000070780516,
+        "maxMs": 0.24999999906867743
+      },
+      "heap": {
+        "precise": true,
+        "baselineBytes": 20531017,
+        "afterInitBytes": 21045805,
+        "afterPopulateBytes": 57022694,
+        "endBytes": 71271728,
+        "perObjectBytes": 359.76889,
+        "growthPerFrameBytes": 10040.216666666667
+      },
+      "info": {
+        "version": "0.0.1",
+        "backend": "webgl2",
+        "worker": false,
+        "sharedMemory": true,
+        "drawCalls": 1,
+        "packetBytes": 88,
+        "frontCpuMs": 0.01250000111758709,
+        "skippedFrames": 0,
+        "frameId": 422,
+        "pick": {
+          "picks": 300,
+          "hitRate": 1,
+          "latencyAvgMs": 4.841866666687031,
+          "latencyP50Ms": 4.480000000447035,
+          "latencyP99Ms": 7.21750000026077,
+          "latencyMaxMs": 7.702499999664724,
+          "framesAvg": 1,
+          "framesP99": 1
+        }
+      },
+      "env": {
+        "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.0.0 Safari/537.36",
+        "devicePixelRatio": 1,
+        "crossOriginIsolated": true,
+        "hardwareConcurrency": 10,
+        "gpu": {
+          "vendor": "apple",
+          "architecture": "metal-3",
+          "device": "",
+          "description": ""
+        }
+      },
+      "destroyMs": 3.0849999990314245,
+      "loadedJs": {
+        "files": 21,
+        "min": 187563,
+        "gzip": 68641
+      },
+      "logs": [
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback."
+      ],
+      "wallMs": 8474.5,
+      "reps": {
+        "n": 2,
+        "ok": 2,
+        "statuses": [
+          "ok",
+          "ok"
+        ],
+        "range": {
+          "avgMs": [
+            16.666699999999256,
+            16.669183333336065
+          ],
+          "p99Ms": [
+            18.320000000298023,
+            18.634999999776483
+          ],
+          "cpuAvgMs": [
+            0.10063333337505659,
+            0.10238333340734243
+          ]
+        }
+      },
+      "runs": [
+        {
+          "id": "picking/100000/cozygpu-webgl2-auto",
+          "scenarioKey": "a2",
+          "vsync": true,
+          "status": "ok",
+          "params": {
+            "lib": "cozygpu",
+            "renderer": "webgl2",
+            "variant": "auto",
+            "scenario": "picking",
+            "count": 100000,
+            "warmupSec": 2,
+            "durationSec": 5,
+            "width": 1280,
+            "height": 720,
+            "seed": 1337
+          },
+          "tool": "Sprite + renderer.pick()",
+          "init": {
+            "rendererMs": 57.08999999985099,
+            "populateMs": 17.83500000089407,
+            "firstFrameMs": 31.169999999925494,
+            "totalMs": 106.09500000067055
+          },
+          "frame": {
+            "frames": 300,
+            "elapsedMs": 5000.75500000082,
+            "fps": 59.990941367843625,
+            "avgMs": 16.669183333336065,
+            "p50Ms": 16.66499999910593,
+            "p95Ms": 18.319999998435378,
+            "p99Ms": 18.634999999776483,
+            "maxMs": 18.66000000014901
+          },
+          "cpu": {
+            "avgMs": 0.10063333337505659,
+            "p50Ms": 0.0800000000745058,
+            "p99Ms": 0.2000000011175871,
+            "maxMs": 0.26999999955296516
+          },
+          "heap": {
+            "precise": true,
+            "baselineBytes": 20531017,
+            "afterInitBytes": 21045805,
+            "afterPopulateBytes": 57022694,
+            "endBytes": 66471502,
+            "perObjectBytes": 359.76889,
+            "growthPerFrameBytes": -5960.536666666667
+          },
+          "info": {
+            "version": "0.0.1",
+            "backend": "webgl2",
+            "worker": false,
+            "sharedMemory": true,
+            "drawCalls": 1,
+            "packetBytes": 88,
+            "frontCpuMs": 0.015000000596046448,
+            "skippedFrames": 0,
+            "frameId": 422,
+            "pick": {
+              "picks": 300,
+              "hitRate": 1,
+              "latencyAvgMs": 4.457066666645308,
+              "latencyP50Ms": 4.245000001043081,
+              "latencyP99Ms": 7.16499999910593,
+              "latencyMaxMs": 7.369999999180436,
+              "framesAvg": 1,
+              "framesP99": 1
+            }
+          },
+          "env": {
+            "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.0.0 Safari/537.36",
+            "devicePixelRatio": 1,
+            "crossOriginIsolated": true,
+            "hardwareConcurrency": 10,
+            "gpu": {
+              "vendor": "apple",
+              "architecture": "metal-3",
+              "device": "",
+              "description": ""
+            }
+          },
+          "destroyMs": 3.349999999627471,
+          "loadedJs": {
+            "files": 21,
+            "min": 187563,
+            "gzip": 68641
+          },
+          "wallMs": 8852
+        },
+        {
+          "id": "picking/100000/cozygpu-webgl2-auto",
+          "scenarioKey": "a2",
+          "vsync": true,
+          "status": "ok",
+          "params": {
+            "lib": "cozygpu",
+            "renderer": "webgl2",
+            "variant": "auto",
+            "scenario": "picking",
+            "count": 100000,
+            "warmupSec": 2,
+            "durationSec": 5,
+            "width": 1280,
+            "height": 720,
+            "seed": 1337
+          },
+          "tool": "Sprite + renderer.pick()",
+          "init": {
+            "rendererMs": 56.875,
+            "populateMs": 17.934999998658895,
+            "firstFrameMs": 21.16000000014901,
+            "totalMs": 95.9699999988079
+          },
+          "frame": {
+            "frames": 300,
+            "elapsedMs": 5000.0099999997765,
+            "fps": 59.99988000024268,
+            "avgMs": 16.666699999999256,
+            "p50Ms": 16.684999998658895,
+            "p95Ms": 18.155000001192093,
+            "p99Ms": 18.320000000298023,
+            "maxMs": 18.330000000074506
+          },
+          "cpu": {
+            "avgMs": 0.10238333340734243,
+            "p50Ms": 0.08999999985098839,
+            "p99Ms": 0.19500000029802322,
+            "maxMs": 0.2299999985843897
+          },
+          "heap": {
+            "precise": true,
+            "baselineBytes": 20531017,
+            "afterInitBytes": 21045805,
+            "afterPopulateBytes": 57022694,
+            "endBytes": 76071954,
+            "perObjectBytes": 359.76889,
+            "growthPerFrameBytes": 26040.97
+          },
+          "info": {
+            "version": "0.0.1",
+            "backend": "webgl2",
+            "worker": false,
+            "sharedMemory": true,
+            "drawCalls": 1,
+            "packetBytes": 88,
+            "frontCpuMs": 0.010000001639127731,
+            "skippedFrames": 0,
+            "frameId": 422,
+            "pick": {
+              "picks": 300,
+              "hitRate": 1,
+              "latencyAvgMs": 5.226666666728755,
+              "latencyP50Ms": 4.714999999850988,
+              "latencyP99Ms": 7.27000000141561,
+              "latencyMaxMs": 8.035000000149012,
+              "framesAvg": 1,
+              "framesP99": 1
+            }
+          },
+          "env": {
+            "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.0.0 Safari/537.36",
+            "devicePixelRatio": 1,
+            "crossOriginIsolated": true,
+            "hardwareConcurrency": 10,
+            "gpu": {
+              "vendor": "apple",
+              "architecture": "metal-3",
+              "device": "",
+              "description": ""
+            }
+          },
+          "destroyMs": 2.819999998435378,
+          "loadedJs": {
+            "files": 21,
+            "min": 187563,
+            "gzip": 68641
+          },
+          "wallMs": 8097
+        }
+      ]
+    },
+    {
+      "id": "picking/100000/cozygpu-worker-auto",
+      "scenarioKey": "a2",
+      "vsync": true,
+      "status": "ok",
+      "params": {
+        "lib": "cozygpu",
+        "renderer": "worker",
+        "variant": "auto",
+        "scenario": "picking",
+        "count": 100000,
+        "warmupSec": 2,
+        "durationSec": 5,
+        "width": 1280,
+        "height": 720,
+        "seed": 1337
+      },
+      "tool": "Sprite + renderer.pick()",
+      "init": {
+        "rendererMs": 35.264999999664724,
+        "populateMs": 16.497499999590218,
+        "firstFrameMs": 28.072499999776483,
+        "totalMs": 79.83499999903142
+      },
+      "frame": {
+        "frames": 301,
+        "elapsedMs": 5015.9199999999255,
+        "fps": 60.00893224459577,
+        "avgMs": 16.664186046511382,
+        "p50Ms": 16.665000000968575,
+        "p95Ms": 18.22250000014901,
+        "p99Ms": 18.53000000026077,
+        "maxMs": 18.622499999590218
+      },
+      "cpu": {
+        "avgMs": 0.025365448510428996,
+        "p50Ms": 0.02500000037252903,
+        "p99Ms": 0.044999999925494194,
+        "maxMs": 0.05249999929219484
+      },
+      "heap": {
+        "precise": true,
+        "baselineBytes": 20530040,
+        "afterInitBytes": 20774859,
+        "afterPopulateBytes": 51399530,
+        "endBytes": 61978125,
+        "perObjectBytes": 306.24671,
+        "growthPerFrameBytes": -1480.734219269103
+      },
+      "info": {
+        "version": "0.0.1",
+        "backend": "webgpu",
+        "worker": true,
+        "sharedMemory": true,
+        "drawCalls": 1,
+        "packetBytes": 88,
+        "frontCpuMs": 0.007499999366700649,
+        "skippedFrames": 0,
+        "frameId": 423,
+        "pick": {
+          "picks": 301,
+          "hitRate": 1,
+          "latencyAvgMs": 3.459676079727412,
+          "latencyP50Ms": 3.209999999962747,
+          "latencyP99Ms": 5.144999999552965,
+          "latencyMaxMs": 5.517500001005828,
+          "framesAvg": 1,
+          "framesP99": 1
+        }
+      },
+      "env": {
+        "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.0.0 Safari/537.36",
+        "devicePixelRatio": 1,
+        "crossOriginIsolated": true,
+        "hardwareConcurrency": 10,
+        "gpu": {
+          "vendor": "apple",
+          "architecture": "metal-3",
+          "device": "",
+          "description": ""
+        }
+      },
+      "destroyMs": 2.584999999962747,
+      "loadedJs": {
+        "files": 18,
+        "min": 296823,
+        "gzip": 101725
+      },
+      "logs": [
+        "log: [bench] cozygpu/worker/auto picking 100000 → ok 60.0 fps"
+      ],
+      "wallMs": 8199.5,
+      "reps": {
+        "n": 2,
+        "ok": 2,
+        "statuses": [
+          "ok",
+          "ok"
+        ],
+        "range": {
+          "avgMs": [
+            16.66240863787301,
+            16.66596345514975
+          ],
+          "p99Ms": [
+            18.46499999985099,
+            18.595000000670552
+          ],
+          "cpuAvgMs": [
+            0.0252491694401665,
+            0.025481727580691494
+          ]
+        }
+      },
+      "runs": [
+        {
+          "id": "picking/100000/cozygpu-worker-auto",
+          "scenarioKey": "a2",
+          "vsync": true,
+          "status": "ok",
+          "params": {
+            "lib": "cozygpu",
+            "renderer": "worker",
+            "variant": "auto",
+            "scenario": "picking",
+            "count": 100000,
+            "warmupSec": 2,
+            "durationSec": 5,
+            "width": 1280,
+            "height": 720,
+            "seed": 1337
+          },
+          "tool": "Sprite + renderer.pick()",
+          "init": {
+            "rendererMs": 40.03999999910593,
+            "populateMs": 16.580000000074506,
+            "firstFrameMs": 24.554999999701977,
+            "totalMs": 81.17499999888241
+          },
+          "frame": {
+            "frames": 301,
+            "elapsedMs": 5015.3849999997765,
+            "fps": 60.01533282091273,
+            "avgMs": 16.66240863787301,
+            "p50Ms": 16.665000000968575,
+            "p95Ms": 18.320000000298023,
+            "p99Ms": 18.595000000670552,
+            "maxMs": 18.674999998882413
+          },
+          "cpu": {
+            "avgMs": 0.025481727580691494,
+            "p50Ms": 0.02500000037252903,
+            "p99Ms": 0.044999999925494194,
+            "maxMs": 0.054999999701976776
+          },
+          "heap": {
+            "precise": true,
+            "baselineBytes": 20530040,
+            "afterInitBytes": 20774859,
+            "afterPopulateBytes": 51399560,
+            "endBytes": 61978155,
+            "perObjectBytes": 306.24701,
+            "growthPerFrameBytes": -1480.734219269103
+          },
+          "info": {
+            "version": "0.0.1",
+            "backend": "webgpu",
+            "worker": true,
+            "sharedMemory": true,
+            "drawCalls": 1,
+            "packetBytes": 88,
+            "frontCpuMs": 0.004999998956918716,
+            "skippedFrames": 0,
+            "frameId": 423,
+            "pick": {
+              "picks": 301,
+              "hitRate": 1,
+              "latencyAvgMs": 3.558338870483132,
+              "latencyP50Ms": 3.2650000005960464,
+              "latencyP99Ms": 5.16499999910593,
+              "latencyMaxMs": 5.64500000141561,
+              "framesAvg": 1,
+              "framesP99": 1
+            }
+          },
+          "env": {
+            "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.0.0 Safari/537.36",
+            "devicePixelRatio": 1,
+            "crossOriginIsolated": true,
+            "hardwareConcurrency": 10,
+            "gpu": {
+              "vendor": "apple",
+              "architecture": "metal-3",
+              "device": "",
+              "description": ""
+            }
+          },
+          "destroyMs": 2.519999999552965,
+          "loadedJs": {
+            "files": 18,
+            "min": 296823,
+            "gzip": 101725
+          },
+          "wallMs": 8185
+        },
+        {
+          "id": "picking/100000/cozygpu-worker-auto",
+          "scenarioKey": "a2",
+          "vsync": true,
+          "status": "ok",
+          "params": {
+            "lib": "cozygpu",
+            "renderer": "worker",
+            "variant": "auto",
+            "scenario": "picking",
+            "count": 100000,
+            "warmupSec": 2,
+            "durationSec": 5,
+            "width": 1280,
+            "height": 720,
+            "seed": 1337
+          },
+          "tool": "Sprite + renderer.pick()",
+          "init": {
+            "rendererMs": 30.490000000223517,
+            "populateMs": 16.41499999910593,
+            "firstFrameMs": 31.58999999985099,
+            "totalMs": 78.49499999918044
+          },
+          "frame": {
+            "frames": 301,
+            "elapsedMs": 5016.4550000000745,
+            "fps": 60.0025316682788,
+            "avgMs": 16.66596345514975,
+            "p50Ms": 16.665000000968575,
+            "p95Ms": 18.125,
+            "p99Ms": 18.46499999985099,
+            "maxMs": 18.570000000298023
+          },
+          "cpu": {
+            "avgMs": 0.0252491694401665,
+            "p50Ms": 0.02500000037252903,
+            "p99Ms": 0.044999999925494194,
+            "maxMs": 0.04999999888241291
+          },
+          "heap": {
+            "precise": true,
+            "baselineBytes": 20530040,
+            "afterInitBytes": 20774859,
+            "afterPopulateBytes": 51399500,
+            "endBytes": 61978095,
+            "perObjectBytes": 306.24641,
+            "growthPerFrameBytes": -1480.734219269103
+          },
+          "info": {
+            "version": "0.0.1",
+            "backend": "webgpu",
+            "worker": true,
+            "sharedMemory": true,
+            "drawCalls": 1,
+            "packetBytes": 88,
+            "frontCpuMs": 0.009999999776482582,
+            "skippedFrames": 0,
+            "frameId": 423,
+            "pick": {
+              "picks": 301,
+              "hitRate": 1,
+              "latencyAvgMs": 3.3610132889716926,
+              "latencyP50Ms": 3.1549999993294477,
+              "latencyP99Ms": 5.125,
+              "latencyMaxMs": 5.3900000005960464,
+              "framesAvg": 1,
+              "framesP99": 1
+            }
+          },
+          "env": {
+            "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.0.0 Safari/537.36",
+            "devicePixelRatio": 1,
+            "crossOriginIsolated": true,
+            "hardwareConcurrency": 10,
+            "gpu": {
+              "vendor": "apple",
+              "architecture": "metal-3",
+              "device": "",
+              "description": ""
+            }
+          },
+          "destroyMs": 2.650000000372529,
+          "loadedJs": {
+            "files": 18,
+            "min": 296823,
+            "gzip": 101725
+          },
+          "wallMs": 8214
+        }
+      ]
+    },
+    {
+      "id": "picking-uncapped/100000/cozygpu-webgpu-auto",
+      "scenarioKey": "a2u",
+      "vsync": false,
+      "status": "ok",
+      "params": {
+        "lib": "cozygpu",
+        "renderer": "webgpu",
+        "variant": "auto",
+        "scenario": "picking",
+        "count": 100000,
+        "warmupSec": 2,
+        "durationSec": 5,
+        "width": 1280,
+        "height": 720,
+        "seed": 1337
+      },
+      "tool": "Sprite + renderer.pick()",
+      "init": {
+        "rendererMs": 16.122499999590218,
+        "populateMs": 18.18500000052154,
+        "firstFrameMs": 18.12250000052154,
+        "totalMs": 52.4300000006333
+      },
+      "frame": {
+        "frames": 1322.5,
+        "elapsedMs": 5003.0625,
+        "fps": 264.3381047995092,
+        "avgMs": 3.7830477129788447,
+        "p50Ms": 0.17499999981373549,
+        "p95Ms": 18.730000000447035,
+        "p99Ms": 18.75,
+        "maxMs": 19.09499999973923
+      },
+      "cpu": {
+        "avgMs": 0.03067558603360184,
+        "p50Ms": 0.015000000596046448,
+        "p99Ms": 0.11000000033527613,
+        "maxMs": 0.24250000063329935
+      },
+      "heap": {
+        "precise": true,
+        "baselineBytes": 20531017,
+        "afterInitBytes": 20928976,
+        "afterPopulateBytes": 56915157,
+        "endBytes": 68587186,
+        "perObjectBytes": 359.86181,
+        "growthPerFrameBytes": 2240.85797455689
+      },
+      "info": {
+        "version": "0.0.1",
+        "backend": "webgpu",
+        "worker": false,
+        "sharedMemory": true,
+        "drawCalls": 1,
+        "packetBytes": 88,
+        "frontCpuMs": 0.004999998956918716,
+        "skippedFrames": 368,
+        "frameId": 1598,
+        "pick": {
+          "picks": 264.5,
+          "hitRate": 1,
+          "latencyAvgMs": 4.182826043394133,
+          "latencyP50Ms": 3.9075000006705523,
+          "latencyP99Ms": 6.559999999590218,
+          "latencyMaxMs": 7.757499999366701,
+          "framesAvg": 5,
+          "framesP99": 5
+        }
+      },
+      "env": {
+        "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.0.0 Safari/537.36",
+        "devicePixelRatio": 1,
+        "crossOriginIsolated": true,
+        "hardwareConcurrency": 10,
+        "gpu": {
+          "vendor": "apple",
+          "architecture": "metal-3",
+          "device": "",
+          "description": ""
+        }
+      },
+      "destroyMs": 2.8250000001862645,
+      "loadedJs": {
+        "files": 21,
+        "min": 182195,
+        "gzip": 66137
+      },
+      "logs": [
+        "log: [bench] cozygpu/webgpu/auto picking 100000 → ok 264.8 fps"
+      ],
+      "wallMs": 8320,
+      "reps": {
+        "n": 2,
+        "ok": 2,
+        "statuses": [
+          "ok",
+          "ok"
+        ],
+        "range": {
+          "avgMs": [
+            3.7758075471700363,
+            3.790287878787653
+          ],
+          "p99Ms": [
+            18.75,
+            18.75
+          ],
+          "cpuAvgMs": [
+            0.030290566017886378,
+            0.0310606060493173
+          ]
+        }
+      },
+      "runs": [
+        {
+          "id": "picking-uncapped/100000/cozygpu-webgpu-auto",
+          "scenarioKey": "a2u",
+          "vsync": false,
+          "status": "ok",
+          "params": {
+            "lib": "cozygpu",
+            "renderer": "webgpu",
+            "variant": "auto",
+            "scenario": "picking",
+            "count": 100000,
+            "warmupSec": 2,
+            "durationSec": 5,
+            "width": 1280,
+            "height": 720,
+            "seed": 1337
+          },
+          "tool": "Sprite + renderer.pick()",
+          "init": {
+            "rendererMs": 15.134999999776483,
+            "populateMs": 17.71000000089407,
+            "firstFrameMs": 18.34999999962747,
+            "totalMs": 51.19500000029802
+          },
+          "frame": {
+            "frames": 1325,
+            "elapsedMs": 5002.945000000298,
+            "fps": 264.84400687993195,
+            "avgMs": 3.7758075471700363,
+            "p50Ms": 0.1699999999254942,
+            "p95Ms": 18.730000000447035,
+            "p99Ms": 18.75,
+            "maxMs": 19.109999999403954
+          },
+          "cpu": {
+            "avgMs": 0.030290566017886378,
+            "p50Ms": 0.015000000596046448,
+            "p99Ms": 0.1100000012665987,
+            "maxMs": 0.3399999998509884
+          },
+          "heap": {
+            "precise": true,
+            "baselineBytes": 20531017,
+            "afterInitBytes": 20928976,
+            "afterPopulateBytes": 56912567,
+            "endBytes": 67146714,
+            "perObjectBytes": 359.83591,
+            "growthPerFrameBytes": 4813.789433962264
+          },
+          "info": {
+            "version": "0.0.1",
+            "backend": "webgpu",
+            "worker": false,
+            "sharedMemory": true,
+            "drawCalls": 1,
+            "packetBytes": 88,
+            "frontCpuMs": 0.004999998956918716,
+            "skippedFrames": 367,
+            "frameId": 1659,
+            "pick": {
+              "picks": 265,
+              "hitRate": 1,
+              "latencyAvgMs": 4.11784905660546,
+              "latencyP50Ms": 3.8650000002235174,
+              "latencyP99Ms": 6.230000000447035,
+              "latencyMaxMs": 7.269999999552965,
+              "framesAvg": 5,
+              "framesP99": 5
+            }
+          },
+          "env": {
+            "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.0.0 Safari/537.36",
+            "devicePixelRatio": 1,
+            "crossOriginIsolated": true,
+            "hardwareConcurrency": 10,
+            "gpu": {
+              "vendor": "apple",
+              "architecture": "metal-3",
+              "device": "",
+              "description": ""
+            }
+          },
+          "destroyMs": 2.880000000819564,
+          "loadedJs": {
+            "files": 21,
+            "min": 182195,
+            "gzip": 66137
+          },
+          "wallMs": 8167
+        },
+        {
+          "id": "picking-uncapped/100000/cozygpu-webgpu-auto",
+          "scenarioKey": "a2u",
+          "vsync": false,
+          "status": "ok",
+          "params": {
+            "lib": "cozygpu",
+            "renderer": "webgpu",
+            "variant": "auto",
+            "scenario": "picking",
+            "count": 100000,
+            "warmupSec": 2,
+            "durationSec": 5,
+            "width": 1280,
+            "height": 720,
+            "seed": 1337
+          },
+          "tool": "Sprite + renderer.pick()",
+          "init": {
+            "rendererMs": 17.109999999403954,
+            "populateMs": 18.66000000014901,
+            "firstFrameMs": 17.89500000141561,
+            "totalMs": 53.665000000968575
+          },
+          "frame": {
+            "frames": 1320,
+            "elapsedMs": 5003.179999999702,
+            "fps": 263.8322027190864,
+            "avgMs": 3.790287878787653,
+            "p50Ms": 0.17999999970197678,
+            "p95Ms": 18.730000000447035,
+            "p99Ms": 18.75,
+            "maxMs": 19.080000000074506
+          },
+          "cpu": {
+            "avgMs": 0.0310606060493173,
+            "p50Ms": 0.015000000596046448,
+            "p99Ms": 0.10999999940395355,
+            "maxMs": 0.1450000014156103
+          },
+          "heap": {
+            "precise": true,
+            "baselineBytes": 20531017,
+            "afterInitBytes": 20928976,
+            "afterPopulateBytes": 56917747,
+            "endBytes": 70027658,
+            "perObjectBytes": 359.88771,
+            "growthPerFrameBytes": -332.07348484848484
+          },
+          "info": {
+            "version": "0.0.1",
+            "backend": "webgpu",
+            "worker": false,
+            "sharedMemory": true,
+            "drawCalls": 1,
+            "packetBytes": 88,
+            "frontCpuMs": 0.004999998956918716,
+            "skippedFrames": 369,
+            "frameId": 1537,
+            "pick": {
+              "picks": 264,
+              "hitRate": 1,
+              "latencyAvgMs": 4.247803030182805,
+              "latencyP50Ms": 3.950000001117587,
+              "latencyP99Ms": 6.889999998733401,
+              "latencyMaxMs": 8.244999999180436,
+              "framesAvg": 5,
+              "framesP99": 5
+            }
+          },
+          "env": {
+            "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.0.0 Safari/537.36",
+            "devicePixelRatio": 1,
+            "crossOriginIsolated": true,
+            "hardwareConcurrency": 10,
+            "gpu": {
+              "vendor": "apple",
+              "architecture": "metal-3",
+              "device": "",
+              "description": ""
+            }
+          },
+          "destroyMs": 2.769999999552965,
+          "loadedJs": {
+            "files": 21,
+            "min": 182195,
+            "gzip": 66137
+          },
+          "wallMs": 8473
+        }
+      ]
+    },
+    {
+      "id": "picking-uncapped/100000/cozygpu-webgl2-auto",
+      "scenarioKey": "a2u",
+      "vsync": false,
+      "status": "ok",
+      "params": {
+        "lib": "cozygpu",
+        "renderer": "webgl2",
+        "variant": "auto",
+        "scenario": "picking",
+        "count": 100000,
+        "warmupSec": 2,
+        "durationSec": 5,
+        "width": 1280,
+        "height": 720,
+        "seed": 1337
+      },
+      "tool": "Sprite + renderer.pick()",
+      "init": {
+        "rendererMs": 68.7949999999255,
+        "populateMs": 18.27749999985099,
+        "firstFrameMs": 17.387500000186265,
+        "totalMs": 104.45999999996275
+      },
+      "frame": {
+        "frames": 1220,
+        "elapsedMs": 5014.174999999814,
+        "fps": 243.3200644517696,
+        "avgMs": 4.143832486621754,
+        "p50Ms": 0.18500000052154064,
+        "p95Ms": 18.72499999962747,
+        "p99Ms": 18.740000000223517,
+        "maxMs": 18.779999999329448
+      },
+      "cpu": {
+        "avgMs": 0.03417972296378961,
+        "p50Ms": 0.009999999776482582,
+        "p99Ms": 0.16250000055879354,
+        "maxMs": 0.3799999998882413
+      },
+      "heap": {
+        "precise": true,
+        "baselineBytes": 20530528.5,
+        "afterInitBytes": 21045328.5,
+        "afterPopulateBytes": 57025648,
+        "endBytes": 71875367,
+        "perObjectBytes": 359.80319499999996,
+        "growthPerFrameBytes": 7802.972661383188
+      },
+      "info": {
+        "version": "0.0.1",
+        "backend": "webgl2",
+        "worker": false,
+        "sharedMemory": true,
+        "drawCalls": 1,
+        "packetBytes": 88,
+        "frontCpuMs": 0.004999999888241291,
+        "skippedFrames": 372,
+        "frameId": 2671,
+        "pick": {
+          "picks": 238.5,
+          "hitRate": 1,
+          "latencyAvgMs": 15.088092194344336,
+          "latencyP50Ms": 7.672500000335276,
+          "latencyP99Ms": 11.690000000409782,
+          "latencyMaxMs": 1546.3175000008196,
+          "framesAvg": 10.85781990521327,
+          "framesP99": 5
+        }
+      },
+      "env": {
+        "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.0.0 Safari/537.36",
+        "devicePixelRatio": 1,
+        "crossOriginIsolated": true,
+        "hardwareConcurrency": 10,
+        "gpu": {
+          "vendor": "apple",
+          "architecture": "metal-3",
+          "device": "",
+          "description": ""
+        }
+      },
+      "destroyMs": 3.0099999997764826,
+      "loadedJs": {
+        "files": 21,
+        "min": 187563,
+        "gzip": 68641
+      },
+      "logs": [
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback.",
+        "warn: performance warning: READ-usage buffer was written, then fenced, but written again before being read back. This discarded the shadow copy that was created to accelerate readback."
+      ],
+      "wallMs": 8193.5,
+      "reps": {
+        "n": 2,
+        "ok": 2,
+        "statuses": [
+          "ok",
+          "ok"
+        ],
+        "range": {
+          "avgMs": [
+            3.76837218045152,
+            4.519292792791988
+          ],
+          "p99Ms": [
+            18.740000000223517,
+            18.740000000223517
+          ],
+          "cpuAvgMs": [
+            0.03389097747105853,
+            0.03446846845652069
+          ]
+        }
+      },
+      "runs": [
+        {
+          "id": "picking-uncapped/100000/cozygpu-webgl2-auto",
+          "scenarioKey": "a2u",
+          "vsync": false,
+          "status": "ok",
+          "params": {
+            "lib": "cozygpu",
+            "renderer": "webgl2",
+            "variant": "auto",
+            "scenario": "picking",
+            "count": 100000,
+            "warmupSec": 2,
+            "durationSec": 5,
+            "width": 1280,
+            "height": 720,
+            "seed": 1337
+          },
+          "tool": "Sprite + renderer.pick()",
+          "init": {
+            "rendererMs": 38.294999999925494,
+            "populateMs": 18.130000000819564,
+            "firstFrameMs": 15.054999999701977,
+            "totalMs": 71.48000000044703
+          },
+          "frame": {
+            "frames": 1330,
+            "elapsedMs": 5011.9350000005215,
+            "fps": 265.3665699973886,
+            "avgMs": 3.76837218045152,
+            "p50Ms": 0.17500000074505806,
+            "p95Ms": 18.72499999962747,
+            "p99Ms": 18.740000000223517,
+            "maxMs": 18.779999999329448
+          },
+          "cpu": {
+            "avgMs": 0.03389097747105853,
+            "p50Ms": 0.009999999776482582,
+            "p99Ms": 0.1600000001490116,
+            "maxMs": 0.2850000001490116
+          },
+          "heap": {
+            "precise": true,
+            "baselineBytes": 20530040,
+            "afterInitBytes": 21044852,
+            "afterPopulateBytes": 57027658,
+            "endBytes": 78880567,
+            "perObjectBytes": 359.82806,
+            "growthPerFrameBytes": 9367.484962406015
+          },
+          "info": {
+            "version": "0.0.1",
+            "backend": "webgl2",
+            "worker": false,
+            "sharedMemory": true,
+            "drawCalls": 1,
+            "packetBytes": 88,
+            "frontCpuMs": 0.005000000819563866,
+            "skippedFrames": 372,
+            "frameId": 2186,
+            "pick": {
+              "picks": 266,
+              "hitRate": 1,
+              "latencyAvgMs": 7.787274436114874,
+              "latencyP50Ms": 7.655000001192093,
+              "latencyP99Ms": 11.679999999701977,
+              "latencyMaxMs": 12.700000001117587,
+              "framesAvg": 5,
+              "framesP99": 5
+            }
+          },
+          "env": {
+            "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.0.0 Safari/537.36",
+            "devicePixelRatio": 1,
+            "crossOriginIsolated": true,
+            "hardwareConcurrency": 10,
+            "gpu": {
+              "vendor": "apple",
+              "architecture": "metal-3",
+              "device": "",
+              "description": ""
+            }
+          },
+          "destroyMs": 3.0700000002980232,
+          "loadedJs": {
+            "files": 21,
+            "min": 187563,
+            "gzip": 68641
+          },
+          "wallMs": 7813
+        },
+        {
+          "id": "picking-uncapped/100000/cozygpu-webgl2-auto",
+          "scenarioKey": "a2u",
+          "vsync": false,
+          "status": "ok",
+          "params": {
+            "lib": "cozygpu",
+            "renderer": "webgl2",
+            "variant": "auto",
+            "scenario": "picking",
+            "count": 100000,
+            "warmupSec": 2,
+            "durationSec": 5,
+            "width": 1280,
+            "height": 720,
+            "seed": 1337
+          },
+          "tool": "Sprite + renderer.pick()",
+          "init": {
+            "rendererMs": 99.2949999999255,
+            "populateMs": 18.424999998882413,
+            "firstFrameMs": 19.720000000670552,
+            "totalMs": 137.43999999947846
+          },
+          "frame": {
+            "frames": 1110,
+            "elapsedMs": 5016.414999999106,
+            "fps": 221.27355890615067,
+            "avgMs": 4.519292792791988,
+            "p50Ms": 0.19500000029802322,
+            "p95Ms": 18.72499999962747,
+            "p99Ms": 18.740000000223517,
+            "maxMs": 18.779999999329448
+          },
+          "cpu": {
+            "avgMs": 0.03446846845652069,
+            "p50Ms": 0.009999999776482582,
+            "p99Ms": 0.16500000096857548,
+            "maxMs": 0.47499999962747097
+          },
+          "heap": {
+            "precise": true,
+            "baselineBytes": 20531017,
+            "afterInitBytes": 21045805,
+            "afterPopulateBytes": 57023638,
+            "endBytes": 64870167,
+            "perObjectBytes": 359.77833,
+            "growthPerFrameBytes": 6238.46036036036
+          },
+          "info": {
+            "version": "0.0.1",
+            "backend": "webgl2",
+            "worker": false,
+            "sharedMemory": true,
+            "drawCalls": 1,
+            "packetBytes": 88,
+            "frontCpuMs": 0.004999998956918716,
+            "skippedFrames": 372,
+            "frameId": 3156,
+            "pick": {
+              "picks": 211,
+              "hitRate": 1,
+              "latencyAvgMs": 22.388909952573798,
+              "latencyP50Ms": 7.689999999478459,
+              "latencyP99Ms": 11.700000001117587,
+              "latencyMaxMs": 3079.9350000005215,
+              "framesAvg": 16.71563981042654,
+              "framesP99": 5
+            }
+          },
+          "env": {
+            "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.0.0 Safari/537.36",
+            "devicePixelRatio": 1,
+            "crossOriginIsolated": true,
+            "hardwareConcurrency": 10,
+            "gpu": {
+              "vendor": "apple",
+              "architecture": "metal-3",
+              "device": "",
+              "description": ""
+            }
+          },
+          "destroyMs": 2.949999999254942,
+          "loadedJs": {
+            "files": 21,
+            "min": 187563,
+            "gzip": 68641
+          },
+          "wallMs": 8574
+        }
+      ]
+    },
+    {
+      "id": "picking-uncapped/100000/cozygpu-worker-auto",
+      "scenarioKey": "a2u",
+      "vsync": false,
+      "status": "ok",
+      "params": {
+        "lib": "cozygpu",
+        "renderer": "worker",
+        "variant": "auto",
+        "scenario": "picking",
+        "count": 100000,
+        "warmupSec": 2,
+        "durationSec": 5,
+        "width": 1280,
+        "height": 720,
+        "seed": 1337
+      },
+      "tool": "Sprite + renderer.pick()",
+      "init": {
+        "rendererMs": 65.6875,
+        "populateMs": 23.334999999962747,
+        "firstFrameMs": 13.387500000186265,
+        "totalMs": 102.41000000014901
+      },
+      "frame": {
+        "frames": 285,
+        "elapsedMs": 5008.8375000003725,
+        "fps": 56.899430681251246,
+        "avgMs": 17.57486842105394,
+        "p50Ms": 18.667500000447035,
+        "p95Ms": 18.71250000130385,
+        "p99Ms": 18.735000000335276,
+        "maxMs": 18.75249999947846
+      },
+      "cpu": {
+        "avgMs": 0.026859649130257596,
+        "p50Ms": 0.027499999850988388,
+        "p99Ms": 0.044999999925494194,
+        "maxMs": 0.05249999929219484
+      },
+      "heap": {
+        "precise": true,
+        "baselineBytes": 20531399,
+        "afterInitBytes": 20774867,
+        "afterPopulateBytes": 51400036,
+        "endBytes": 58263771,
+        "perObjectBytes": 306.25169,
+        "growthPerFrameBytes": -3098.452631578948
+      },
+      "info": {
+        "version": "0.0.1",
+        "backend": "webgpu",
+        "worker": true,
+        "sharedMemory": true,
+        "drawCalls": 1,
+        "packetBytes": 88,
+        "frontCpuMs": 0.007500000298023224,
+        "skippedFrames": 1,
+        "frameId": 400.5,
+        "pick": {
+          "picks": 275,
+          "hitRate": 1,
+          "latencyAvgMs": 3.717309090928598,
+          "latencyP50Ms": 3.4449999993667006,
+          "latencyP99Ms": 5.879999999888241,
+          "latencyMaxMs": 6.645000000484288,
+          "framesAvg": 1.0363636363636364,
+          "framesP99": 2
+        }
+      },
+      "env": {
+        "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.0.0 Safari/537.36",
+        "devicePixelRatio": 1,
+        "crossOriginIsolated": true,
+        "hardwareConcurrency": 10,
+        "gpu": {
+          "vendor": "apple",
+          "architecture": "metal-3",
+          "device": "",
+          "description": ""
+        }
+      },
+      "destroyMs": 2.684999999590218,
+      "loadedJs": {
+        "files": 18,
+        "min": 296823,
+        "gzip": 101725
+      },
+      "logs": [
+        "log: [bench] cozygpu/worker/auto picking 100000 → ok 56.9 fps"
+      ],
+      "wallMs": 8574.5,
+      "reps": {
+        "n": 2,
+        "ok": 2,
+        "statuses": [
+          "ok",
+          "ok"
+        ],
+        "range": {
+          "avgMs": [
+            17.573350877197164,
+            17.576385964910713
+          ],
+          "p99Ms": [
+            18.730000000447035,
+            18.740000000223517
+          ],
+          "cpuAvgMs": [
+            0.025491228019982052,
+            0.028228070240533143
+          ]
+        }
+      },
+      "runs": [
+        {
+          "id": "picking-uncapped/100000/cozygpu-worker-auto",
+          "scenarioKey": "a2u",
+          "vsync": false,
+          "status": "ok",
+          "params": {
+            "lib": "cozygpu",
+            "renderer": "worker",
+            "variant": "auto",
+            "scenario": "picking",
+            "count": 100000,
+            "warmupSec": 2,
+            "durationSec": 5,
+            "width": 1280,
+            "height": 720,
+            "seed": 1337
+          },
+          "tool": "Sprite + renderer.pick()",
+          "init": {
+            "rendererMs": 90.88499999977648,
+            "populateMs": 28.695000000298023,
+            "firstFrameMs": 12.705000000074506,
+            "totalMs": 132.285000000149
+          },
+          "frame": {
+            "frames": 285,
+            "elapsedMs": 5008.405000001192,
+            "fps": 56.90434379806189,
+            "avgMs": 17.573350877197164,
+            "p50Ms": 18.654999999329448,
+            "p95Ms": 18.715000001713634,
+            "p99Ms": 18.740000000223517,
+            "maxMs": 18.75499999895692
+          },
+          "cpu": {
+            "avgMs": 0.025491228019982052,
+            "p50Ms": 0.02500000037252903,
+            "p99Ms": 0.044999999925494194,
+            "maxMs": 0.044999999925494194
+          },
+          "heap": {
+            "precise": true,
+            "baselineBytes": 20531781,
+            "afterInitBytes": 20774867,
+            "afterPopulateBytes": 51400588,
+            "endBytes": 61953883,
+            "perObjectBytes": 306.25721,
+            "growthPerFrameBytes": 12317.764912280702
+          },
+          "info": {
+            "version": "0.0.1",
+            "backend": "webgpu",
+            "worker": true,
+            "sharedMemory": true,
+            "drawCalls": 1,
+            "packetBytes": 88,
+            "frontCpuMs": 0.005000000819563866,
+            "skippedFrames": 1,
+            "frameId": 400,
+            "pick": {
+              "picks": 275,
+              "hitRate": 1,
+              "latencyAvgMs": 3.703000000004064,
+              "latencyP50Ms": 3.455000000074506,
+              "latencyP99Ms": 5.259999999776483,
+              "latencyMaxMs": 5.5150000005960464,
+              "framesAvg": 1.0363636363636364,
+              "framesP99": 2
+            }
+          },
+          "env": {
+            "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.0.0 Safari/537.36",
+            "devicePixelRatio": 1,
+            "crossOriginIsolated": true,
+            "hardwareConcurrency": 10,
+            "gpu": {
+              "vendor": "apple",
+              "architecture": "metal-3",
+              "device": "",
+              "description": ""
+            }
+          },
+          "destroyMs": 2.6649999991059303,
+          "loadedJs": {
+            "files": 18,
+            "min": 296823,
+            "gzip": 101725
+          },
+          "wallMs": 9039
+        },
+        {
+          "id": "picking-uncapped/100000/cozygpu-worker-auto",
+          "scenarioKey": "a2u",
+          "vsync": false,
+          "status": "ok",
+          "params": {
+            "lib": "cozygpu",
+            "renderer": "worker",
+            "variant": "auto",
+            "scenario": "picking",
+            "count": 100000,
+            "warmupSec": 2,
+            "durationSec": 5,
+            "width": 1280,
+            "height": 720,
+            "seed": 1337
+          },
+          "tool": "Sprite + renderer.pick()",
+          "init": {
+            "rendererMs": 40.49000000022352,
+            "populateMs": 17.97499999962747,
+            "firstFrameMs": 14.070000000298023,
+            "totalMs": 72.53500000014901
+          },
+          "frame": {
+            "frames": 285,
+            "elapsedMs": 5009.269999999553,
+            "fps": 56.89451756444061,
+            "avgMs": 17.576385964910713,
+            "p50Ms": 18.680000001564622,
+            "p95Ms": 18.71000000089407,
+            "p99Ms": 18.730000000447035,
+            "maxMs": 18.75
+          },
+          "cpu": {
+            "avgMs": 0.028228070240533143,
+            "p50Ms": 0.029999999329447746,
+            "p99Ms": 0.044999999925494194,
+            "maxMs": 0.05999999865889549
+          },
+          "heap": {
+            "precise": true,
+            "baselineBytes": 20531017,
+            "afterInitBytes": 20774867,
+            "afterPopulateBytes": 51399484,
+            "endBytes": 54573659,
+            "perObjectBytes": 306.24617,
+            "growthPerFrameBytes": -18514.670175438598
+          },
+          "info": {
+            "version": "0.0.1",
+            "backend": "webgpu",
+            "worker": true,
+            "sharedMemory": true,
+            "drawCalls": 1,
+            "packetBytes": 88,
+            "frontCpuMs": 0.009999999776482582,
+            "skippedFrames": 1,
+            "frameId": 401,
+            "pick": {
+              "picks": 275,
+              "hitRate": 1,
+              "latencyAvgMs": 3.7316181818531318,
+              "latencyP50Ms": 3.4349999986588955,
+              "latencyP99Ms": 6.5,
+              "latencyMaxMs": 7.775000000372529,
+              "framesAvg": 1.0363636363636364,
+              "framesP99": 2
+            }
+          },
+          "env": {
+            "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.0.0 Safari/537.36",
+            "devicePixelRatio": 1,
+            "crossOriginIsolated": true,
+            "hardwareConcurrency": 10,
+            "gpu": {
+              "vendor": "apple",
+              "architecture": "metal-3",
+              "device": "",
+              "description": ""
+            }
+          },
+          "destroyMs": 2.705000000074506,
+          "loadedJs": {
+            "files": 18,
+            "min": 296823,
+            "gzip": 101725
+          },
+          "wallMs": 8110
+        }
+      ]
+    }
+  ],
+  "analysis": {
+    "baseline": "m1-final",
+    "winners": [
+      {
+        "key": "picking/100000",
+        "metric": "pick latency ms",
+        "winner": "picking/100000/cozygpu-worker-auto",
+        "winnerTool": "Sprite + renderer.pick()",
+        "winnerAvg": 3.459676079727412,
+        "cozygpu": {
+          "id": "picking/100000/cozygpu-worker-auto",
+          "avg": 3.459676079727412,
+          "p99": 5.144999999552965
+        },
+        "competitor": null,
+        "avgVsCompetitorPct": null,
+        "p99VsCompetitorPct": null,
+        "byBackend": {
+          "webgpu": {
+            "id": "picking/100000/cozygpu-webgpu-auto",
+            "avg": 3.968654485054289,
+            "p99": 5.635000000707805,
+            "vsCompetitorPct": null
+          },
+          "webgl2": {
+            "id": "picking/100000/cozygpu-webgl2-auto",
+            "avg": 4.841866666687031,
+            "p99": 7.21750000026077,
+            "vsCompetitorPct": null
+          },
+          "worker": {
+            "id": "picking/100000/cozygpu-worker-auto",
+            "avg": 3.459676079727412,
+            "p99": 5.144999999552965,
+            "vsCompetitorPct": null
+          }
+        }
+      },
+      {
+        "key": "picking-uncapped/100000",
+        "metric": "pick latency ms",
+        "winner": "picking-uncapped/100000/cozygpu-worker-auto",
+        "winnerTool": "Sprite + renderer.pick()",
+        "winnerAvg": 3.717309090928598,
+        "cozygpu": {
+          "id": "picking-uncapped/100000/cozygpu-worker-auto",
+          "avg": 3.717309090928598,
+          "p99": 5.879999999888241
+        },
+        "competitor": null,
+        "avgVsCompetitorPct": null,
+        "p99VsCompetitorPct": null,
+        "byBackend": {
+          "webgpu": {
+            "id": "picking-uncapped/100000/cozygpu-webgpu-auto",
+            "avg": 4.182826043394133,
+            "p99": 6.559999999590218,
+            "vsCompetitorPct": null
+          },
+          "webgl2": {
+            "id": "picking-uncapped/100000/cozygpu-webgl2-auto",
+            "avg": 15.088092194344336,
+            "p99": 11.690000000409782,
+            "vsCompetitorPct": null
+          },
+          "worker": {
+            "id": "picking-uncapped/100000/cozygpu-worker-auto",
+            "avg": 3.717309090928598,
+            "p99": 5.879999999888241,
+            "vsCompetitorPct": null
+          }
+        }
+      }
+    ],
+    "sinceBaseline": []
+  }
+}

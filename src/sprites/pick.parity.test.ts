@@ -51,18 +51,16 @@ describe('sprite pick shaders agree across backends', () => {
 });
 
 describe('swarm pick shader', () => {
-  it('writes (pickId, slot + 1) so sprites and swarms stay distinguishable', () => {
+  it('writes (pickId, slot + 1, …) so sprites and swarms stay distinguishable', () => {
     expect(swarmPickWGSL).toMatch(
-      /return vec2u\(swarmPick\.id, in\.slot \+ 1u\);/,
+      /return vec4u\(swarmPick\.id, in\.slot \+ 1u, /,
     );
     installGlslComposer();
     const glsl = composeSwarmShaders([behaviors.velocity()], 0, 'glsl300es');
     const pick = glsl.render.slice(
       glsl.render.indexOf('//@STAGE pickFragment'),
     );
-    expect(pick).toMatch(
-      /outPick = uvec4\(swarmPick\.id, v_slot \+ 1u, 0u, 0u\);/,
-    );
+    expect(pick).toMatch(/outPick = uvec4\(swarmPick\.id, v_slot \+ 1u, /);
     // A swarm only gets a pick pipeline when its pick id is non-zero, so the
     // shader needs no id == 0 guard (unlike the sprite one).
     expect(pick).toMatch(/discard/);

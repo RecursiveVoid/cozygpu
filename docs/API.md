@@ -4,9 +4,9 @@
 import * as GPU from 'cozygpu';
 ```
 
-This covers the **M1** surface (implemented) and the **M2** surface
-(contracts frozen, being built; marked **M2**). Everything exported in
-`src/index.ts` is listed here. The sketches under
+This covers the **M1** and **M2** surface (implemented; M2 items are
+marked **M2**) and the **M2.5** integration hooks (implemented; marked **M2.5**, see [Integration hooks](#integration-hooks-m25)).
+Everything exported in `src/index.ts` is listed here. The sketches under
 [Later](#later-milestones-sketches) are M3 and may change.
 
 Everything is in stage pixels (CSS pixels, origin top-left, y down),
@@ -34,6 +34,7 @@ const renderer = await GPU.createRenderer({
   onDeviceLost: ({ willRestore }) => console.warn('GPU lost', willRestore),
   onDeviceRestored: () => console.info('GPU restored'),
   assets: { gpuBudgetMB: 256 }, // M2: options for renderer.assets
+  events: bus, // M2.5: any { emit(name, payload) } — rare lifecycle events only
 });
 
 renderer.stage; // root Container
@@ -44,8 +45,9 @@ renderer.height;
 renderer.resolution;
 renderer.info; // { backend, fallbackReason?, worker, sharedMemory, capabilities }
 renderer.stats; // { frameId, drawCalls, packetBytes, cpuMs, skippedFrames }
-const hit = await renderer.pick(e.offsetX, e.offsetY); // M2: { node, instance, x, y } | null
+const hit = await renderer.pick(e.offsetX, e.offsetY); // M2: { node, instance, userId, x, y } | null
 renderer.assets; // M2: asset manager (see Assets)
+const interop = await renderer.interop(); // M2.5, main thread only: native device + external buffers
 renderer.destroy();
 ```
 
@@ -179,12 +181,17 @@ if (bulk.version !== world.childrenVersion) {
 Fields: `POSITION` (x, y), `ROTATION`, `SCALE` (sx, sy), `ALPHA`, `TINT`
 (sprites). `commit(fields, first?, count?)` updates only that range.
 
+When the data already lives in your own typed arrays (an ECS, a
+simulation), bind them instead of copying into the writer: see
+[External columns](#external-columns-m25).
+
 ### Picking (M2)
 
 ```ts
 canvas.addEventListener('pointerdown', async e => {
   const hit = await renderer.pick(e.offsetX, e.offsetY);
   if (hit) console.log(hit.node.label, hit.instance); // instance: Swarm slot, -1 for sprites
+  if (hit) selectEntity(hit.userId); // M2.5: your id (node.userId, or the Swarm instance's `user`)
 });
 hero.pickable = false; // Sprites are pickable by default
 swarm.pickable = true; // Swarms are not (opt in)
@@ -370,7 +377,8 @@ const units = new GPU.Swarm({
   allocation: 'manual',
   behaviors: [GPU.behaviors.velocity()],
 });
-const first = units.spawn(100, { x: [0, 500], y: [0, 500] }); // -1 when full
+const first = units.spawn(100, { x: [0, 500], y: [0, 500], user: 42 }); // -1 when full
+// M2.5: `user` is the instance user id; pick() returns it as hit.userId
 units.kill(first, 100); // frees the slots
 
 // Debug readback (async, never per frame)
@@ -468,6 +476,150 @@ assets.stats; // { entries, referenced, inFlight, queued, gpuBytes, gpuBudgetByt
   (signal), `UNSUPPORTED` (format not supported by this GPU and no
   transcoder).
 
+## Integration hooks (M2.5)
+
+cozygpu is a graphics library, not an engine. It has no ECS and no event
+bus, but it gives any of them (cozyECS, cozyEvent, your own) a few small,
+library-neutral hooks. Each one is **registered once and committed per
+frame**, allocates nothing per frame, and uses no WebGPU or WebGL types.
+A full walk-through is the recipe `docs/recipes/ecs.md`.
+
+### External columns (M2.5)
+
+Bind your own typed arrays to a container's children; row i drives child i.
+
+```ts
+const layer = new GPU.Container();
+renderer.stage.addChild(layer);
+for (let i = 0; i < n; i++) layer.addChild(new GPU.Sprite({ texture: coin }));
+
+const px = new Float32Array(cap);
+const py = new Float32Array(cap);
+const entity = new Uint32Array(cap);
+const binding = layer.bindColumns({ x: px, y: py, userId: entity });
+
+ticker.add(() => {
+  // …your systems write px / py…
+  binding.commit(n); // one tight copy, one dirty range, one upload
+});
+
+// Your storage grew and the arrays were replaced: bind again.
+binding.rebind({ x: px2, y: py2, userId: entity2 });
+```
+
+- Columns: `x`, `y` (required), `rotation`, `scaleX`, `scaleY`, `alpha`
+  (`Float32Array`), `tint`, `frame`, `userId` (`Uint32Array`). Units match
+  the setters.
+- Interleaved storage: pass `{ array, offset, stride }`, e.g.
+  `{ x: { array: xy, offset: 0, stride: 2 }, y: { array: xy, offset: 1, stride: 2 } }`,
+  or set `options.stride` for every plain array. `options.stride` applies
+  to every column given as a plain typed array, so a mixed bind (interleaved
+  `xy` plus a dense `tint`) passes the dense one as `{ array, stride: 1 }`.
+- Growing, shrinking or reordering the children needs no rebind: `commit`
+  follows the children list (rows map to children by index).
+- `frame` picks `options.frames[k]` per child (frames of one atlas keep
+  batching).
+- `commit(count, first?, fields?)` behaves exactly like
+  `bulkChildren().commit`: same dirty bits, same fast path for
+  position-only updates. `fields` takes `GPU.BulkField` bits (`FRAME` and
+  `USER_ID` are new in M2.5).
+- `commit` throws `INVALID_ARGUMENT` when `first + count` exceeds the child
+  count or a column is too short. `unbind()` drops the references.
+
+### User ids (M2.5)
+
+```ts
+const hero = new GPU.Sprite({ texture, userId: 1234 }); // any u32; default 0
+hero.userId = 1235; // no redraw
+swarm.spawn(100, { x: [0, 800], y: 0, user: 7 }); // Swarm instances: cold.user
+const hit = await renderer.pick(x, y);
+hit?.userId; // 1235 for the sprite, 7 for a Swarm instance
+```
+
+`userId` never changes what is drawn. For a Swarm hit, `hit.userId` is the
+instance's `user` value (it travels in the pick texel); the Swarm node's own
+id is `hit.node.userId`. For a sprite, `hit.userId` is read from
+`node.userId` when the answer arrives: if your code moved another entity
+into that sprite while the pick was in flight (swap-remove), the hit reports
+the entity that is there now. Add a generation to recycled ids if that
+matters.
+
+### Events (M2.5)
+
+```ts
+const bus = {
+  emit(name: string, payload: unknown) {
+    console.log(name, payload); // or forward to your own event library
+  },
+};
+const renderer = await GPU.createRenderer({ canvas, events: bus });
+
+// Typed: GPU.Events maps each name to its payload.
+function onLost(p: GPU.Events['deviceLost']) {
+  if (!p.willRestore) showFatal(p.message);
+}
+```
+
+| event            | payload                                              | when                                         |
+| ---------------- | ---------------------------------------------------- | -------------------------------------------- |
+| `fallback`       | `{ from: 'webgpu', to: 'webgl2', reason }`           | `backend: 'auto'` fell back (before `ready`) |
+| `ready`          | `{ backend, worker, sharedMemory, fallbackReason? }` | once, before `createRenderer()` resolves     |
+| `deviceLost`     | `{ backend, message, willRestore }`                  | GPU device or WebGL context lost             |
+| `deviceRestored` | `{ backend, generation }`                            | after a successful restore                   |
+| `resize`         | `{ width, height, resolution }`                      | the css size or resolution changed           |
+| `assetProgress`  | `{ key, bundle, loaded, total, ratio }`              | an asset (or bundle entry) finished loading  |
+| `assetError`     | `{ key, url, code, message }`                        | an asset load failed                         |
+| `error`          | `{ code, message }`                                  | a non-fatal renderer error (also logged)     |
+
+Nothing is emitted per frame (use `renderer.stats`). `onDeviceLost` and
+`onDeviceRestored` keep working; the events fire right after them. A sink
+that throws is caught and logged once.
+
+### Device interop (M2.5, main thread only)
+
+Share the renderer's GPU device with your own GPU code, and draw a Swarm
+straight from a buffer your compute pass fills: no copy, no readback.
+
+```ts
+const interop = await renderer.interop(); // rejects UNSUPPORTED with worker: true
+if (interop.backend === 'webgpu') {
+  const device = interop.device as GPUDevice;
+  const hot = device.createBuffer({
+    size: n * GPU.layouts.SWARM_HOT_BYTES,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
+  });
+  const source = interop.registerInstanceBuffer(hot, {
+    layout: 'swarm-hot',
+    capacity: n,
+  });
+  swarm.setSource({ hot: source, count: n }); // draw only: your compute moves them
+  ticker.add(() => {
+    runMyCompute(device, hot); // submit on device.queue before render()
+    swarm.setSourceCount(n);
+  });
+}
+```
+
+- Records follow `GPU.layouts` (`'swarm-hot'`: 40 B, `'swarm-cold'`:
+  16 B). `setSource({ hot, cold?, count, simulate? })`; `simulate: true`
+  also runs the Swarm's behaviors on your buffer (WebGPU only).
+  `setSource(null)` goes back to the Swarm's own buffers.
+- While a source is set, `spawn`, `kill`, `write` and `clear` throw
+  `INVALID_ARGUMENT`: your code owns the data.
+- WebGL2: `interop.device` is the `WebGL2RenderingContext` (call
+  `interop.invalidateState()` after your own GL calls), but Swarm external
+  sources are WebGPU-only in M2.5: `setSource` throws `UNSUPPORTED` on
+  WebGL2 (a draw-only path is planned).
+- A source switch never lands after a dispatch in the same frame: spawns
+  and writes queued before `setSource()` go to the Swarm's own buffers, and
+  the switch takes effect the next frame. `activeCount` keeps counting the
+  Swarm's own buffers.
+- `readHot`, `readCold` and `aliveCount()` read the external buffers; they
+  reject with `UNSUPPORTED` when a buffer lacks COPY_SRC or was released or
+  lost.
+- After `deviceRestored`, read `interop.device` again, recreate your
+  buffers, register them and call `setSource` again.
+
 ## Worker mode
 
 Same API, with rendering on a worker thread through OffscreenCanvas.
@@ -498,6 +650,8 @@ Notes:
   transferred to the worker, so there is nothing extra to configure.
 - `worker: true` loads the worker transport on demand, so programs that
   don't use it don't ship it.
+- M2.5: columns, user ids and events work the same in worker mode;
+  `renderer.interop()` does not (the device lives in the worker).
 
 ## Utilities
 

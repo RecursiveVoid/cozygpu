@@ -1,16 +1,21 @@
 /**
- * ChildBulk — owner: "sprites". The dense writer behind
- * `Container.bulkChildren()` (ARCHITECTURE §16.1).
+ * ChildBulk and ColumnBindingImpl. The dense writer
+ * behind `Container.bulkChildren()` (ARCHITECTURE §16.1) and the external
+ * column binding behind `Container.bindColumns()` (§19.1).
  *
- * Holds a snapshot of the children's NodeStore slots (refreshed when the
- * container's `childrenVersion` changes) and one growable typed array per
- * field. `commit` copies a field into the store in one tight loop per field,
- * ORs the dirty bits and bumps `touch` once. A POSITION-only commit sets only
- * `Dirty.POSITION`, so the packer takes its translation fast path over the
- * whole run of children.
+ * Both share ONE copy path, `Rows._copy`: every column is a strided source
+ * (array, offset, stride), row i at `offset + i × stride`. The bulk writer's
+ * own arrays are the dense case (position: x at offset 0 and y at offset 1,
+ * stride 2); caller columns are whatever they bound. `_copy` writes the node
+ * store in one tight loop per column, ORs the dirty bits and bumps `touch`
+ * once. A POSITION-only commit sets only `Dirty.POSITION`, so the packer
+ * takes its translation fast path over the whole run of children.
  *
- * Arrays are sized for every field requested so far (a field requested once
- * stays sized), so alternating `bulkChildren(POSITION)` and
+ * The children snapshot (store slot per child, sprite flag) is refreshed when
+ * the container's `childrenVersion` changes.
+ *
+ * Bulk arrays are sized for every field requested so far (a field requested
+ * once stays sized), so alternating `bulkChildren(POSITION)` and
  * `bulkChildren(ROTATION)` never reallocates. Fields never requested are
  * zero-length.
  */
@@ -28,318 +33,429 @@ import {
   nodeStore,
 } from './store';
 import { BulkField } from './types';
-import type { BulkChildren, SceneNode, SpriteNode } from './types';
+import type {
+  BindColumnsOptions,
+  BulkChildren,
+  ColumnBinding,
+  SceneNode,
+  SpriteColumns,
+  SpriteNode,
+  TextureHandle,
+} from './types';
 
-/** What the writer needs from its Container (avoids an import cycle). */
+/** What the writers need from their Container (avoids an import cycle). */
 export interface BulkHost {
   readonly _children: SceneNode[];
   readonly _childrenVersion: number;
+  readonly _destroyed: boolean;
 }
+
+type Column = Float32Array | Uint32Array;
+type Props = Record<string, number>;
 
 const EMPTY_F32 = new Float32Array(0);
-const EMPTY_U32 = new Uint32Array(0);
-const ALL_FIELDS =
-  BulkField.POSITION |
-  BulkField.ROTATION |
-  BulkField.SCALE |
-  BulkField.ALPHA |
-  BulkField.TINT;
+/** POSITION | ROTATION | SCALE | ALPHA | TINT: the bulkChildren fields. */
+const ALL_FIELDS = 31;
 
-function growF32(buf: Float32Array, n: number): Float32Array {
-  if (buf.length >= n) return buf;
-  const next = new Float32Array(Math.max(n, buf.length * 2));
-  next.set(buf);
-  return next;
+// Column indexes (Rows._a/_o/_s) in SpriteColumns key order. Columns below
+// C_TINT are Float32Array, the rest Uint32Array.
+const C_Y = 1;
+const C_ROT = 2;
+const C_SY = 4;
+const C_TINT = 6;
+const C_FRAME = 7;
+/** Column keys; also the node property each column writes (except frame). */
+const KEYS = [
+  'x',
+  'y',
+  'rotation',
+  'scaleX',
+  'scaleY',
+  'alpha',
+  'tint',
+  'frame',
+  'userId',
+] as const;
+/** BulkField bit of each column. */
+const COL_FIELD = [1, 1, 2, 4, 4, 8, 16, 32, 64];
+/** Store record stride and offset, and the dirty bit, of each column. */
+const COL_STRIDE = [
+  POS_STRIDE,
+  POS_STRIDE,
+  LOCAL_STRIDE,
+  LOCAL_STRIDE,
+  LOCAL_STRIDE,
+  LOCAL_STRIDE,
+  1,
+  0,
+  1,
+];
+const COL_OFF = [0, 1, L_ROT, L_SCALE_X, L_SCALE_Y, L_ALPHA, 0, 0, 0];
+const COL_DIRTY = [
+  Dirty.POSITION,
+  Dirty.POSITION,
+  Dirty.LOCAL,
+  Dirty.LOCAL,
+  Dirty.LOCAL,
+  Dirty.ALPHA,
+  Dirty.SPRITE,
+  0,
+  0,
+];
+
+/** The node-store array a column writes (not for C_FRAME). */
+function storeOf(c: number): Column {
+  const s = nodeStore;
+  return c < C_ROT
+    ? s.pos
+    : c < C_TINT
+      ? s.local
+      : c === C_TINT
+        ? s.tint
+        : s.userId;
+}
+/** Bulk array per BulkField bit (1 << k), and its first column. */
+const BULK_NAMES = ['position', 'rotation', 'scale', 'alpha', 'tint'] as const;
+const BULK_COL = [0, C_ROT, 3, 5, C_TINT];
+
+/** Children snapshot plus one strided source per column. */
+class Rows {
+  count = 0;
+  /** -1 until the first snapshot. */
+  version = -1;
+  /** Store slot per child; -1 for SceneNodes that do not extend NodeBase. */
+  _slots = new Int32Array(0);
+  /** 1 when the child is a sprite (TINT, FRAME apply). */
+  _sprite = new Uint8Array(0);
+  _foreign = false;
+  /** Source array per column (null: not bound). */
+  _a = new Array<Column | null>(9).fill(null);
+  _o = new Int32Array(9);
+  _s = new Int32Array(9);
+  _frames: readonly TextureHandle[] = [];
+
+  constructor(readonly _host: BulkHost) {}
+
+  _snapshot(): void {
+    const children = this._host._children;
+    const n = children.length;
+    if (this._slots.length < n) {
+      const cap = Math.max(n, this._slots.length * 2);
+      this._slots = new Int32Array(cap);
+      this._sprite = new Uint8Array(cap);
+    }
+    let foreign = false;
+    for (let i = 0; i < n; i++) {
+      const child = children[i];
+      const base = child instanceof NodeBase;
+      this._slots[i] = base ? child._slot : -1;
+      if (!base) foreign = true;
+      this._sprite[i] = child.kind === 'sprite' ? 1 : 0;
+    }
+    this._foreign = foreign;
+    this.count = n;
+    this.version = this._host._childrenVersion;
+  }
+
+  /** Throws INVALID_ARGUMENT unless [first, first + count) is in range. */
+  _range(what: string, first: number, count: number): void {
+    if (
+      !(first >= 0 && count >= 0 && first + count <= this.count) ||
+      first % 1 ||
+      count % 1
+    ) {
+      throw new CozyGPUError(
+        'INVALID_ARGUMENT',
+        `${what}: [${first}, ${first + count}) outside [0, ${this.count}]`,
+      );
+    }
+  }
+
+  /**
+   * THE copy path: rows [first, end) of the `fields` columns into children
+   * [first, end). Zero allocations; `touch` bumped once. Callers validate
+   * everything first (ranges, column lengths, frame indexes), so a commit
+   * either applies every row or throws before writing any. `touch` is still
+   * bumped in `finally`: should a setter throw part-way (a foreign child),
+   * the rows already written are picked up by the packer, never left
+   * written but not rendered.
+   */
+  _copy(fields: number, first: number, end: number): void {
+    const s = nodeStore;
+    try {
+      const a = this._a;
+      const o = this._o;
+      const st = this._s;
+      const slots = this._slots;
+      const sprite = this._sprite;
+      const dirty = s.dirty;
+      if (this._foreign) {
+        // Slow path through the public setters (a child is not a NodeBase).
+        const children = this._host._children;
+        for (let i = first; i < end; i++) {
+          const node = children[i] as unknown as Props;
+          for (let c = 0; c < 9; c++) {
+            const src = a[c];
+            if (
+              src !== null &&
+              c !== C_FRAME &&
+              (fields & COL_FIELD[c]) !== 0 &&
+              (c !== C_TINT || sprite[i] === 1)
+            ) {
+              node[KEYS[c]] = src[o[c] + i * st[c]];
+            }
+          }
+        }
+      } else {
+        // One tight loop per column; x and y are separate columns.
+        for (let c = 0; c < 9; c++) {
+          const src = a[c];
+          if (src === null || c === C_FRAME || (fields & COL_FIELD[c]) === 0) {
+            continue;
+          }
+          const off = o[c];
+          const stride = st[c];
+          const T = storeOf(c);
+          const ts = COL_STRIDE[c];
+          const to = COL_OFF[c];
+          const bit = COL_DIRTY[c];
+          if (c < C_TINT) {
+            for (let i = first; i < end; i++) {
+              const slot = slots[i];
+              T[slot * ts + to] = src[off + i * stride];
+              dirty[slot] |= bit;
+            }
+          } else {
+            // tint (sprites only, 24 bits) or userId (no dirty bit).
+            const tint = c === C_TINT;
+            const mask = tint ? 0xffffff : -1;
+            for (let i = first; i < end; i++) {
+              if (tint && sprite[i] !== 1) continue;
+              const slot = slots[i];
+              T[slot] = src[off + i * stride] & mask;
+              dirty[slot] |= bit;
+            }
+          }
+        }
+      }
+      if ((fields & BulkField.FRAME) !== 0) {
+        // The Sprite texture setter: a no-op for an unchanged handle.
+        const src = a[C_FRAME] as Column;
+        const children = this._host._children;
+        for (let i = first; i < end; i++) {
+          if (sprite[i] !== 1) continue;
+          // Indexes were checked by _frameRows before any write.
+          (children[i] as SpriteNode).texture =
+            this._frames[src[o[C_FRAME] + i * st[C_FRAME]]];
+        }
+      }
+    } finally {
+      s.touch = (s.touch + 1) & TOUCH_MASK;
+    }
+  }
+
+  /**
+   * Throws INVALID_ARGUMENT unless every sprite row in [first, end) holds a
+   * valid index into the frames table. Runs before any write.
+   */
+  _frameRows(first: number, end: number): void {
+    const src = this._a[C_FRAME] as Column;
+    for (let i = first; i < end; i++) {
+      if (
+        this._sprite[i] === 1 &&
+        !this._frames[src[this._o[C_FRAME] + i * this._s[C_FRAME]]]
+      ) {
+        throw new CozyGPUError('INVALID_ARGUMENT', `commit: frame, row ${i}`);
+      }
+    }
+  }
 }
 
-export class ChildBulk implements BulkChildren {
-  count = 0;
-  /** -1 until the first acquire. */
-  version = -1;
+export class ChildBulk extends Rows implements BulkChildren {
   position: Float32Array = EMPTY_F32;
   rotation: Float32Array = EMPTY_F32;
   scale: Float32Array = EMPTY_F32;
   alpha: Float32Array = EMPTY_F32;
-  tint: Uint32Array = EMPTY_U32;
+  tint: Uint32Array = new Uint32Array(0);
 
-  /** Store slot per child; -1 for SceneNodes that do not extend NodeBase. */
-  private slots = new Int32Array(0);
-  /** 1 when the child is a sprite (TINT applies). */
-  private sprite = new Uint8Array(0);
-  private foreign = false;
   /** BulkField bits whose arrays are sized. */
   private sized = 0;
-  private posBuf: Float32Array = EMPTY_F32;
-  private rotBuf: Float32Array = EMPTY_F32;
-  private scaleBuf: Float32Array = EMPTY_F32;
-  private alphaBuf: Float32Array = EMPTY_F32;
-  private tintBuf: Uint32Array = EMPTY_U32;
+  /** Backing buffer per bulk array (BULK_NAMES order). */
+  private bufs: Column[] = [
+    EMPTY_F32,
+    EMPTY_F32,
+    EMPTY_F32,
+    EMPTY_F32,
+    this.tint,
+  ];
 
-  constructor(private readonly host: BulkHost) {}
+  constructor(host: BulkHost) {
+    super(host);
+    // Dense layout of the bulk arrays: [x, y, …] and [sx, sy, …], stride 2.
+    this._o[C_Y] = this._o[C_SY] = 1;
+    this._s.fill(1);
+    this._s.fill(2, 0, 2);
+    this._s.fill(2, 3, 5);
+  }
 
   /** @internal Called by Container.bulkChildren(). */
   _acquire(fields: number): void {
-    const host = this.host;
     const want = (fields & ALL_FIELDS) | this.sized;
-    if (host._childrenVersion !== this.version) {
-      this.snapshot();
-      this.resize(want, true);
-    } else if (want !== this.sized) {
-      this.resize(want, false);
-    }
-  }
-
-  private snapshot(): void {
-    const children = this.host._children;
-    const n = children.length;
-    if (this.slots.length < n) {
-      const cap = Math.max(n, this.slots.length * 2);
-      this.slots = new Int32Array(cap);
-      this.sprite = new Uint8Array(cap);
-    }
-    const slots = this.slots;
-    const sprite = this.sprite;
-    let foreign = false;
-    for (let i = 0; i < n; i++) {
-      const child = children[i];
-      if (child instanceof NodeBase) {
-        slots[i] = child._slot;
-      } else {
-        slots[i] = -1;
-        foreign = true;
-      }
-      sprite[i] = child.kind === 'sprite' ? 1 : 0;
-    }
-    this.foreign = foreign;
-    this.count = n;
-    this.version = this.host._childrenVersion;
+    const stale = this._host._childrenVersion !== this.version;
+    if (stale) this._snapshot();
+    if (stale || want !== this.sized) this.resize(want, stale);
   }
 
   /** Sizes the arrays of `fields`; `force` re-slices every sized view. */
   private resize(fields: number, force: boolean): void {
-    const n = this.count;
-    if ((fields & BulkField.POSITION) !== 0) {
-      const buf = growF32(this.posBuf, n * 2);
-      if (force || buf !== this.posBuf || this.position.length !== n * 2) {
-        this.posBuf = buf;
-        this.position = buf.subarray(0, n * 2);
-      }
-    }
-    if ((fields & BulkField.ROTATION) !== 0) {
-      const buf = growF32(this.rotBuf, n);
-      if (force || buf !== this.rotBuf || this.rotation.length !== n) {
-        this.rotBuf = buf;
-        this.rotation = buf.subarray(0, n);
-      }
-    }
-    if ((fields & BulkField.SCALE) !== 0) {
-      const buf = growF32(this.scaleBuf, n * 2);
-      if (force || buf !== this.scaleBuf || this.scale.length !== n * 2) {
-        this.scaleBuf = buf;
-        this.scale = buf.subarray(0, n * 2);
-      }
-    }
-    if ((fields & BulkField.ALPHA) !== 0) {
-      const buf = growF32(this.alphaBuf, n);
-      if (force || buf !== this.alphaBuf || this.alpha.length !== n) {
-        this.alphaBuf = buf;
-        this.alpha = buf.subarray(0, n);
-      }
-    }
-    if ((fields & BulkField.TINT) !== 0) {
-      let buf = this.tintBuf;
-      if (buf.length < n) {
-        const next = new Uint32Array(Math.max(n, buf.length * 2));
+    const self = this as unknown as Record<string, Column>;
+    for (let k = 0; k < 5; k++) {
+      if ((fields & (1 << k)) === 0) continue;
+      const len = this.count * (k === 0 || k === 2 ? 2 : 1);
+      let buf = this.bufs[k];
+      if (buf.length < len) {
+        const next = new (k === 4 ? Uint32Array : Float32Array)(
+          Math.max(len, buf.length * 2),
+        );
         next.set(buf);
         buf = next;
       }
-      if (force || buf !== this.tintBuf || this.tint.length !== n) {
-        this.tintBuf = buf;
-        this.tint = buf.subarray(0, n);
+      if (force || buf !== this.bufs[k] || self[BULK_NAMES[k]].length !== len) {
+        this.bufs[k] = buf;
+        self[BULK_NAMES[k]] = buf.subarray(0, len);
       }
     }
     this.sized = fields;
   }
 
+  /** Validates, then points the column sources at the current arrays. */
   private check(
     what: string,
     fields: number,
     first: number,
     count: number,
   ): void {
-    if (this.version !== this.host._childrenVersion) {
+    what = 'BulkChildren.' + what;
+    if (this.version !== this._host._childrenVersion) {
       throw new CozyGPUError(
         'INVALID_ARGUMENT',
-        `BulkChildren.${what}: the children changed; call bulkChildren() again`,
+        `${what}: children changed; call bulkChildren() again`,
       );
     }
-    if (
-      !(first >= 0 && count >= 0 && first + count <= this.count) ||
-      first !== Math.floor(first) ||
-      count !== Math.floor(count)
-    ) {
+    this._range(what, first, count);
+    if (fields & ALL_FIELDS & ~this.sized) {
       throw new CozyGPUError(
         'INVALID_ARGUMENT',
-        `BulkChildren.${what}: range [${first}, ${first + count}) outside [0, ${this.count}]`,
+        `${what}: fields ${fields} not requested`,
       );
     }
-    const missing = fields & ALL_FIELDS & ~this.sized;
-    if (missing !== 0) {
-      throw new CozyGPUError(
-        'INVALID_ARGUMENT',
-        `BulkChildren.${what}: fields ${missing} were not requested in bulkChildren()`,
-      );
+    const self = this as unknown as Record<string, Column>;
+    for (let k = 0; k < 5; k++) {
+      const c = BULK_COL[k];
+      this._a[c] = self[BULK_NAMES[k]];
+      if (k === 0 || k === 2) this._a[c + 1] = this._a[c];
     }
   }
 
   pull(fields: number, first = 0, count = this.count - first): void {
     this.check('pull', fields, first, count);
-    const s = nodeStore;
-    const slots = this.slots;
-    const end = first + count;
-    if (this.foreign) {
-      this.pullForeign(fields, first, end);
-      return;
-    }
-    if ((fields & BulkField.POSITION) !== 0) {
-      const P = s.pos;
-      const out = this.position;
-      for (let i = first; i < end; i++) {
-        const po = slots[i] * POS_STRIDE;
-        out[i * 2] = P[po];
-        out[i * 2 + 1] = P[po + 1];
-      }
-    }
-    const L = s.local;
-    if ((fields & BulkField.ROTATION) !== 0) {
-      const out = this.rotation;
-      for (let i = first; i < end; i++) {
-        out[i] = L[slots[i] * LOCAL_STRIDE + L_ROT];
-      }
-    }
-    if ((fields & BulkField.SCALE) !== 0) {
-      const out = this.scale;
-      for (let i = first; i < end; i++) {
-        const lo = slots[i] * LOCAL_STRIDE;
-        out[i * 2] = L[lo + L_SCALE_X];
-        out[i * 2 + 1] = L[lo + L_SCALE_Y];
-      }
-    }
-    if ((fields & BulkField.ALPHA) !== 0) {
-      const out = this.alpha;
-      for (let i = first; i < end; i++) {
-        out[i] = L[slots[i] * LOCAL_STRIDE + L_ALPHA];
-      }
-    }
-    if ((fields & BulkField.TINT) !== 0) {
-      const out = this.tint;
-      const T = s.tint;
-      const sprite = this.sprite;
-      for (let i = first; i < end; i++) {
-        if (sprite[i] === 1) out[i] = T[slots[i]];
+    const children = this._host._children;
+    for (let c = 0; c <= C_TINT; c++) {
+      if ((fields & COL_FIELD[c]) === 0) continue;
+      const dst = this._a[c] as Column;
+      const T = storeOf(c);
+      for (let i = first; i < first + count; i++) {
+        if (c === C_TINT && this._sprite[i] !== 1) continue;
+        dst[this._o[c] + i * this._s[c]] = this._foreign
+          ? (children[i] as unknown as Props)[KEYS[c]]
+          : T[this._slots[i] * COL_STRIDE[c] + COL_OFF[c]];
       }
     }
   }
 
   commit(fields: number, first = 0, count = this.count - first): void {
     this.check('commit', fields, first, count);
-    if (count === 0) return;
-    const s = nodeStore;
-    const slots = this.slots;
-    const dirty = s.dirty;
+    if (count > 0) this._copy(fields & ALL_FIELDS, first, first + count);
+  }
+}
+
+/**
+ * M2.5 external columns (ARCHITECTURE §19.1): the container's single reused
+ * binding. Keeps references to the caller's arrays; `commit` runs the shared
+ * copy path over them.
+ */
+export class ColumnBindingImpl extends Rows implements ColumnBinding {
+  fields = 0;
+
+  rebind(columns: SpriteColumns, options?: BindColumnsOptions): void {
+    this._live();
+    this.unbind();
+    const def = options?.stride ?? 1;
+    let fields = 0;
+    for (let c = 0; c < 9; c++) {
+      const src = columns[KEYS[c]];
+      if (!src) {
+        if (c < C_ROT) this._bad(c);
+        continue;
+      }
+      const view = ArrayBuffer.isView(src);
+      const arr = view ? src : src.array;
+      const off = view ? 0 : (src.offset ?? 0);
+      const stride = view ? def : (src.stride ?? def);
+      if (
+        !(arr instanceof (c < C_TINT ? Float32Array : Uint32Array)) ||
+        !(stride >= 1 && off >= 0) ||
+        stride % 1 ||
+        off % 1
+      ) {
+        this._bad(c);
+      }
+      this._a[c] = arr;
+      this._o[c] = off;
+      this._s[c] = stride;
+      fields |= COL_FIELD[c];
+    }
+    if (fields & BulkField.FRAME) {
+      this._frames = options?.frames ?? this._bad(C_FRAME);
+    }
+    this.fields = fields;
+  }
+
+  commit(count: number, first = 0, fields = this.fields): void {
+    this._live();
+    if (this.version !== this._host._childrenVersion) this._snapshot();
+    this._range('commit', first, count);
+    fields &= this.fields;
+    if (count === 0 || fields === 0) return;
     const end = first + count;
-    if (this.foreign) {
-      this.commitForeign(fields, first, end);
-      return;
-    }
-    if ((fields & BulkField.POSITION) !== 0) {
-      const P = s.pos;
-      const src = this.position;
-      for (let i = first; i < end; i++) {
-        const slot = slots[i];
-        const po = slot * POS_STRIDE;
-        P[po] = src[i * 2];
-        P[po + 1] = src[i * 2 + 1];
-        dirty[slot] |= Dirty.POSITION;
+    // Every bound column must hold row end - 1.
+    for (let c = 0; c < 9; c++) {
+      const src = this._a[c];
+      if (src && this._o[c] + (end - 1) * this._s[c] >= src.length) {
+        throw new CozyGPUError(
+          'INVALID_ARGUMENT',
+          `commit: column ${KEYS[c]} < ${end} rows`,
+        );
       }
     }
-    const L = s.local;
-    if ((fields & BulkField.ROTATION) !== 0) {
-      const src = this.rotation;
-      for (let i = first; i < end; i++) {
-        const slot = slots[i];
-        L[slot * LOCAL_STRIDE + L_ROT] = src[i];
-        dirty[slot] |= Dirty.LOCAL;
-      }
-    }
-    if ((fields & BulkField.SCALE) !== 0) {
-      const src = this.scale;
-      for (let i = first; i < end; i++) {
-        const slot = slots[i];
-        const lo = slot * LOCAL_STRIDE;
-        L[lo + L_SCALE_X] = src[i * 2];
-        L[lo + L_SCALE_Y] = src[i * 2 + 1];
-        dirty[slot] |= Dirty.LOCAL;
-      }
-    }
-    if ((fields & BulkField.ALPHA) !== 0) {
-      const src = this.alpha;
-      for (let i = first; i < end; i++) {
-        const slot = slots[i];
-        L[slot * LOCAL_STRIDE + L_ALPHA] = src[i];
-        dirty[slot] |= Dirty.ALPHA;
-      }
-    }
-    if ((fields & BulkField.TINT) !== 0) {
-      const src = this.tint;
-      const T = s.tint;
-      const sprite = this.sprite;
-      for (let i = first; i < end; i++) {
-        if (sprite[i] !== 1) continue;
-        const slot = slots[i];
-        T[slot] = src[i] & 0xffffff;
-        dirty[slot] |= Dirty.SPRITE;
-      }
-    }
-    s.touch = (s.touch + 1) & TOUCH_MASK;
+    if ((fields & BulkField.FRAME) !== 0) this._frameRows(first, end);
+    this._copy(fields, first, end);
   }
 
-  /** Slow path through the public setters when a child is not a NodeBase. */
-  private commitForeign(fields: number, first: number, end: number): void {
-    const children = this.host._children;
-    for (let i = first; i < end; i++) {
-      const node = children[i];
-      if ((fields & BulkField.POSITION) !== 0) {
-        node.setPosition(this.position[i * 2], this.position[i * 2 + 1]);
-      }
-      if ((fields & BulkField.ROTATION) !== 0) node.rotation = this.rotation[i];
-      if ((fields & BulkField.SCALE) !== 0) {
-        node.setScale(this.scale[i * 2], this.scale[i * 2 + 1]);
-      }
-      if ((fields & BulkField.ALPHA) !== 0) node.alpha = this.alpha[i];
-      if ((fields & BulkField.TINT) !== 0 && this.sprite[i] === 1) {
-        (node as SpriteNode).tint = this.tint[i];
-      }
+  unbind(): void {
+    this.fields = 0;
+    this._a.fill(null);
+    this._frames = [];
+  }
+
+  private _live(): void {
+    if (this._host._destroyed) {
+      throw new CozyGPUError('DESTROYED', 'container destroyed');
     }
   }
 
-  private pullForeign(fields: number, first: number, end: number): void {
-    const children = this.host._children;
-    for (let i = first; i < end; i++) {
-      const node = children[i];
-      if ((fields & BulkField.POSITION) !== 0) {
-        this.position[i * 2] = node.x;
-        this.position[i * 2 + 1] = node.y;
-      }
-      if ((fields & BulkField.ROTATION) !== 0) this.rotation[i] = node.rotation;
-      if ((fields & BulkField.SCALE) !== 0) {
-        this.scale[i * 2] = node.scaleX;
-        this.scale[i * 2 + 1] = node.scaleY;
-      }
-      if ((fields & BulkField.ALPHA) !== 0) this.alpha[i] = node.alpha;
-      if ((fields & BulkField.TINT) !== 0 && this.sprite[i] === 1) {
-        this.tint[i] = (node as SpriteNode).tint;
-      }
-    }
+  private _bad(c: number): never {
+    this.unbind();
+    throw new CozyGPUError('INVALID_ARGUMENT', `bindColumns: bad ${KEYS[c]}`);
   }
 }

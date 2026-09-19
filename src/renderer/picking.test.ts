@@ -65,9 +65,22 @@ describe('createPickClient', () => {
     await expect(hit).resolves.toEqual({
       node: sprite,
       instance: -1,
+      userId: 0,
       x: 12.5,
       y: 7,
     });
+    // PickHit.userId: node.userId for a sprite (read when the answer lands).
+    sprite.userId = 4242;
+    const again = client.pick(1, 1);
+    client.encode(frame.next());
+    client.handleMessage({
+      type: 'pick',
+      requestId: frame.encoder.commands()[0].words[0],
+      objectId: sprite.id,
+      instance: -1,
+      userId: 7,
+    });
+    await expect(again).resolves.toMatchObject({ node: sprite, userId: 4242 });
     await expect(miss).resolves.toBeNull();
     stage.destroy();
   });
@@ -141,9 +154,61 @@ describe('createPickClient', () => {
     await expect(late).rejects.toMatchObject({ code: 'DESTROYED' });
     stage.destroy();
   });
+
+  it('finds nodes anywhere in the stage and keeps its walk stack (no per-pick regrowth)', async () => {
+    const stage = new Container();
+    const sprites: Sprite[] = [];
+    for (let g = 0; g < 20; g++) {
+      const group = stage.addChild(new Container());
+      for (let i = 0; i < 50; i++) sprites.push(group.addChild(new Sprite()));
+    }
+    const client = createPickClient({ stage });
+    const stack = (client as unknown as { stack: unknown[] }).stack;
+    const frame = new FakeFrame();
+    const answer = async (target: Sprite | null) => {
+      const p = client.pick(0, 0);
+      client.encode(frame.next());
+      client.handleMessage({
+        type: 'pick',
+        requestId: frame.encoder.commands()[0].words[0],
+        objectId: target ? target.id : 0,
+        instance: -1,
+      });
+      return p;
+    };
+    // A miss that is not 0 walks the whole stage.
+    const missing = new Sprite();
+    const missingId = missing.id;
+    const miss = client.pick(0, 0);
+    client.encode(frame.next());
+    client.handleMessage({
+      type: 'pick',
+      requestId: frame.encoder.commands()[0].words[0],
+      objectId: missingId,
+      instance: -1,
+    });
+    await expect(miss).resolves.toBeNull();
+    const capacity = stack.length;
+    expect(capacity).toBeGreaterThan(50);
+    // Every slot is cleared so removed nodes are never kept alive, but the
+    // array keeps its size (truncating it would free the backing store).
+    expect(stack.every(n => n === null)).toBe(true);
+    for (const target of [sprites[0], sprites[517], sprites[999]]) {
+      await expect(answer(target)).resolves.toMatchObject({ node: target });
+      expect(stack.length).toBe(capacity);
+      expect(stack.every(n => n === null)).toBe(true);
+    }
+    missing.destroy();
+    stage.destroy();
+  });
 });
 
-function coreContext(backend: FakeBackend, posts: CoreMessage[]): CoreContext {
+/** Posts are copied (pick answers reuse one object); `raw` keeps the originals. */
+function coreContext(
+  backend: FakeBackend,
+  posts: CoreMessage[],
+  raw: CoreMessage[] = [],
+): CoreContext {
   const res = { label: 'x', destroy: () => {} };
   return {
     backend,
@@ -154,7 +219,10 @@ function coreContext(backend: FakeBackend, posts: CoreMessage[]): CoreContext {
     getTexture: () => ({ bindGroup: res }) as never,
     getShared: () => undefined,
     sampleCount: 1,
-    post: (m: CoreMessage) => void posts.push(m),
+    post: (m: CoreMessage) => {
+      raw.push(m);
+      posts.push({ ...m });
+    },
   };
 }
 
@@ -178,10 +246,11 @@ class Replay implements PickReplay {
 }
 
 describe('createCorePicking', () => {
-  it('renders one pass per request into its own 1×1 target and posts the texel', async () => {
+  it('renders one pass per request into its own 1×1 target and posts the texel on poll', async () => {
     const backend = new FakeBackend();
     const posts: CoreMessage[] = [];
-    const picking = createCorePicking(coreContext(backend, posts));
+    const raw: CoreMessage[] = [];
+    const picking = createCorePicking(coreContext(backend, posts, raw));
     picking.request(5, 10, 20);
     picking.request(6, 30, 40);
     expect(picking.pending).toBe(2);
@@ -196,10 +265,23 @@ describe('createCorePicking', () => {
       t.label?.startsWith('cozygpu.pick'),
     );
     expect(targets.map(t => [t.width, t.height, t.format])).toEqual([
-      [1, 1, 'rg32uint'],
-      [1, 1, 'rg32uint'],
+      [1, 1, 'rgba32uint'],
+      [1, 1, 'rgba32uint'],
+      [1, 1, 'rgba32uint'],
+      [1, 1, 'rgba32uint'],
     ]);
     expect(backend.lastPassDesc?.target).toBe(targets[1]);
+    // One persistent ring, one copy per rendered pick; no readTexture.
+    expect(backend.rings.length).toBe(1);
+    expect(backend.rings[0]).toMatchObject({
+      slots: PICK_SLOTS,
+      slotBytes: 16,
+    });
+    expect(backend.calls.filter(c => c.startsWith('ring.copy'))).toEqual([
+      'ring.copy cozygpu.pick#0',
+      'ring.copy cozygpu.pick#1',
+    ]);
+    expect(backend.calls.some(c => c.startsWith('readTexture'))).toBe(false);
     // Pick View: css (x, y) at the texel center.
     const views = backend.buffers.filter(b =>
       b.label?.startsWith('cozygpu.pick.view'),
@@ -210,18 +292,49 @@ describe('createCorePicking', () => {
     ]);
 
     list.submit();
-    backend.nextTextureRead = new Uint8Array(new Uint32Array([77, 0]).buffer);
-    picking.afterSubmit();
-    await flush();
+    // Not answered before a poll; answered from the texel on poll.
+    expect(posts).toEqual([]);
+    backend.nextTextureRead = new Uint8Array(
+      new Uint32Array([77, 0, 99, 0]).buffer,
+    );
+    picking.poll!();
     expect(posts).toEqual([
-      { type: 'pick', requestId: 5, objectId: 77, instance: -1 },
-      { type: 'pick', requestId: 6, objectId: 0, instance: -1 },
+      { type: 'pick', requestId: 5, objectId: 77, instance: -1, userId: 99 },
+      { type: 'pick', requestId: 6, objectId: 0, instance: -1, userId: 0 },
     ]);
-    // Nothing rendered: afterSubmit is a no-op.
-    picking.afterSubmit();
-    await flush();
+    // The answer object is reused (no allocation per pick).
+    expect(raw[0]).toBe(raw[1]);
+    // Nothing in flight: poll is a no-op.
+    picking.poll!();
     expect(posts.length).toBe(2);
     picking.destroy();
+    expect(backend.rings[0].destroyed).toBe(true);
+  });
+
+  it('keeps a slot busy until its readback is READY; requests wait for a free slot', () => {
+    const backend = new FakeBackend();
+    const posts: CoreMessage[] = [];
+    const picking = createCorePicking(coreContext(backend, posts));
+    backend.ringReady = false;
+    for (let i = 0; i < PICK_SLOTS + 2; i++) picking.request(100 + i, i, i);
+    picking.render(backend.beginCommands(), new Replay(1), coreFrame);
+    expect(picking.pending).toBe(2);
+    picking.poll!();
+    expect(posts).toEqual([]);
+    // Every slot busy: nothing more renders.
+    picking.render(backend.beginCommands(), new Replay(1), coreFrame);
+    expect(picking.pending).toBe(2);
+    backend.ringReady = true;
+    const ids: number[] = [];
+    const record = () =>
+      posts.splice(0).forEach(m => ids.push((m as PickMessage).requestId));
+    picking.poll!();
+    record();
+    picking.render(backend.beginCommands(), new Replay(1), coreFrame);
+    expect(picking.pending).toBe(0);
+    picking.poll!();
+    record();
+    expect(ids).toEqual([100, 101, 102, 103, 104, 105]);
   });
 
   it('the lazy proxy queues requests until the implementation loads', async () => {
@@ -230,15 +343,14 @@ describe('createCorePicking', () => {
     const picking = createLazyCorePicking(coreContext(backend, posts));
     picking.request(7, 1, 2);
     picking.request(8, 3, 4);
-    // Not loaded yet: nothing to render.
+    // Not loaded yet: nothing to render or poll.
     expect(picking.pending).toBe(0);
     picking.render(backend.beginCommands(), new Replay(1), coreFrame);
-    picking.afterSubmit();
+    picking.poll!();
     for (let i = 0; i < 20 && picking.pending === 0; i++) await flush();
     expect(picking.pending).toBe(2);
     picking.render(backend.beginCommands(), new Replay(1), coreFrame);
-    picking.afterSubmit();
-    await flush();
+    picking.poll!();
     expect((posts as PickMessage[]).map(m => m.requestId)).toEqual([7, 8]);
 
     const early = createLazyCorePicking(coreContext(backend, posts));
@@ -251,23 +363,7 @@ describe('createCorePicking', () => {
     early.destroy();
   });
 
-  it(`renders at most ${PICK_SLOTS} requests per packet`, async () => {
-    const backend = new FakeBackend();
-    const posts: CoreMessage[] = [];
-    const picking = createCorePicking(coreContext(backend, posts));
-    for (let i = 0; i < PICK_SLOTS + 2; i++) picking.request(100 + i, i, i);
-    picking.render(backend.beginCommands(), new Replay(1), coreFrame);
-    expect(picking.pending).toBe(2);
-    picking.afterSubmit();
-    picking.render(backend.beginCommands(), new Replay(1), coreFrame);
-    picking.afterSubmit();
-    await flush();
-    expect((posts as PickMessage[]).map(m => m.requestId)).toEqual([
-      100, 101, 102, 103, 104, 105,
-    ]);
-  });
-
-  it('keeps requests queued while a pick pipeline compiles', async () => {
+  it('keeps requests queued while a pick pipeline compiles', () => {
     const backend = new FakeBackend();
     const posts: CoreMessage[] = [];
     const ctx = coreContext(backend, posts);
@@ -276,40 +372,44 @@ describe('createCorePicking', () => {
     const replay = new Replay(1);
     replay.drawPick = () => beginPickPipeline(ctx);
     picking.render(backend.beginCommands(), replay, coreFrame);
-    picking.afterSubmit();
+    picking.poll!();
     expect(picking.pending).toBe(1);
-    expect(backend.calls).not.toContain('readTexture cozygpu.pick#0');
+    expect(backend.calls.some(c => c.startsWith('ring.copy'))).toBe(false);
+    // The acquired slot went back to the ring.
+    expect(Array.from(backend.rings[0].state)).toEqual([0, 0, 0, 0]);
     endPickPipeline(ctx);
     expect(pickPipelinesPending(ctx)).toBe(false);
     picking.render(backend.beginCommands(), new Replay(1), coreFrame);
-    picking.afterSubmit();
-    await flush();
+    picking.poll!();
     expect(posts).toMatchObject([{ requestId: 1, objectId: 0 }]);
   });
 
-  it('failAll answers every queued request; no integer targets → UNSUPPORTED', async () => {
+  it('failAll answers queued and in-flight requests; FAILED slots → DEVICE_LOST; no integer targets → UNSUPPORTED', () => {
     const backend = new FakeBackend();
     const posts: CoreMessage[] = [];
     const picking = createCorePicking(coreContext(backend, posts));
+    backend.ringReady = false;
     picking.request(1, 0, 0);
+    picking.render(backend.beginCommands(), new Replay(0), coreFrame);
     picking.request(2, 0, 0);
     picking.failAll('DEVICE_LOST', 'gone');
     expect(picking.pending).toBe(0);
     expect(posts).toMatchObject([
-      { requestId: 1, code: 'DEVICE_LOST' },
       { requestId: 2, code: 'DEVICE_LOST' },
+      { requestId: 1, code: 'DEVICE_LOST' },
     ]);
+    expect(Array.from(backend.rings[0].state)).toEqual([0, 0, 0, 0]);
     backend.caps = { ...backend.caps, integerRenderTargets: false };
     picking.request(3, 0, 0);
     expect(posts[2]).toMatchObject({ requestId: 3, code: 'UNSUPPORTED' });
-    // readTexture failure → the request is answered with its code
+    // A failed readback answers DEVICE_LOST and frees the slot.
     backend.caps = { ...backend.caps, integerRenderTargets: true };
-    backend.readTexture = () => Promise.reject(new Error('boom'));
+    backend.ringFail = true;
     picking.request(4, 0, 0);
     picking.render(backend.beginCommands(), new Replay(0), coreFrame);
-    picking.afterSubmit();
-    await flush();
-    expect(posts[3]).toMatchObject({ requestId: 4, code: 'INTERNAL' });
+    picking.poll!();
+    expect(posts[3]).toMatchObject({ requestId: 4, code: 'DEVICE_LOST' });
+    expect(Array.from(backend.rings[0].state)).toEqual([0, 0, 0, 0]);
   });
 });
 
@@ -362,7 +462,7 @@ describe('SpriteCoreSystem.drawPick', () => {
     const pick = pipelines[5];
     expect(pick).toMatchObject({
       fragmentEntry: 'fs_pick',
-      colorFormat: 'rg32uint',
+      colorFormat: 'rgba32uint',
       blend: 'none',
       sampleCount: 1,
       topology: 'triangle-strip',

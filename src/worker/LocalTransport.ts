@@ -8,7 +8,7 @@ import type { FramePacket } from '../commands/types';
 import { createRenderCore } from '../renderer/RenderCore';
 import { createLocalCoreSystems } from '../renderer/systems';
 import { CozyGPUError } from '../types/errors';
-import type { CoreInitOptions, RenderCore } from '../types/core';
+import type { CoreInitOptions, CoreInterop, RenderCore } from '../types/core';
 import type { Canvas } from '../types/types';
 import type { CoreMessage, Transport } from '../types/transport';
 import { BufferRing } from './BufferRing';
@@ -66,6 +66,16 @@ export class LocalTransport implements Transport {
   /** Dev-only (Transport.debug): the core is in this heap, so call it directly. */
   debug(action: 'loseDevice'): void {
     this.core?.debug?.(action);
+  }
+
+  /**
+   * M2.5 (ARCHITECTURE §19.4): the core shares this heap, so interop reaches
+   * it directly. `create` comes from the lazy interop chunk, which keeps the
+   * core half out of the minimal program. The Renderer checks `destroyed`
+   * first.
+   */
+  interop(create: (core: RenderCore) => CoreInterop): CoreInterop {
+    return create(this.core as RenderCore);
   }
 
   /** @internal */

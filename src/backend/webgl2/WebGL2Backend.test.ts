@@ -266,7 +266,7 @@ describe('WebGL2Backend (fake context)', () => {
         format: 'bc1-rgba-unorm',
         usage: TextureUsage.SAMPLED,
       }),
-    ).toThrow(/not available/);
+    ).toThrow(/unavailable/);
   });
 
   it('uploads compressed levels by blocks and bitmaps premultiplied at an origin', async () => {
@@ -743,11 +743,11 @@ describe('WebGL2Backend (fake context)', () => {
     backend.beginCommands();
     const read = backend.readBuffer(buf, 0, 4);
     const held = jest.fn();
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 2; i++) {
       backend.beginCommands();
       expect(backend.backlogged()).toBe(false);
     }
-    backend.beginCommands();
+    backend.beginCommands(); // PACE_FRAMES = 3
     expect(backend.backlogged()).toBe(true);
     backend.whenCaughtUp(held);
     expect(held).not.toHaveBeenCalled();

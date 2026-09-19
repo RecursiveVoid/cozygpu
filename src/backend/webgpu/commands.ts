@@ -215,7 +215,10 @@ export class WebGPUCommandList implements CommandList {
     const cc = color.clearColor;
     const format =
       color.target === 'canvas' ? '' : (color.target as WebGPUTexture).format;
-    if (cc && (format === 'r32uint' || format === 'rg32uint')) {
+    if (
+      cc &&
+      (format === 'r32uint' || format === 'rg32uint' || format === 'rgba32uint')
+    ) {
       // Integer targets (picking): the values are ids, never premultiplied.
       this.clearValue.r = cc[0];
       this.clearValue.g = cc[1];
@@ -268,6 +271,15 @@ export class WebGPUCommandList implements CommandList {
       'UNSUPPORTED',
       'transform feedback passes are WebGL2-only; use compute on WebGPU',
     );
+  }
+
+  /** @internal Readback ring: a copy recorded outside any pass. */
+  copyTextureToBuffer(
+    src: GPUTexelCopyTextureInfo,
+    dst: GPUTexelCopyBufferInfo,
+    size: GPUExtent3DDict,
+  ): void {
+    this.requireEncoder().copyTextureToBuffer(src, dst, size);
   }
 
   submit(): void {

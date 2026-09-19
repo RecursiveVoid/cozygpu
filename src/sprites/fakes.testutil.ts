@@ -1,5 +1,5 @@
 /**
- * Test fakes — owner: "sprites". A minimal CommandEncoder that records the
+ * Test fakes. A minimal CommandEncoder that records the
  * binary stream, a FrontFrame around it, and a tiny command parser. Node only;
  * never imported by library code.
  */

@@ -1,5 +1,5 @@
 /**
- * Command stream opcodes & binary constants — owner: "worker".
+ * Command stream opcodes & binary constants.
  * Normative spec: docs/ARCHITECTURE.md §3. Changing any value here is a
  * breaking protocol change: bump PROTOCOL_VERSION.
  *
@@ -9,8 +9,12 @@
  * Float32Array / Uint32Array views can be taken without copying.
  */
 
-/** 2 = M2 (new 0x01 texture/pick opcodes, SWARM_SET_PICK). Front and worker bundle must match. */
-export const PROTOCOL_VERSION = 2;
+/**
+ * 2 = M2 (new 0x01 texture/pick opcodes, SWARM_SET_PICK).
+ * 3 = M2.5 (SWARM_SET_SOURCE; the pick texel is rgba32uint with a user id).
+ * Front and worker bundle must match.
+ */
+export const PROTOCOL_VERSION = 3;
 /** 'CZG1' read as little-endian u32. */
 export const PACKET_MAGIC = 0x3147_5a43;
 
@@ -89,7 +93,7 @@ export const Op = {
   READBACK: 0x0120,
   /**
    * M2. u32 requestId, f32 x, f32 y (css px, canvas space). Queued; after the
-   * main pass of this packet the core renders a 1×1 rg32uint pick pass and
+   * main pass of this packet the core renders a 1×1 PICK_TARGET_FORMAT pick pass and
    * answers CoreMessage 'pick' (ARCHITECTURE §16.3).
    */
   PICK: 0x0121,
@@ -138,6 +142,21 @@ export const Op = {
   SWARM_SET_FRAMES: 0x030b,
   /** M2. u32 swarmId, u32 pickId (the Swarm node id; 0 = not pickable) */
   SWARM_SET_PICK: 0x030c,
+  /**
+   * M2.5 (ARCHITECTURE §19.4, main-thread mode). u32 swarmId,
+   * u32 hotExternalId, u32 coldExternalId, u32 flags (SwarmSourceFlag).
+   * External ids come from ids.external (CoreContext.getExternalBuffer);
+   * hotExternalId 0 = back to the swarm's own buffers, coldExternalId 0 =
+   * own cold buffer. The draw count travels in SWARM_DRAW.drawCount (and
+   * SWARM_STEP.activeCount when simulating), as for own buffers.
+   */
+  SWARM_SET_SOURCE: 0x030d,
+} as const;
+
+/** M2.5. SWARM_SET_SOURCE.flags. */
+export const SwarmSourceFlag = {
+  /** Run the swarm's step (behaviors) on the external hot buffer. */
+  SIMULATE: 1 << 0,
 } as const;
 
 export type Opcode = (typeof Op)[keyof typeof Op];

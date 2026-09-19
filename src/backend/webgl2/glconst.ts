@@ -26,6 +26,8 @@ export const BLEND = 0x0be2;
 export const DEPTH_TEST = 0x0b71;
 export const SCISSOR_TEST = 0x0c11;
 export const RASTERIZER_DISCARD = 0x8c89;
+export const CULL_FACE = 0x0b44;
+export const STENCIL_TEST = 0x0b90;
 export const LEQUAL = 0x0203;
 
 // Buffers
@@ -35,6 +37,7 @@ export const UNIFORM_BUFFER = 0x8a11;
 export const COPY_READ_BUFFER = 0x8f36;
 export const COPY_WRITE_BUFFER = 0x8f37;
 export const PIXEL_PACK_BUFFER = 0x88eb;
+export const PIXEL_UNPACK_BUFFER = 0x88ec;
 export const TRANSFORM_FEEDBACK_BUFFER = 0x8c8e;
 export const TRANSFORM_FEEDBACK = 0x8e22;
 export const DYNAMIC_DRAW = 0x88e8;
@@ -68,6 +71,7 @@ export const RGBA16F = 0x881a;
 export const RGBA32F = 0x8814;
 export const R32UI = 0x8236;
 export const RG32UI = 0x823c;
+export const RGBA32UI = 0x8d70;
 export const DEPTH_COMPONENT24 = 0x81a6;
 export const DEPTH24_STENCIL8 = 0x88f0;
 export const DEPTH_COMPONENT32F = 0x8cac;
@@ -135,6 +139,7 @@ export const INVALID_INDEX = 0xffffffff;
 // Sync objects
 export const SYNC_GPU_COMMANDS_COMPLETE = 0x9117;
 export const ALREADY_SIGNALED = 0x911a;
+export const TIMEOUT_EXPIRED = 0x911b;
 export const CONDITION_SATISFIED = 0x911c;
 export const WAIT_FAILED = 0x911d;
 

@@ -1,5 +1,5 @@
 /**
- * Normative GPU memory layouts (byte offsets). SHARED + FROZEN during build.
+ * Normative GPU memory layouts (byte offsets).
  * Mirrors docs/ARCHITECTURE.md §4. WGSL structs in src/shaders/** must match
  * these exactly; tests should assert WGSL sizes against these constants.
  * All little-endian. "u8x4 RGBA" colors are packed as
@@ -36,9 +36,18 @@ export const SpriteInstanceFlag = {
 export const SI_PICK_SHIFT = 8;
 /** Largest node id that fits the instance pick field; larger ids are not pickable. */
 export const SI_PICK_MAX = 0xffffff;
-/** Pick target: one texel, `vec2u(objectId, instance + 1)`; (0, 0) = miss. */
-export const PICK_TARGET_FORMAT = 'rg32uint';
-export const PICK_RESULT_BYTES = 8;
+/**
+ * Pick target: one texel `vec4u(objectId, instance + 1, userId, 0)`;
+ * objectId 0 = miss. M2.5 widened it from rg32uint so a Swarm hit carries the
+ * instance's `cold.user` (sprites write userId 0; the front reads
+ * `SceneNode.userId`). ARCHITECTURE §4.7, §19.3.
+ */
+export const PICK_TARGET_FORMAT = 'rgba32uint';
+export const PICK_RESULT_BYTES = 16;
+/** u32 index of each value inside the pick texel (M2.5). */
+export const PICK_TEXEL_OBJECT = 0;
+export const PICK_TEXEL_INSTANCE = 1;
+export const PICK_TEXEL_USER = 2;
 /** Texels with (premultiplied) alpha below this are transparent to picking. */
 export const PICK_ALPHA_THRESHOLD = 0.5;
 
@@ -69,7 +78,11 @@ export const SC_FLAGS = 8; // u32 bits 0-7 reserved, 8-15 behavior group bits (M
 /** M2: cold.flags bits 8–15 = behavior groups (see BehaviorDefinition.groups). */
 export const SC_GROUP_SHIFT = 8;
 export const SC_GROUP_MASK = 0xff;
-export const SC_USER = 12; // u32 free for custom behaviors
+/**
+ * u32 instance user id (M2.5: returned as `PickHit.userId`, set by
+ * SpawnOptions.user or write()); custom behaviors may read it.
+ */
+export const SC_USER = 12;
 
 // ─── Swarm spawn params (uniform w/ dynamic offset) — 112 B ───────────────────
 // Spawned values are uniform random in [min, max] using hash(seed, index).

@@ -284,7 +284,7 @@ export class CommandEncoderImpl implements CommandEncoder {
   private overflow(bytes: number): never {
     throw new CozyGPUError(
       'INVALID_ARGUMENT',
-      `command payload overflow: writing ${bytes} B at ${this.cursor} exceeds the reserved end ${this.reservedEnd}`,
+      `payload overflow: ${bytes} B at ${this.cursor} > ${this.reservedEnd}`,
     );
   }
 }

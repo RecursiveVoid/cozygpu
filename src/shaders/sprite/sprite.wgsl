@@ -1,4 +1,4 @@
-// cozygpu sprite shader — owner: "sprites". Layout: docs/ARCHITECTURE.md §4.1.
+// cozygpu sprite shader. Layout: docs/ARCHITECTURE.md §4.1.
 // Geometry comes from vertex_index (triangle-strip, 4 vertices); per-instance
 // data is the 40-byte SpriteInstance record. Output is premultiplied alpha.
 
@@ -65,15 +65,15 @@ fn fs_main(in: VertexOut) -> @location(0) vec4f {
   return select(tinted, alphaOnly, (in.flags & ALPHA_ONLY) != 0u);
 }
 
-// Pick pass: 1×1 rg32uint target, blend none. Writes (pickId, 0): instance
-// decodes to -1 for sprites. Texels below the alpha threshold and sprites
+// Pick pass: 1×1 rgba32uint target, blend none. Writes (pickId, 0, 0, 0):
+// instance decodes to -1 for sprites; the user id comes from the node. Texels below the alpha threshold and sprites
 // that are not pickable (pick id 0) are transparent to picking.
 @fragment
-fn fs_pick(in: VertexOut) -> @location(0) vec2u {
+fn fs_pick(in: VertexOut) -> @location(0) vec4u {
   let texel = textureSample(spriteTexture, spriteSampler, in.uv);
   let id = in.flags >> PICK_SHIFT;
   if (id == 0u || texel.a * in.color.a < PICK_ALPHA_THRESHOLD) {
     discard;
   }
-  return vec2u(id, 0u);
+  return vec4u(id, 0u, 0u, 0u);
 }

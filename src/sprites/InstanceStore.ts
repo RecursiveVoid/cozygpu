@@ -1,5 +1,5 @@
 /**
- * SpriteInstanceStore — owner: "sprites" (ARCHITECTURE §5.1). One buffer of
+ * SpriteInstanceStore (ARCHITECTURE §5.1). One buffer of
  * `capacity × SPRITE_INSTANCE_BYTES` with cached views. Instance index = draw
  * order. Views are rebuilt only when the buffer is replaced.
  */

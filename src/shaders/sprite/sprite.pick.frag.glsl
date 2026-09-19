@@ -1,7 +1,7 @@
 #version 300 es
-// cozygpu sprite pick fragment shader (owner "webgl2"; ARCHITECTURE §4.7,
-// §16.3). Pairs with sprite.vert.glsl; target rg32uint. Writes
-// (pickId, 0): instance decodes to -1 for sprites. Texels whose
+// cozygpu sprite pick fragment shader (ARCHITECTURE §4.7,
+// §16.3). Pairs with sprite.vert.glsl; target rgba32uint. Writes
+// (pickId, 0, 0, 0): instance decodes to -1 for sprites. Texels whose
 // premultiplied coverage is below PICK_ALPHA_THRESHOLD (0.5) are discarded,
 // and so is pick id 0 (a sprite that is not pickable), which would otherwise
 // overwrite a pickable sprite drawn earlier in the same batch.

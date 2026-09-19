@@ -69,6 +69,9 @@ class FakeTransport implements Transport {
   }
 }
 
+/** Lets a lazy chunk's dynamic import resolve. */
+const settle = (): Promise<void> => new Promise(r => setTimeout(r, 0));
+
 function config(overrides: Partial<RendererConfig> = {}): RendererConfig {
   return {
     canvas: { width: 300, height: 150 } as unknown as OffscreenCanvas,
@@ -381,6 +384,7 @@ describe('Renderer', () => {
     const transport = new FakeTransport();
     const renderer = new RendererImpl(transport, config());
     const pending = renderer.pick(12, 34);
+    await settle(); // the pick client is a lazy chunk (§18.1)
     renderer.render();
     const pickCmd = decode(transport.packets[0]).find(c => c.op === Op.PICK);
     expect(pickCmd).toBeDefined();
@@ -407,6 +411,7 @@ describe('Renderer', () => {
     const transport = new FakeTransport();
     const renderer = new RendererImpl(transport, config());
     const pending = renderer.pick(1, 2);
+    await settle();
     renderer.render();
     const pickCmd = decode(transport.packets[0]).find(c => c.op === Op.PICK);
     transport.listener?.({
@@ -424,6 +429,7 @@ describe('Renderer', () => {
     const transport = new FakeTransport();
     const renderer = new RendererImpl(transport, config());
     const sent = renderer.pick(0, 0);
+    await settle();
     renderer.render(); // encoded, waiting for the core
     const queued = renderer.pick(1, 1); // not encoded yet
     const pending = renderer._readback(0, 1, 0, 1);
@@ -436,12 +442,225 @@ describe('Renderer', () => {
     });
   });
 
+  it('rejects a pick made before the pick chunk loaded when destroyed meanwhile', async () => {
+    const transport = new FakeTransport();
+    const renderer = new RendererImpl(transport, config());
+    const early = renderer.pick(3, 4);
+    renderer.destroy();
+    await expect(early).rejects.toMatchObject({ code: 'DESTROYED' });
+  });
+
   it('rejects pending picks on device loss', async () => {
     const transport = new FakeTransport();
     const renderer = new RendererImpl(transport, config());
     const pending = renderer.pick(5, 5);
+    await settle();
     renderer.render();
     transport.listener?.({ type: 'deviceLost', message: 'gpu went away' });
     await expect(pending).rejects.toMatchObject({ code: 'DEVICE_LOST' });
+  });
+
+  it('emits fallback then ready before it is returned, each with a fresh payload', () => {
+    const transport = new FakeTransport();
+    Object.assign(transport, { fallbackReason: 'no adapter' });
+    const events: [string, unknown][] = [];
+    const sink = { emit: (name: string, p: unknown) => events.push([name, p]) };
+    new RendererImpl(transport, config({ events: sink }));
+    expect(events).toEqual([
+      ['fallback', { from: 'webgpu', to: 'webgl2', reason: 'no adapter' }],
+      [
+        'ready',
+        {
+          backend: 'webgpu',
+          worker: false,
+          sharedMemory: true,
+          fallbackReason: 'no adapter',
+        },
+      ],
+    ]);
+    const plain: string[] = [];
+    new RendererImpl(
+      new FakeTransport(),
+      config({
+        events: { emit: name => plain.push(name) },
+      }),
+    );
+    expect(plain).toEqual(['ready']);
+  });
+
+  it('emits resize, deviceLost, deviceRestored and error; never per frame', () => {
+    const transport = new FakeTransport();
+    const events: [string, unknown][] = [];
+    const order: string[] = [];
+    const renderer = new RendererImpl(
+      transport,
+      config({
+        events: {
+          emit: (name, p) => {
+            events.push([name, p]);
+            order.push(name);
+          },
+        },
+        onDeviceLost: () => order.push('onDeviceLost'),
+        onDeviceRestored: () => order.push('onDeviceRestored'),
+      }),
+    );
+    events.length = 0;
+    order.length = 0;
+    for (let i = 0; i < 5; i++) renderer.render();
+    expect(events).toEqual([]);
+    renderer.resize(300, 150); // unchanged: no event
+    renderer.resize(640, 480, 1.5);
+    transport.listener?.({ type: 'deviceLost', message: 'reset' });
+    transport.listener?.({ type: 'deviceRestored' });
+    const log = jest.spyOn(console, 'error').mockImplementation(() => {});
+    transport.listener?.({ type: 'error', code: 'UNSUPPORTED', message: 'm' });
+    log.mockRestore();
+    expect(events).toEqual([
+      ['resize', { width: 640, height: 480, resolution: 1.5 }],
+      [
+        'deviceLost',
+        { backend: 'webgpu', message: 'reset', willRestore: true },
+      ],
+      ['deviceRestored', { backend: 'webgpu', generation: 1 }],
+      ['error', { code: 'UNSUPPORTED', message: 'm' }],
+    ]);
+    expect(order).toEqual([
+      'resize',
+      'onDeviceLost',
+      'deviceLost',
+      'onDeviceRestored',
+      'deviceRestored',
+      'error',
+    ]);
+    // Fatal loss: willRestore false, then the renderer is destroyed.
+    events.length = 0;
+    transport.listener?.({
+      type: 'error',
+      code: 'DEVICE_LOST',
+      message: 'dead',
+    });
+    expect(events).toEqual([
+      [
+        'deviceLost',
+        { backend: 'webgpu', message: 'dead', willRestore: false },
+      ],
+    ]);
+    expect(renderer.destroyed).toBe(true);
+  });
+
+  it('catches a throwing events sink and logs once per event name', () => {
+    const transport = new FakeTransport();
+    const log = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const renderer = new RendererImpl(
+      transport,
+      config({
+        events: {
+          emit: () => {
+            throw new Error('sink');
+          },
+        },
+      }),
+    );
+    renderer.resize(10, 10);
+    renderer.resize(20, 20);
+    expect(log).toHaveBeenCalledTimes(2); // ready, resize
+    log.mockRestore();
+    renderer.render();
+    expect(transport.packets.length).toBe(1);
+  });
+
+  it('interop(): UNSUPPORTED without a local core, DESTROYED after destroy, else a handle', async () => {
+    const worker = new RendererImpl(new FakeTransport(), config());
+    await expect(worker.interop()).rejects.toMatchObject({
+      code: 'UNSUPPORTED',
+    });
+
+    const registered: [number, unknown, unknown][] = [];
+    const released: number[] = [];
+    let epoch = 0;
+    const core = {
+      backend: 'webgpu' as const,
+      device: () => 'DEVICE',
+      get lossEpoch() {
+        return epoch;
+      },
+      registerBuffer: (id: number, native: unknown, desc: unknown) =>
+        void registered.push([id, native, desc]),
+      releaseBuffer: (id: number) => void released.push(id),
+      invalidateState: () => {},
+    };
+    const transport = Object.assign(new FakeTransport(), {
+      interop: () => core,
+    });
+    const renderer = new RendererImpl(transport, config());
+    const interop = await renderer.interop();
+    expect(await renderer.interop()).toBe(interop);
+    expect(interop.backend).toBe('webgpu');
+    expect(interop.device).toBe('DEVICE');
+    const native = { size: 400 };
+    const ext = interop.registerInstanceBuffer(native, {
+      layout: 'swarm-hot',
+      capacity: 10,
+    });
+    expect(registered).toEqual([
+      [ext.id, native, { label: undefined, size: 400, usage: 8 }],
+    ]);
+    expect(ext).toMatchObject({
+      layout: 'swarm-hot',
+      capacity: 10,
+      valid: true,
+    });
+    expect(() =>
+      interop.registerInstanceBuffer(native, {
+        layout: 'sprite-instance',
+        capacity: 1,
+      }),
+    ).toThrow(expect.objectContaining({ code: 'UNSUPPORTED' }));
+    expect(() =>
+      interop.registerInstanceBuffer(native, {
+        layout: 'swarm-cold',
+        capacity: 0,
+      }),
+    ).toThrow(expect.objectContaining({ code: 'INVALID_ARGUMENT' }));
+    epoch++; // a device loss dropped every registration
+    expect(ext.valid).toBe(false);
+    ext.release();
+    expect(released).toEqual([ext.id]);
+    renderer.destroy();
+    await expect(renderer.interop()).rejects.toMatchObject({
+      code: 'DESTROYED',
+    });
+    expect(() =>
+      interop.registerInstanceBuffer(native, {
+        layout: 'swarm-hot',
+        capacity: 1,
+      }),
+    ).toThrow(expect.objectContaining({ code: 'DESTROYED' }));
+  });
+
+  it('interop(): a failed setup is not cached; the next call retries', async () => {
+    let calls = 0;
+    const core = {
+      backend: 'webgpu' as const,
+      device: () => 'DEVICE',
+      lossEpoch: 0,
+      registerBuffer: () => {},
+      releaseBuffer: () => {},
+      invalidateState: () => {},
+    };
+    const transport = Object.assign(new FakeTransport(), {
+      interop: () => {
+        if (calls++ === 0) throw new Error('chunk failed');
+        return core;
+      },
+    });
+    const renderer = new RendererImpl(transport, config());
+    await expect(renderer.interop()).rejects.toThrow('chunk failed');
+    const interop = await renderer.interop();
+    expect(interop.device).toBe('DEVICE');
+    expect(await renderer.interop()).toBe(interop);
+    expect(calls).toBe(2);
+    renderer.destroy();
   });
 });

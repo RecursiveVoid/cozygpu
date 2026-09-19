@@ -58,7 +58,14 @@ export interface BenchResult {
     growthPerFrameBytes: number;
   };
   frame?: FrameStats;
+  /**
+   * Frame callback CPU, excluding time blocked in WebGPU's
+   * `GPUCanvasContext.getCurrentTexture()` (back-pressure: the main thread
+   * waits for a swap texture while the GPU is behind; ARCHITECTURE §19.7).
+   */
   cpu?: { avgMs: number; p50Ms: number; p99Ms: number; maxMs: number };
+  /** Time per frame spent inside getCurrentTexture() (WebGPU pages; else 0). */
+  swapWait?: { avgMs: number; p50Ms: number; p99Ms: number; maxMs: number };
   env?: Record<string, unknown>;
 }
 
@@ -170,6 +177,27 @@ async function run(
   // Sample buffers are allocated before the baseline so they don't skew heap numbers.
   const intervals = new Float64Array(MAX_SAMPLES);
   const cpu = new Float64Array(MAX_SAMPLES);
+  const swapWait = new Float64Array(MAX_SAMPLES);
+  // Swap-texture wait (§19.7): time blocked in getCurrentTexture() is
+  // back-pressure, not work, so it is reported apart from CPU. Applies to
+  // every WebGPU library alike (they all acquire the texture in this call).
+  let swapWaitMs = 0;
+  const gctProto = (
+    globalThis as {
+      GPUCanvasContext?: { prototype: { getCurrentTexture(): unknown } };
+    }
+  ).GPUCanvasContext?.prototype;
+  if (gctProto) {
+    const orig = gctProto.getCurrentTexture;
+    gctProto.getCurrentTexture = function (this: unknown) {
+      const t = performance.now();
+      try {
+        return orig.call(this);
+      } finally {
+        swapWaitMs += performance.now() - t;
+      }
+    };
+  }
   collect();
   const baselineBytes = heap();
   const t0 = performance.now();
@@ -224,12 +252,16 @@ async function run(
         phase('measure');
       }
       last = now;
+      swapWaitMs = 0;
       const c0 = performance.now();
       if (cpuSim) sim.step(SIM_DT);
       adapter.frame(ctx, cpuSim);
       const c1 = performance.now();
       if (measuring && startMeasure !== now) {
-        if (n < MAX_SAMPLES) cpu[n] = c1 - c0;
+        if (n < MAX_SAMPLES) {
+          cpu[n] = c1 - c0 - swapWaitMs;
+          swapWait[n] = swapWaitMs;
+        }
         n++;
       }
       const elapsed = now - startMeasure;
@@ -254,6 +286,13 @@ async function run(
           p50Ms: c.p50Ms,
           p99Ms: c.p99Ms,
           maxMs: c.maxMs,
+        };
+        const w = stats(swapWait, count);
+        result.swapWait = {
+          avgMs: w.avgMs,
+          p50Ms: w.p50Ms,
+          p99Ms: w.p99Ms,
+          maxMs: w.maxMs,
         };
         resolve();
         return;

@@ -1,5 +1,5 @@
 /**
- * NodeStore — owner: "sprites". Process-wide SoA storage for every scene node
+ * NodeStore. Process-wide SoA storage for every scene node
  * (ARCHITECTURE §5.1). Nodes are handles holding a `slot`; their numbers live
  * here. Arrays are replaced on growth (×2), so always read them through the
  * `nodeStore` object, never cache a view across node creation.
@@ -83,6 +83,11 @@ export interface NodeStore {
    */
   flags: Uint32Array;
   /**
+   * M2.5: `SceneNode.userId` per slot (ARCHITECTURE §19.3). Never drawn, so
+   * writes set no dirty bit.
+   */
+  userId: Uint32Array;
+  /**
    * Bumped on anything that changes draw order or batch boundaries: add,
    * remove, reorder, visibility, texture source or blend mode changes.
    */
@@ -109,6 +114,7 @@ export const nodeStore: NodeStore = {
   tint: new Uint32Array(0),
   uv: new Uint16Array(0),
   flags: new Uint32Array(0),
+  userId: new Uint32Array(0),
   structureVersion: 1,
   touch: 0,
   live: 0,
@@ -146,6 +152,7 @@ function ensureCapacity(slots: number): void {
   s.tint = grow(s.tint, n => new Uint32Array(n), cap);
   s.uv = grow(s.uv, n => new Uint16Array(n), cap * UV_STRIDE);
   s.flags = grow(s.flags, n => new Uint32Array(n), cap);
+  s.userId = grow(s.userId, n => new Uint32Array(n), cap);
   s.capacity = cap;
 }
 
@@ -183,6 +190,7 @@ export function allocSlot(): number {
   s.uv[uo + 2] = 0xffff;
   s.uv[uo + 3] = 0xffff;
   s.flags[slot] = 0;
+  s.userId[slot] = 0;
   s.touch = (s.touch + 1) & TOUCH_MASK;
   s.live++;
   return slot;

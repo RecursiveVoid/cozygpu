@@ -64,6 +64,7 @@ export const GL_TEXTURE_FORMATS: Record<TextureFormat, GLTextureFormat> = {
   rgba32float: f(G.RGBA32F, G.RGBA, G.FLOAT, FormatKind.FLOAT),
   r32uint: f(G.R32UI, G.RED_INTEGER, G.UNSIGNED_INT, FormatKind.UINT),
   rg32uint: f(G.RG32UI, G.RG_INTEGER, G.UNSIGNED_INT, FormatKind.UINT),
+  rgba32uint: f(G.RGBA32UI, G.RGBA_INTEGER, G.UNSIGNED_INT, FormatKind.UINT),
   'bc1-rgba-unorm': c(G.COMPRESSED_RGBA_S3TC_DXT1_EXT, S3TC),
   'bc1-rgba-unorm-srgb': c(G.COMPRESSED_SRGB_ALPHA_S3TC_DXT1_EXT, S3TC_SRGB),
   'bc3-rgba-unorm': c(G.COMPRESSED_RGBA_S3TC_DXT5_EXT, S3TC),

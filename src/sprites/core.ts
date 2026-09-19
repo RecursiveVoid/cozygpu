@@ -1,5 +1,5 @@
 /**
- * SpriteCoreSystem — owner: "sprites". Core side (render thread, DOM-free)
+ * SpriteCoreSystem. Core side (render thread, DOM-free)
  * of opcode range 0x02 (ARCHITECTURE §5.3).
  *
  *  - One VERTEX|COPY_DST buffer per bufferId (capacity × 40 B).
@@ -9,7 +9,7 @@
  *  - Draws: triangle-strip, draw(4, count, 0, first). Skipped until the
  *    pipeline for that blend mode resolved.
  *  - Picking (ARCHITECTURE §16.3): `drawPick` replays SPRITE_DRAW with one
- *    pick pipeline (fs_pick, rg32uint, blend none), created on the first
+ *    pick pipeline (fs_pick, PICK_TARGET_FORMAT, blend none), created on the first
  *    pick and registered with `beginPickPipeline` while it compiles.
  *  - Shader sources carry both WGSL and GLSL; the backend picks by
  *    `caps.shaderLanguage`.

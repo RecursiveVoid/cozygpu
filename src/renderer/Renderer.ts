@@ -1,10 +1,15 @@
 /**
- * Owner: "backend". Public Renderer (front side, always on the main thread).
+ * Owner: "renderer-hooks" (M2.5). Public Renderer (front side, always on the
+ * main thread).
  *
  * render() follows ARCHITECTURE §2 "Frame lifecycle": skip when the transport
  * is busy, otherwise encode FRAME_BEGIN, queued control commands, the scene
  * (ScenePacker) and FRAME_END into one packet and submit it. Steady state
  * allocates nothing: the FrontFrame object, stats and encoder are reused.
+ *
+ * M2.5 (ARCHITECTURE §19.2, §19.4): rare lifecycle events go to
+ * `RendererOptions.events` through `_emit` (never per frame), and
+ * `interop()` loads its implementation chunk on first use.
  */
 import { createCommandEncoder } from '../commands';
 import {
@@ -31,8 +36,10 @@ import type {
   RendererHost,
   ScenePacker,
 } from '../types/core';
-import { CozyGPUError } from '../types/errors';
+import { CozyGPUError, type CozyGPUErrorCode } from '../types/errors';
+import type { EventName, Events } from '../types/events';
 import { ids } from '../types/ids';
+import type { RendererInterop } from '../types/interop';
 import type {
   PickHit,
   Renderer,
@@ -42,7 +49,6 @@ import type {
 } from '../types/renderer';
 import type { CoreMessage, Transport } from '../types/transport';
 import { isCoreSystemReady } from './lazySystems';
-import { createPickClient } from './picking';
 
 let nextRendererId = 1;
 
@@ -61,6 +67,8 @@ export interface RendererConfig {
   onDeviceRestored?: RendererOptions['onDeviceRestored'];
   /** M2. Options for the lazily created `renderer.assets`. */
   assets?: RendererOptions['assets'];
+  /** M2.5. Lifecycle event sink. */
+  events?: RendererOptions['events'];
 }
 
 interface PendingReadback {
@@ -110,6 +118,15 @@ class Frame implements FrontFrame {
     return this.owner._isSystemReady(range);
   }
 
+  /**
+   * @internal Rare events observed by front drawables (a Swarm refused on
+   * WebGL2 emits 'error' once per refusal). Never per frame. Optional on
+   * FrontFrame consumers: test frames need not implement it.
+   */
+  _emit<K extends EventName>(name: K, payload: Events[K]): void {
+    this.owner._emit(name, payload);
+  }
+
   registerShared(buffer: ArrayBuffer | SharedArrayBuffer): number {
     return this.owner._registerShared(buffer);
   }
@@ -136,8 +153,13 @@ export class RendererImpl implements Renderer, RendererHost {
   private readonly frame: Frame;
   /** M2: per-frame hooks (assets); iterated by index, mutated only on add/remove. */
   private readonly frameHooks: FrontFrameHook[] = [];
-  private readonly pickClient: PickClient;
+  /** Loaded with the picking chunk on the first pick() (ARCHITECTURE §18.1). */
+  private pickClient: PickClient | null = null;
+  private pickLoading: Promise<PickClient> | null = null;
   private assetsApi: AssetsApi | null = null;
+  private interopHandle: Promise<RendererInterop> | null = null;
+  /** Event names whose sink threw once (logged once each). */
+  private sinkErrors: Set<string> | null = null;
 
   private cssWidth: number;
   private cssHeight: number;
@@ -205,7 +227,6 @@ export class RendererImpl implements Renderer, RendererHost {
     this.frame.encoder = this.encoder;
     this.packer = createScenePacker();
     this.stage = new Container({ label: 'stage' });
-    this.pickClient = createPickClient(this);
 
     this.startTime = now();
     this.lastRenderTime = this.startTime;
@@ -214,6 +235,18 @@ export class RendererImpl implements Renderer, RendererHost {
 
     if (config.autoResize) this.observeCanvasSize();
     if (this.trackDevicePixelRatio) this.watchDevicePixelRatio();
+
+    // Before createRenderer() resolves (ARCHITECTURE §19.2).
+    const info = this.info;
+    const reason = info.fallbackReason;
+    if (reason)
+      this._emit('fallback', { from: 'webgpu', to: 'webgl2', reason });
+    this._emit('ready', {
+      backend: info.backend,
+      worker: info.worker,
+      sharedMemory: info.sharedMemory,
+      fallbackReason: reason,
+    });
   }
 
   // ─── Public API ────────────────────────────────────────────────────────────
@@ -297,7 +330,7 @@ export class RendererImpl implements Renderer, RendererHost {
       this.encodeControl();
       const hooks = this.frameHooks;
       for (let i = 0; i < hooks.length; i++) hooks[i].encodeFrame(frame);
-      this.pickClient.encode(frame);
+      this.pickClient?.encode(frame);
       flushSwarmDestroys(frame);
       this.packer.pack(this.stage, frame);
       encoder.begin(Op.FRAME_END, 0);
@@ -332,6 +365,7 @@ export class RendererImpl implements Renderer, RendererHost {
     this.cssHeight = h;
     this.currentResolution = res;
     this.resizePending = true;
+    this._emit('resize', { width: w, height: h, resolution: res });
   }
 
   pick(x: number, y: number): Promise<PickHit | null> {
@@ -340,7 +374,17 @@ export class RendererImpl implements Renderer, RendererHost {
         new CozyGPUError('DESTROYED', 'renderer was destroyed'),
       );
     }
-    return this.pickClient.pick(x, y);
+    const client = this.pickClient;
+    if (client) return client.pick(x, y);
+    return (this.pickLoading ??= import('./picking').then(
+      m => (this.pickClient = m.createPickClient(this)),
+    )).then(c =>
+      this.isDestroyed
+        ? Promise.reject(
+            new CozyGPUError('DESTROYED', 'renderer was destroyed'),
+          )
+        : c.pick(x, y),
+    );
   }
 
   destroy(): void {
@@ -351,7 +395,7 @@ export class RendererImpl implements Renderer, RendererHost {
     this.readbackWaiters.forEach(waiter => waiter?.reject(error));
     this.readbackWaiters.clear();
     this.pendingReadbacks.length = 0;
-    this.pickClient.rejectAll('DESTROYED', 'renderer was destroyed');
+    this.pickClient?.rejectAll('DESTROYED', 'renderer was destroyed');
     try {
       const hooks = this.frameHooks.slice();
       for (let i = 0; i < hooks.length; i++) hooks[i].onRendererDestroyed?.();
@@ -382,6 +426,45 @@ export class RendererImpl implements Renderer, RendererHost {
       const i = this.frameHooks.indexOf(hook);
       if (i >= 0) this.frameHooks.splice(i, 1);
     };
+  }
+
+  /**
+   * M2.5 (ARCHITECTURE §19.2): forwards a rare event to
+   * `RendererOptions.events`. A throwing sink is caught and logged once per
+   * event name.
+   */
+  _emit<K extends EventName>(name: K, payload: Events[K]): void {
+    const sink = this.config.events;
+    if (!sink) return;
+    try {
+      sink.emit(name, payload);
+    } catch (err) {
+      const seen = (this.sinkErrors ??= new Set());
+      if (seen.has(name)) return;
+      seen.add(name);
+      // eslint-disable-next-line no-console
+      console.error(`[cozygpu] events sink threw on "${name}"`, err);
+    }
+  }
+
+  /** M2.5 (ARCHITECTURE §19.4): main-thread mode only; lazy chunk. */
+  interop(): Promise<RendererInterop> {
+    const transport = this.transport;
+    if (this.isDestroyed || !transport.interop) {
+      return Promise.reject(
+        this.isDestroyed
+          ? new CozyGPUError('DESTROYED', 'renderer was destroyed')
+          : new CozyGPUError('UNSUPPORTED', 'interop needs worker: false'),
+      );
+    }
+    // A failed chunk load (network error, stale chunk after a deploy) or a
+    // throwing setup is not cached: the next interop() call tries again.
+    return (this.interopHandle ??= import('./interopImpl')
+      .then(m => m.createInterop(transport.interop!(m.createCoreInterop), this))
+      .catch(error => {
+        this.interopHandle = null;
+        throw error;
+      }));
   }
 
   /**
@@ -519,15 +602,12 @@ export class RendererImpl implements Renderer, RendererHost {
         return;
       }
       case 'pick':
-        this.pickClient.handleMessage(message);
+        this.pickClient?.handleMessage(message);
         return;
       case 'deviceLost':
         this.rejectReadbacksOnLoss(message.message);
-        this.pickClient.rejectAll('DEVICE_LOST', message.message);
-        this.config.onDeviceLost?.({
-          message: message.message,
-          willRestore: true,
-        });
+        this.pickClient?.rejectAll('DEVICE_LOST', message.message);
+        this.lost(message.message, true);
         return;
       case 'deviceRestored':
         this.frame.generation++;
@@ -538,22 +618,37 @@ export class RendererImpl implements Renderer, RendererHost {
           this.frameHooks[i].onDeviceRestored?.();
         }
         this.config.onDeviceRestored?.();
+        this._emit('deviceRestored', {
+          backend: this.info.backend,
+          generation: this.frame.generation,
+        });
         return;
       case 'error':
         if (message.code === 'DEVICE_LOST') {
           if (this.coreDead) return;
           this.coreDead = true;
-          this.config.onDeviceLost?.({
-            message: message.message,
-            willRestore: false,
-          });
+          this.lost(message.message, false);
           this.destroy();
           return;
         }
         // eslint-disable-next-line no-console
         console.error(`[cozygpu:${message.code}] ${message.message}`);
+        this._emit('error', {
+          code: message.code as CozyGPUErrorCode,
+          message: message.message,
+        });
         return;
     }
+  }
+
+  /** onDeviceLost, then the deviceLost event. */
+  private lost(message: string, willRestore: boolean): void {
+    this.config.onDeviceLost?.({ message, willRestore });
+    this._emit('deviceLost', {
+      backend: this.info.backend,
+      message,
+      willRestore,
+    });
   }
 
   /** Readbacks in flight when the device is lost can never return data. */

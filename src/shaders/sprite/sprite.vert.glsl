@@ -1,6 +1,6 @@
 #version 300 es
 // cozygpu sprite vertex shader, GLSL ES 3.0 twin of sprite.wgsl vs_main
-// (owner "webgl2"; ARCHITECTURE §4.1, §13.3). Geometry from gl_VertexID
+// (ARCHITECTURE §4.1, §13.3). Geometry from gl_VertexID
 // (triangle-strip, 4 vertices); per-instance data is the 40-byte record.
 precision highp float;
 precision highp int;

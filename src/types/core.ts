@@ -1,5 +1,5 @@
 /**
- * Front ↔ core internal contracts. SHARED + FROZEN during build.
+ * Front ↔ core internal contracts.
  *
  *   FRONT (main thread, public API)          CORE (render thread: main or worker)
  *   Renderer, Container, Sprite, Swarm  ──►  RenderCore → CoreSystem[] → Backend (RHI)
@@ -10,12 +10,15 @@
  */
 import type {
   Backend,
+  BackendKind,
   BackendPreference,
   Capabilities,
   CommandList,
+  ImportBufferDesc,
   RenderPass,
   RhiBindGroup,
   RhiBindGroupLayout,
+  RhiBuffer,
   RhiSampler,
   RhiTexture,
 } from '../backend/types';
@@ -25,6 +28,7 @@ import type {
   FramePacket,
 } from '../commands/types';
 import type { ContainerNode } from '../scene/types';
+import type { EventName, Events } from './events';
 import type { PickHit } from './renderer';
 import type { CoreMessage } from './transport';
 
@@ -101,6 +105,12 @@ export interface RendererHost {
   readonly _caps: Capabilities;
   /** Adds a hook; returns its remover. */
   _addFrameHook(hook: FrontFrameHook): () => void;
+  /**
+   * M2.5. Forwards a rare event to `RendererOptions.events` (no-op without a
+   * sink; a throwing sink is caught). Library modules (assets) use it for
+   * assetProgress / assetError. Never per frame (ARCHITECTURE §19.2).
+   */
+  _emit<K extends EventName>(name: K, payload: Events[K]): void;
 }
 
 /** Owner: "sprites" (src/sprites/front.ts → createScenePacker). */
@@ -169,6 +179,13 @@ export interface CoreContext {
   getShared(sharedId: number): ArrayBuffer | SharedArrayBuffer | undefined;
   /** Main pass sample count (4 when antialias). Pipelines must match. */
   readonly sampleCount: 1 | 4;
+  /**
+   * M2.5 (ARCHITECTURE §19.4). The imported buffer registered under
+   * `externalId` (ids.external) through renderer interop, or undefined when
+   * it is unknown, released, or was dropped by a device loss. Optional so
+   * test contexts need not provide it; RenderCore always does.
+   */
+  getExternalBuffer?(externalId: number): RhiBuffer | undefined;
   post(message: CoreMessage, transfer?: Transferable[]): void;
 }
 
@@ -216,8 +233,9 @@ export interface CoreSystem {
    * M2 picking (ARCHITECTURE §16.3). Replays this system's DRAW command
    * during the pick pass (same stream order as `draw`). Bind `view` as
    * group 0 instead of `CoreContext.viewBindGroup`. Pick pipelines target
-   * `PICK_TARGET_FORMAT` (rg32uint), sampleCount 1, blend 'none', and write
-   * `vec2u(objectId, instance + 1)` (sprites: `(pickId, 0)`). Systems without
+   * `PICK_TARGET_FORMAT` (rgba32uint since M2.5), sampleCount 1, blend
+   * 'none', and write `vec4u(objectId, instance + 1, userId, 0)` (sprites:
+   * `(pickId, 0, 0, 0)`; Swarm: userId = cold.user). Systems without
    * this hook are invisible to picking.
    */
   drawPick?(
@@ -256,8 +274,19 @@ export interface CorePicking {
   readonly pending: number;
   /** After the main pass, on the same CommandList (before submit). */
   render(list: CommandList, replay: PickReplay, frame: CoreFrameState): void;
-  /** After `list.submit()`: starts readbacks; posts CoreMessage 'pick' when done. */
+  /**
+   * Unused since M2.5: the readback ring starts its maps inside the command
+   * list's submit, and RenderCore no longer calls this. Kept for
+   * compatibility (implementations may be no-ops).
+   */
   afterSubmit(): void;
+  /**
+   * M2.5 staging ring (ARCHITECTURE §19.6). Called by RenderCore at the start
+   * of every packet and when it releases a held frame (pacing): polls
+   * in-flight readback slots and posts 'pick' for the ready ones.
+   * Allocation-free.
+   */
+  poll?(): void;
   /** Answers every queued or in-flight request with `code` (device loss, destroy). */
   failAll(code: 'DEVICE_LOST' | 'DESTROYED', message: string): void;
   restore(ctx: CoreContext): Promise<void>;
@@ -287,5 +316,42 @@ export interface RenderCore {
   debug?(action: 'loseDevice'): void;
   /** Executes one packet synchronously; posts FRAME_DONE (with the buffer for recycling). */
   execute(packet: FramePacket): void;
+  /**
+   * M2.5, main-thread mode (ARCHITECTURE §19.4). The core half of
+   * `renderer.interop()`. Unused since M2.5 shipped: the local transport
+   * builds CoreInterop over its core with `createCoreInterop`
+   * (src/renderer/coreInterop.ts) via `Transport.interop(create)`, so neither
+   * RenderCore nor the worker bundle carries it. Kept optional for
+   * compatibility.
+   */
+  interop?(): CoreInterop;
   destroy(): void;
+}
+
+/**
+ * M2.5. Core half of device interop, same thread as the front (local
+ * transport only). Implemented in src/renderer/coreInterop.ts.
+ */
+export interface CoreInterop {
+  readonly backend: BackendKind;
+  /** `backend.native()`: GPUDevice / WebGL2RenderingContext, as unknown. */
+  device(): unknown;
+  /**
+   * Bumped on every device loss. Registrations made under an older value
+   * were dropped by the core.
+   */
+  readonly lossEpoch: number;
+  /**
+   * `backend.importBuffer` + adds it to the table read by
+   * `CoreContext.getExternalBuffer(externalId)`. Throws INVALID_ARGUMENT /
+   * DEVICE_LOST.
+   */
+  registerBuffer(
+    externalId: number,
+    native: unknown,
+    desc: ImportBufferDesc,
+  ): void;
+  releaseBuffer(externalId: number): void;
+  /** `backend.resetState()`. */
+  invalidateState(): void;
 }

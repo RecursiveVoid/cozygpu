@@ -4,7 +4,8 @@
  *
  *   node tests/browser/stress.mjs                      all scenarios, main + worker
  *   node tests/browser/stress.mjs --only=swarm,loss    subset (swarm,burst,sprites,
- *     resize,dpr,loss,recreate,regress,assets,pick,gpualloc,ring,soak)
+ *     resize,dpr,loss,recreate,regress,assets,pick,gpualloc,ring,soak; M2.5 hooks:
+ *     columns,pickuid,events,fallback,pickalloc,external)
  *   node tests/browser/stress.mjs --mode=main          main | worker | both (default both)
  *   node tests/browser/stress.mjs --backend=webgl2     webgpu | webgl2 | both (default both)
  *   node tests/browser/stress.mjs --quick              short durations (burst 10 s, sprites 5 s)
@@ -57,7 +58,7 @@ const argv = Object.fromEntries(
   }),
 );
 const QUICK = !!argv.quick;
-const ALL = ['swarm', 'burst', 'sprites', 'resize', 'dpr', 'loss', 'recreate', 'regress', 'assets', 'pick', 'gpualloc', 'ring', 'soak'];
+const ALL = ['swarm', 'burst', 'sprites', 'resize', 'dpr', 'loss', 'recreate', 'regress', 'assets', 'pick', 'gpualloc', 'ring', 'soak', 'columns', 'pickuid', 'events', 'fallback', 'pickalloc', 'external'];
 const ONLY = argv.only ? String(argv.only).split(',') : ALL;
 const MODES = argv.mode && argv.mode !== 'both' ? [String(argv.mode)] : ['main', 'worker'];
 /** M2: every scenario runs on both backends unless one is named. */
@@ -76,10 +77,20 @@ const GPU_ALLOC_CAP = Number(argv['gpu-alloc-capacity'] ?? 200_000);
 const RING_S = Number(argv['ring-seconds'] ?? (QUICK ? 4 : 10));
 const SOAK_S = Number(argv['soak-seconds'] ?? (QUICK ? 30 : 300));
 const SOAK_HEAP_MB = Number(argv['soak-heap-mb'] ?? 5);
+// M2.5 scenario sizes.
+const COLUMNS_N = Number(argv['columns-count'] ?? 100_000);
+const COLUMNS_S = Number(argv['columns-seconds'] ?? (QUICK ? 6 : 20));
+const UID_ROUNDS = Number(argv['uid-rounds'] ?? (QUICK ? 4 : 15));
+const UID_SWARM_N = Number(argv['uid-swarm'] ?? (QUICK ? 20_000 : 200_000));
+const PICK_ALLOC_S = Number(argv['pick-alloc-seconds'] ?? (QUICK ? 6 : 20));
+const PICK_SOAK_S = Number(argv['pick-soak-seconds'] ?? (QUICK ? 8 : 30));
+const EXT_N = Number(argv['external-count'] ?? (QUICK ? 200_000 : 1_000_000));
+/** Chrome flags for uncapped frames (as in benchmarks/run.mjs). */
+const UNCAP_FLAGS = ['--disable-gpu-vsync', '--disable-frame-rate-limit'];
 
 // ─── Result bookkeeping ──────────────────────────────────────────────────────
 const results = [];
-const report = { startedAt: new Date().toISOString(), options: { ONLY, MODES, BACKENDS, BURST_S, SPRITE_S, CYCLES, GPU_ALLOC_S, RING_S, SOAK_S }, scenarios: [] };
+const report = { startedAt: new Date().toISOString(), options: { ONLY, MODES, BACKENDS, BURST_S, SPRITE_S, CYCLES, GPU_ALLOC_S, RING_S, SOAK_S, COLUMNS_N, COLUMNS_S, UID_ROUNDS, UID_SWARM_N, PICK_ALLOC_S, PICK_SOAK_S, EXT_N }, scenarios: [] };
 let current = null;
 
 function check(name, ok, detail) {
@@ -99,6 +110,17 @@ function note(name, data) {
 const BANNER = `(() => {
   const g = globalThis;
   if (g.__stress) return;
+  // M2.5 fallback checks: ?nogpu=1 hides WebGPU (ARCHITECTURE §13.5 trigger),
+  // ?noadapter=1 makes requestAdapter() resolve null. The page passes its query
+  // on to the worker URL, so both realms see the same thing.
+  const q = (g.location && g.location.search) || '';
+  if (/[?&]nogpu=1/.test(q)) {
+    const P = typeof WorkerNavigator !== 'undefined' && typeof document === 'undefined' ? WorkerNavigator.prototype : typeof Navigator !== 'undefined' ? Navigator.prototype : null;
+    try { if (P) delete P.gpu; } catch {}
+    try { Object.defineProperty(g.navigator, 'gpu', { get: () => undefined, configurable: true }); } catch {}
+  } else if (/[?&]noadapter=1/.test(q) && g.navigator && g.navigator.gpu) {
+    g.navigator.gpu.requestAdapter = async () => null;
+  }
   const S = (g.__stress = { gpuErrors: [], gpuErrorCount: 0, devices: [] });
   if (typeof GPUAdapter === 'undefined') return;
   const orig = GPUAdapter.prototype.requestDevice;
@@ -267,6 +289,8 @@ let outDir = null;
 let launches = 0;
 /** Set when the current browser disconnected unexpectedly (crash). */
 let browserCrash = null;
+/** Extra Chrome flags for the next launches (M2.5: uncapped frames for pickalloc). */
+let launchExtraArgs = [];
 
 async function launchBrowser() {
   launches++;
@@ -290,6 +314,7 @@ async function launchBrowser() {
       '--no-first-run',
       '--no-default-browser-check',
       '--window-size=1000,700',
+      ...launchExtraArgs,
     ],
   });
   b.on('disconnected', () => {
@@ -299,7 +324,7 @@ async function launchBrowser() {
     }
   });
   browser = b;
-  console.log(`chrome ${await b.version()} (launch #${launches}, pid ${b.process()?.pid})`);
+  console.log(`chrome ${await b.version()} (launch #${launches}, pid ${b.process()?.pid})${launchExtraArgs.length ? ` extra flags: ${launchExtraArgs.join(' ')}` : ''}`);
   return b;
 }
 
@@ -433,7 +458,7 @@ for (const sig of ['SIGINT', 'SIGTERM', 'SIGALRM']) {
 }
 
 /** Fresh page per scenario, with console capture from the page and its workers. */
-async function openPage() {
+async function openPage(query = '') {
   const page = await browser.newPage();
   await page.setViewport({ width: 1000, height: 700, deviceScaleFactor: 1 });
   const logs = [];
@@ -451,7 +476,7 @@ async function openPage() {
   page.on('workercreated', w => {
     w.on('console', m => push('worker', m.type(), m.text()));
   });
-  await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: 'load' });
+  await page.goto(`http://127.0.0.1:${PORT}/${query}`, { waitUntil: 'load' });
   await page.waitForFunction('globalThis.__stressReady === true', { timeout: 15000 });
   const cdp = await page.createCDPSession();
   return { page, logs, cdp };
@@ -497,7 +522,7 @@ function cozyErrors(logs, since = 0, code) {
   return logs.slice(since).filter(l => l.text.includes(code ? `[cozygpu:${code}]` : '[cozygpu:'));
 }
 
-async function scenario(name, fn) {
+async function scenario(name, fn, opts = {}) {
   current = { name, checks: [], notes: [] };
   report.scenarios.push(current);
   console.log(`\n▶ ${name}`);
@@ -506,7 +531,7 @@ async function scenario(name, fn) {
   let mem = null;
   try {
     await ensureBrowser();
-    p = await openPage();
+    p = await openPage(opts.query ?? '');
     mem = startMemorySampler(p);
     current.adapter = await p.page.evaluate(async () => {
       const a = await navigator.gpu?.requestAdapter();
@@ -1329,6 +1354,569 @@ async function runSoak(backend) {
   });
 }
 
+// ─── M2.5 scenarios (integration hooks, ARCHITECTURE §19) ────────────────────
+
+/** Region pixel counts of a fresh canvas screenshot (rects in canvas CSS px). */
+async function regions(p, ctxId, rects, settleMs = 250) {
+  await new Promise(r => setTimeout(r, settleMs));
+  const rect = await p.page.evaluate(id => stress.canvasRect(id), ctxId);
+  const b64 = await p.page.screenshot({ encoding: 'base64', clip: rect, captureBeyondViewport: false });
+  return p.page.evaluate((b, q) => stress.regionStats(b, q), b64, rects);
+}
+
+/** CDP sessions whose JS allocations are measured: the page, plus its workers. */
+function allocTargets(p) {
+  const out = [['page', p.cdp]];
+  for (const w of p.page.workers()) if (w.client) out.push(['worker', w.client]);
+  return out;
+}
+
+/**
+ * Sampling heap profiler over a window, counting objects collected by minor
+ * and major GCs too, so the sum is (an estimate of) every byte allocated in
+ * that realm, not only what survived.
+ */
+async function allocStart(p, interval = 256) {
+  const targets = allocTargets(p);
+  for (const [, c] of targets) {
+    await c.send('HeapProfiler.enable').catch(() => {});
+    await c.send('HeapProfiler.collectGarbage').catch(() => {});
+    await c.send('HeapProfiler.startSampling', { samplingInterval: interval, includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true });
+  }
+  return targets;
+}
+/** First bundle line of the stress page's own code (page.js); library code is above it. */
+let pageCodeLine = null;
+async function pageCodeStart() {
+  if (pageCodeLine !== null) return pageCodeLine;
+  const src = await readFile(path.join(outDir, 'page.js'), 'utf8');
+  const i = src.split('\n').findIndex(l => l.includes('__stress_page_code_begins__'));
+  pageCodeLine = i >= 0 ? i + 1 : Infinity;
+  return pageCodeLine;
+}
+/**
+ * Call sites whose allocations are WebGPU API objects created per frame
+ * (command encoder, pass encoder, swap texture + view, command buffer):
+ * unavoidable wrappers (ARCHITECTURE §7), reported apart from library JS.
+ */
+const API_OBJECT_SITES = /^(beginRenderPass|beginComputePass|requireEncoder|beginCommands|canvasView|getCurrentTexture|createView|submit|finish)$/;
+
+/**
+ * Stops the profilers. Per realm: total sampled bytes, split into
+ * `library` (library JS), `api` (WebGPU API objects, see above), `driver`
+ * (this page's own code) and `native` (V8/runtime frames without JS source).
+ */
+async function allocStop(targets) {
+  const boundary = await pageCodeStart();
+  const out = {};
+  for (const [kind, c] of targets) {
+    const { profile } = await c.send('HeapProfiler.stopSampling');
+    const acc = { bytes: 0, library: 0, api: 0, driver: 0, native: 0 };
+    const by = new Map();
+    const walk = n => {
+      if (n.selfSize > 0) {
+        const f = n.callFrame;
+        const file = path.basename(f.url || '');
+        const fn = f.functionName || '(anonymous)';
+        let cls;
+        if (!file) cls = 'native';
+        else if (file === 'page.js' && f.lineNumber + 1 >= boundary) cls = 'driver';
+        else if (API_OBJECT_SITES.test(fn)) cls = 'api';
+        else cls = 'library';
+        acc.bytes += n.selfSize;
+        acc[cls] += n.selfSize;
+        const key = `${cls} ${fn} ${file || '(native)'}:${f.lineNumber + 1}`;
+        by.set(key, (by.get(key) ?? 0) + n.selfSize);
+      }
+      for (const ch of n.children) walk(ch);
+    };
+    walk(profile.head);
+    const top = [...by.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10).map(([k, v]) => `${(v / 1024).toFixed(1)} KB ${k}`);
+    const prev = out[kind];
+    if (prev) {
+      for (const k of ['bytes', 'library', 'api', 'driver', 'native']) prev[k] += acc[k];
+      prev.top = prev.top.concat(top);
+    } else out[kind] = { ...acc, top };
+  }
+  return out;
+}
+/** Bytes per unit (frame or pick) for each class, rounded. */
+function perUnit(a, units) {
+  if (!a) return null;
+  const u = Math.max(1, units);
+  return { total: +(a.bytes / u).toFixed(1), library: +(a.library / u).toFixed(1), api: +(a.api / u).toFixed(1), driver: +(a.driver / u).toFixed(1), native: +(a.native / u).toFixed(1) };
+}
+
+async function runColumns(mode, backend) {
+  const worker = mode === 'worker';
+  await scenario(`columns churn ${COLUMNS_N.toLocaleString('en')} sprites ${COLUMNS_S}s with re-binds [${backend}/${mode}]`, async p => {
+    const since = p.logs.length;
+    const h0 = await heapBoth(p);
+    const r = await withTimeout(p.page.evaluate(o => stress.columnsChurn(o), { worker, backend, count: COLUMNS_N, seconds: COLUMNS_S }), COLUMNS_S * 1000 + 120000, 'columnsChurn');
+    const id = r.ctxId;
+    note('churn', { ...r, validation: undefined });
+    note('validation', r.validation);
+    const v = r.validation;
+    check('validation: commit past the child count → INVALID_ARGUMENT', v.commitPastChildren === 'INVALID_ARGUMENT' && v.commitFirstPastChildren === 'INVALID_ARGUMENT', v);
+    check('validation: stride 0, frame without frames, wrong array type → INVALID_ARGUMENT', v.strideZero === 'INVALID_ARGUMENT' && v.frameWithoutFrames === 'INVALID_ARGUMENT' && v.wrongArrayType === 'INVALID_ARGUMENT', v);
+    check('validation: a column too short for the committed rows → INVALID_ARGUMENT (rows that fit are fine)', v.shortColumnCommit === 'INVALID_ARGUMENT' && v.shortColumnCommitFits === 'ok' && v.stridedShort === 'INVALID_ARGUMENT' && v.strided === 'ok', v);
+    check('bindColumns returns the container\'s single reused binding', v.sameObject === true, v.sameObject);
+    check('binding recovers after the failed binds (rebind + commit ok, all fields bound)', v.rebindOk === 'ok' && v.commitOk === 'ok' && v.fields === v.allFields, { rebind: v.rebindOk, commit: v.commitOk, fields: v.fields, all: v.allFields });
+    check('no exceptions during commit/grow/shrink/rebind/unbind/render', r.throws.length === 0, r.throws);
+    check('rows stayed 1:1 with children through the churn', r.rows === r.children, { rows: r.rows, children: r.children });
+    check('structural churn happened (grows, shrinks, re-binds, unbinds, partial commits)', r.grows > 3 && r.shrinks > 3 && r.unbinds >= 1 && r.partials > 3, { grows: r.grows, shrinks: r.shrinks, rebinds: r.rebinds, unbinds: r.unbinds, partials: r.partials });
+    check('columns scene draws in ≤ 2 draw calls (one texture source)', r.drawCalls <= 2, r.drawCalls);
+    check(`churn: fps ≥ ${backend === 'webgl2' ? 20 : 30}`, r.stats.fps >= (backend === 'webgl2' ? 20 : 30), r.stats);
+
+    // Steady window: the §19.1 budget and zero allocations per frame.
+    await p.page.evaluate(i => stress.columnsSteadyStart(i), id);
+    await new Promise(res => setTimeout(res, 3000)); // warm (optimized code, first allocations)
+    const targets = await allocStart(p);
+    const f0 = await p.page.evaluate(i => stress.loopFrames(i), id);
+    await new Promise(res => setTimeout(res, 6000));
+    const f1 = await p.page.evaluate(i => stress.loopFrames(i), id);
+    const alloc = await allocStop(targets);
+    const st = await p.page.evaluate(i => stress.columnsSteadyStop(i), id);
+    st.frames = f1.frames - f0.frames;
+    const perFrame = Object.fromEntries(Object.entries(alloc).map(([k, a]) => [k, perUnit(a, st.frames)]));
+    note('steady (move + commit + render)', { ...st, allocBytesPerFrame: perFrame });
+    note('steady: top allocation sites', Object.fromEntries(Object.entries(alloc).map(([k, a]) => [k, a.top])));
+    check('steady: no exceptions', st.throws.length === 0, st.throws);
+    check(`steady: commit() of ${r.rows.toLocaleString('en')} rows × 8 columns avg < 3 ms`, st.commitMsAvg < 3, { commitAvg: st.commitMsAvg, commitP99: st.commitMsP99 });
+    check('steady: commit + render() front CPU avg < 6 ms (budget: 100k moving sprites)', st.commitMsAvg + st.stats.cpuMsAvg < 6, { commit: st.commitMsAvg, render: st.stats.cpuMsAvg });
+    // Budget (ARCHITECTURE §10): 0 per frame, "< 1 KB per 600 frames" ≈ 1.7 B/frame.
+    // WebGPU API wrapper objects are reported apart (unavoidable, §7).
+    check('steady: library JS allocations on the page < 1 KB per 600 frames (0 per frame budget)', perFrame.page.library * 600 < 1024, perFrame.page);
+    if (worker) check('steady: library JS allocations in the worker < 1 KB per 600 frames', (perFrame.worker?.library ?? 0) * 600 < 1024, perFrame.worker);
+
+    // Pixels + picks of the fixed probe rows (driven only through the columns).
+    const pr = await withTimeout(p.page.evaluate(i => stress.columnsProbes(i), id), 60000, 'columnsProbes');
+    note('probes', pr);
+    const px = await samplePoints(p, id, pr.probes.map(q => q.center));
+    const want = pr.probes.map(q => [(q.tint >> 16) & 255, (q.tint >> 8) & 255, q.tint & 255]);
+    check('probe rows show their column tints (x, y, scale, tint, frame from columns)', px.every((c, i) => near(c, want[i], 40)), { got: px, want });
+    check('SceneNode.userId of every probe child = its userId column', pr.probes.every(q => q.nodeUserId === q.userId), pr.probes.map(q => [q.userId, q.nodeUserId]));
+    const picks = await withTimeout(p.page.evaluate(i => stress.columnsPickProbes(i), id), 60000, 'columnsPickProbes');
+    note('probe picks', picks);
+    check('pick on each probe → that child, hit.userId = column value', picks.every(x => x.nodeOk && x.got === x.want), picks);
+
+    const gpu = gpuErrorLines(p.logs, since);
+    check('no GPU errors', gpu.length === 0, gpu.slice(0, 3).map(l => l.text));
+    check('no cozygpu errors', cozyErrors(p.logs, since).length === 0, cozyErrors(p.logs, since).slice(0, 3).map(l => l.text));
+    const dropErr = await p.page.evaluate(i => stress.dropCtx(i), id);
+    check('destroy() did not throw', !dropErr, dropErr);
+    await new Promise(res => setTimeout(res, worker ? 800 : 200));
+    const h1 = await heapBoth(p);
+    note('heap', { before: h0, afterDestroy: h1 });
+    check('page heap returns within 10 MB of the baseline after destroy', h1.pageMB - h0.pageMB < 10, { before: h0.pageMB, after: h1.pageMB });
+  });
+}
+
+async function runPickUid(mode, backend) {
+  const worker = mode === 'worker';
+  await scenario(`pick userId under load (columns ${COLUMNS_N.toLocaleString('en')} + swarm ${UID_SWARM_N.toLocaleString('en')}) [${backend}/${mode}]`, async p => {
+    const since = p.logs.length;
+    const r = await withTimeout(p.page.evaluate(o => stress.uidScene(o), { worker, backend, count: COLUMNS_N, swarmCount: UID_SWARM_N }), 180000, 'uidScene');
+    const id = r.ctxId;
+    note('scene', r);
+    check('NodeOptions.userId stored (u32, default 0)', JSON.stringify(r.targetUserIds) === JSON.stringify([0xfffffffe, 0, 0x7fffffff, 12345]), r.targetUserIds);
+    if (r.swarm) {
+      check('swarm fixed objects got slots 0..4', r.swarm.slots.every((s, i) => s === i), r.swarm.slots);
+      check('readCold(4) returns the spawned user id (cold.user)', Array.isArray(r.cold4) && r.cold4[3] === 42, r.cold4 ?? r.readColdError);
+    }
+    const rounds = [];
+    for (let k = 1; k <= UID_ROUNDS; k++) {
+      rounds.push(await withTimeout(p.page.evaluate((i, n) => stress.uidRound(i, n), id, k), 120000, `uidRound ${k}`));
+      if (browserCrash) break;
+    }
+    const cases = rounds.reduce((a, x) => a + x.cases, 0);
+    const bad = rounds.flatMap(x => x.bad.map(b => ({ round: x.round, ...b })));
+    const byKind = {};
+    for (const b of bad) byKind[`${b.kind}/${b.how}`] = (byKind[`${b.kind}/${b.how}`] ?? 0) + 1;
+    note('rounds', rounds.map(x => ({ round: x.round, cases: x.cases, bad: x.bad.length, timeouts: x.timeouts, errors: x.errors.length, maxFrames: Math.max(...x.frames), rows: x.rows })));
+    if (bad.length) note('mismatches (first 12)', bad.slice(0, 12));
+    note('churn during the rounds', rounds.at(-1)?.churn);
+    check(`every pick answered the right node and userId (${cases} cases over ${rounds.length} rounds)`, bad.length === 0, { bad: bad.length, byKind });
+    const colBad = bad.filter(b => b.kind === 'column').length;
+    const sprBad = bad.filter(b => b.kind === 'sprite').length;
+    const swBad = bad.filter(b => b.kind === 'swarm').length;
+    check('column probes: userId from the userId column (changed every round, committed in the loop)', colBad === 0, colBad);
+    check('stage sprites: NodeOptions.userId, default 0, setter changes', sprBad === 0, sprBad);
+    if (r.swarm) check('swarm: hit.userId = cold.user (SpawnOptions.user, write() every round) and instance = slot', swBad === 0, swBad);
+    check('no pick timed out or threw', rounds.every(x => x.timeouts === 0 && x.errors.length === 0), rounds.flatMap(x => x.errors).slice(0, 5));
+    check('no render-loop throws while picking', rounds.every(x => x.loopThrows.length === 0), rounds.at(-1)?.loopThrows);
+    const maxFrames = Math.max(...rounds.flatMap(x => x.frames));
+    check('single picks resolve within 3 frames under load', maxFrames <= 3, { maxFrames });
+    const gpu = gpuErrorLines(p.logs, since);
+    check('no GPU errors', gpu.length === 0, gpu.slice(0, 3).map(l => l.text));
+    check('no cozygpu errors', cozyErrors(p.logs, since).length === 0, cozyErrors(p.logs, since).slice(0, 3).map(l => l.text));
+    await p.page.evaluate(i => stress.dropCtx(i), id);
+  });
+}
+
+const evNames = list => list.map(e => e.name);
+
+async function runEvents(mode, backend) {
+  const worker = mode === 'worker';
+  await scenario(`events sink: ready, resize, loss/restore, error, assets, throwing sink [${backend}/${mode}]`, async p => {
+    const since = p.logs.length;
+    const init = await withTimeout(p.page.evaluate(o => stress.eventsInit(o), { worker, backend }), 60000, 'eventsInit');
+    note('init', init);
+    if (!check('createRenderer with an events sink resolved', !init.createError, init.createError)) return;
+    const id = init.ctxId;
+    const names = evNames(init.log);
+    const iReady = names.indexOf('ready');
+    const iResolved = names.indexOf('@resolved');
+    check('ready emitted exactly once, before createRenderer() resolved', names.filter(n => n === 'ready').length === 1 && iReady >= 0 && iReady < iResolved, names);
+    const ready = init.log[iReady]?.payload ?? {};
+    check('ready payload matches renderer.info', ready.backend === init.info.backend && ready.worker === init.info.worker && ready.sharedMemory === init.info.sharedMemory && (ready.fallbackReason ?? null) === init.info.fallbackReason, { ready, info: init.info });
+    check('no fallback event when the backend was named', !names.includes('fallback'), names);
+
+    const fr = await withTimeout(p.page.evaluate(i => stress.eventsStep(i, 'frames'), id), 60000, 'frames');
+    check('nothing emitted per frame (300 frames of a moving sprite)', fr.events.length === 0, evNames(fr.events));
+
+    const css = await withTimeout(p.page.evaluate(i => stress.eventsStep(i, 'css'), id), 60000, 'css');
+    note('css resize', css);
+    const cssResize = css.events.filter(e => e.name === 'resize');
+    check('autoResize: one resize event for one CSS change, none for the same size again', cssResize.length === 1 && css.afterFirst === 1, evNames(css.events));
+    check('resize payload = new CSS size and resolution', cssResize[0] && cssResize[0].payload.width === 600 && cssResize[0].payload.height === 450 && cssResize[0].payload.resolution === css.state.resolution, { payload: cssResize[0]?.payload, state: css.state });
+
+    const man = await withTimeout(p.page.evaluate(i => stress.eventsStep(i, 'manual'), id), 60000, 'manual');
+    note('manual resize', man);
+    const manResize = man.events.filter(e => e.name === 'resize').map(e => e.payload);
+    check('renderer.resize(): one event per accepted change (resolution 2, then 1), none for a no-op', manResize.length === 2 && manResize[0].resolution === 2 && manResize[1].resolution === 1 && manResize.every(x => x.width === 600 && x.height === 450), manResize);
+
+    for (let k = 1; k <= 2; k++) {
+      const ls = await withTimeout(p.page.evaluate(i => stress.eventsStep(i, 'loss'), id), 60000, `loss ${k}`);
+      note(`loss #${k}`, ls);
+      if (!check(`loss #${k}: triggered`, ls.trigger === 'ok', ls.trigger)) break;
+      const n = evNames(ls.events);
+      check(`loss #${k}: order onDeviceLost → deviceLost → onDeviceRestored → deviceRestored`, JSON.stringify(n.filter(x => x !== 'resize')) === JSON.stringify(['cb:lost', 'deviceLost', 'cb:restored', 'deviceRestored']), n);
+      const lost = ls.events.find(e => e.name === 'deviceLost')?.payload;
+      const rest = ls.events.find(e => e.name === 'deviceRestored')?.payload;
+      check(`loss #${k}: deviceLost {backend, message, willRestore: true}`, lost && lost.backend === init.info.backend && lost.willRestore === true && typeof lost.message === 'string', lost);
+      check(`loss #${k}: deviceRestored generation = ${k}`, rest && rest.backend === init.info.backend && rest.generation === k, rest);
+      check(`loss #${k}: no render() throws`, ls.loopThrows.length === 0, ls.loopThrows);
+    }
+    if (!worker && backend === 'webgl2') {
+      const gl = await withTimeout(p.page.evaluate(i => stress.eventsStep(i, 'glLose'), id), 60000, 'glLose');
+      note('external WEBGL_lose_context', gl);
+      if (check('external WEBGL_lose_context: triggered', gl.trigger === 'ok', gl.trigger)) {
+        const n = evNames(gl.events);
+        check('external context loss: deviceLost then deviceRestored events (no separate contextLost)', n.includes('deviceLost') && n.includes('deviceRestored') && n.indexOf('deviceLost') < n.indexOf('deviceRestored'), n);
+        check('external context loss: deviceRestored generation = 3', gl.events.find(e => e.name === 'deviceRestored')?.payload.generation === 3, gl.events.find(e => e.name === 'deviceRestored')?.payload);
+      }
+    }
+
+    const er = await withTimeout(p.page.evaluate(i => stress.eventsStep(i, 'error'), id), 60000, 'error');
+    note('error', er);
+    const errs = er.events.filter(e => e.name === 'error');
+    check(`error event for a non-fatal core error (${er.expectCode})`, errs.some(e => e.payload.code === er.expectCode && typeof e.payload.message === 'string'), er.events);
+    const logged = cozyErrors(p.logs, since, er.expectCode);
+    check('the error is still logged as [cozygpu:CODE]', logged.length > 0, logged.length);
+    check('error events = logged core errors (one each)', errs.length === logged.length, { events: errs.length, logged: logged.length });
+
+    const as = await withTimeout(p.page.evaluate(i => stress.eventsStep(i, 'assets'), id), 60000, 'assets');
+    note('assets', as);
+    const prog = as.events.filter(e => e.name === 'assetProgress').map(e => e.payload);
+    const aerr = as.events.filter(e => e.name === 'assetError').map(e => e.payload);
+    check('assetProgress for a finished load (key, bundle null, ratio 1)', as.loaded === true && prog.length >= 1 && prog.some(x => x.key.includes('icon-3') && x.bundle === null && x.ratio === 1), { prog, loadError: as.loadError });
+    check('assetError for a failed load, same code as the rejection', aerr.length === 1 && aerr[0].code === as.missing && aerr[0].url.includes('missing-'), { aerr, rejected: as.missing });
+
+    const gpu = gpuErrorLines(p.logs, since).filter(l => !/destroyed|lost/i.test(l.text));
+    check('no GPU errors beyond lost-device noise', gpu.length === 0, gpu.slice(0, 3).map(l => l.text));
+    await p.page.evaluate(i => stress.dropCtx(i), id);
+
+    // A sink that always throws: caught, logged once per event name, rendering goes on.
+    const pre = p.logs.length;
+    const th = await withTimeout(p.page.evaluate(o => stress.eventsInit(o), { worker, backend, throwing: true }), 60000, 'eventsInit throwing');
+    if (check('throwing sink: createRenderer still resolved', !th.createError, th.createError)) {
+      await withTimeout(p.page.evaluate(i => stress.eventsStep(i, 'manual'), th.ctxId), 60000, 'manual (throwing)');
+      await withTimeout(p.page.evaluate(i => stress.eventsStep(i, 'manual'), th.ctxId), 60000, 'manual (throwing) again');
+      const img = await shot(p, th.ctxId);
+      const lines = p.logs.slice(pre).filter(l => l.text.includes('events sink threw'));
+      const perName = {};
+      for (const l of lines) {
+        const m = l.text.match(/on "(\w+)"/);
+        perName[m?.[1] ?? '?'] = (perName[m?.[1] ?? '?'] ?? 0) + 1;
+      }
+      note('throwing sink logs', perName);
+      check('throwing sink: logged once per event name (ready 1, resize 1 after 4 resizes)', perName.ready === 1 && perName.resize === 1, perName);
+      const st = await p.page.evaluate(i => stress.liveState(i), th.ctxId);
+      check('throwing sink: frames flow, nothing thrown into the app', st.loopThrows.length === 0 && st.frameId > 20, { throws: st.loopThrows, frameId: st.frameId });
+      check('throwing sink: scene visible', img.lit > 1000, img);
+      await p.page.evaluate(i => stress.dropCtx(i), th.ctxId);
+    }
+  });
+}
+
+/** 'auto' with WebGPU hidden: fallback → ready, both before createRenderer() resolves. */
+async function runFallback(mode) {
+  const worker = mode === 'worker';
+  for (const [query, label] of [['?nogpu=1', 'navigator.gpu missing'], ['?noadapter=1', 'requestAdapter() → null']]) {
+    await scenario(`events: 'auto' fallback, ${label} [auto/${mode}]`, async p => {
+      const init = await withTimeout(p.page.evaluate(o => stress.eventsInit(o), { worker, backend: 'auto', debug: false }), 60000, 'eventsInit auto');
+      note('init', init);
+      if (!check('createRenderer resolved', !init.createError, init.createError)) return;
+      const names = evNames(init.log);
+      const fb = init.log.find(e => e.name === 'fallback')?.payload;
+      const ready = init.log.find(e => e.name === 'ready')?.payload;
+      check('ended on WebGL2', init.info.backend === 'webgl2', init.info);
+      check('fallback then ready, both before createRenderer() resolved, once each', JSON.stringify(names.filter(n => n !== 'resize')) === JSON.stringify(['fallback', 'ready', '@resolved']), names);
+      check("fallback payload { from: 'webgpu', to: 'webgl2', reason }", fb && fb.from === 'webgpu' && fb.to === 'webgl2' && typeof fb.reason === 'string' && fb.reason.length > 0, fb);
+      check('ready.fallbackReason = renderer.info.fallbackReason = fallback.reason', ready && ready.backend === 'webgl2' && ready.fallbackReason === init.info.fallbackReason && ready.fallbackReason === fb?.reason, { ready, info: init.info, fb });
+      const img = await shot(p, init.ctxId);
+      check('the fallback renderer draws', img.lit > 1000, img);
+      await p.page.evaluate(i => stress.dropCtx(i), init.ctxId);
+    }, { query });
+  }
+}
+
+/**
+ * Picking with the frame-rate limit off: one pick always in flight against
+ * an uncapped rAF loop (100k sprites + swarm). JS allocations per pick are
+ * measured with the sampling heap profiler against a no-pick baseline, and
+ * the retained heap must not grow over a longer run.
+ */
+async function runPickAlloc(mode, backend) {
+  const worker = mode === 'worker';
+  await closeBrowser();
+  launchExtraArgs = UNCAP_FLAGS;
+  try {
+    await scenario(`uncapped picking without allocation growth (${PICK_SPRITES.toLocaleString('en')} sprites + swarm) [${backend}/${mode}]`, async p => {
+      const since = p.logs.length;
+      const r = await withTimeout(p.page.evaluate(o => stress.pickScene(o), { worker, backend, count: PICK_SPRITES, swarmCount: PICK_SWARM }), 180000, 'pickScene');
+      const id = r.ctxId;
+      const pts = Array.from({ length: 5 }, (_, i) => [70 + i * 120, 500, i]);
+      // Warm up: first pick loads the pick-client chunk and the readback ring.
+      await withTimeout(p.page.evaluate(i => stress.pickAt(i, 70, 500), id), 30000, 'warm pick');
+      const f0 = await p.page.evaluate(i => stress.loopFrames(i), id);
+      await new Promise(res => setTimeout(res, 3000));
+      const f1 = await p.page.evaluate(i => stress.loopFrames(i), id);
+      const fps = +(((f1.frames - f0.frames) * 1000) / 3000).toFixed(1);
+      note('uncapped loop without picks', { fps, skipped: f1.skipped - f0.skipped, cpuMs: f1.cpuMs });
+      if (worker) note('main-thread rAF rate in worker mode (informational)', fps);
+      else check('frames are uncapped (> 70 fps without picks)', fps > 70, fps);
+
+      // Baseline: the same loop, no picks.
+      let t = await allocStart(p);
+      const b0 = await p.page.evaluate(i => stress.loopFrames(i), id);
+      await new Promise(res => setTimeout(res, 6000));
+      const b1 = await p.page.evaluate(i => stress.loopFrames(i), id);
+      const base = await allocStop(t);
+      const baseFrames = Math.max(1, b1.frameId - b0.frameId);
+
+      // The first pick after seconds of uncapped submits (known M2.5 open item: queue depth).
+      const first = await withTimeout(p.page.evaluate(i => stress.pickAt(i, 190, 500), id), 30000, 'first pick after idle');
+      note('first pick after the uncapped no-readback phase (informational, ARCHITECTURE §7.1 open item)', first);
+
+      const h0 = await heapBoth(p);
+      t = await allocStart(p);
+      await p.page.evaluate((i, q) => stress.pickPumpStart(i, q), id, pts);
+      await new Promise(res => setTimeout(res, PICK_ALLOC_S * 1000));
+      const mid = await p.page.evaluate(i => stress.pickPumpState(i), id);
+      const prof = await allocStop(t);
+      // Keep pumping (no profiler) for the retained-heap check.
+      await new Promise(res => setTimeout(res, PICK_SOAK_S * 1000));
+      const h1 = await heapBoth(p);
+      const res = await withTimeout(p.page.evaluate(i => stress.pickPumpStop(i), id), 30000, 'pickPumpStop');
+      const picksProf = mid.picks;
+      const framesProf = Math.max(1, mid.frameId - b1.frameId);
+      const perFrame = {};
+      const perPick = {};
+      for (const k of Object.keys(prof)) {
+        const b = base[k] ?? { bytes: 0, library: 0, api: 0, driver: 0, native: 0 };
+        perFrame[k] = { base: perUnit(b, baseFrames), picking: perUnit(prof[k], framesProf) };
+        // Extra bytes while picking, over what the same frames cost without picks.
+        const extra = {};
+        for (const c of ['bytes', 'library', 'api', 'driver', 'native']) extra[c] = prof[k][c] - (b[c] / baseFrames) * framesProf;
+        perPick[k] = perUnit(extra, picksProf);
+      }
+      note('pump', res);
+      note('allocations', { baseFrames, framesProf, picksProf, perFrame, perPick });
+      note('allocation sites', { base: Object.fromEntries(Object.entries(base).map(([k, a]) => [k, a.top.slice(0, 6)])), picking: Object.fromEntries(Object.entries(prof).map(([k, a]) => [k, a.top])) });
+      note('heap before / after the pick soak', { before: h0, after: h1 });
+
+      check('picks kept flowing (> 20 per second with one in flight)', res.picksPerS > 20, { picksPerS: res.picksPerS, framesPerPick: +(res.frames / Math.max(1, res.picks)).toFixed(1) });
+      check('every pick answered the right node', res.bad === 0, { bad: res.bad, samples: res.badSamples });
+      check('no pick rejected or left hanging', res.errors === 0 && !res.stillPending, { errors: res.errors, samples: res.errSamples, pending: res.stillPending });
+      check('uncapped pick latency p99 < 50 ms', res.p99Ms < 50, { p50: res.p50Ms, p99: res.p99Ms, max: res.maxMs, over100: res.over100 });
+      check('no pick took longer than 500 ms while picks kept a readback in flight', res.maxMs < 500, { max: res.maxMs, over100: res.over100 });
+      check('no render-loop throws', res.loopThrows.length === 0, res.loopThrows);
+      // §19.6: no library allocation per pick beyond the promise pick() returns
+      // (plus the PickHit it resolves with, and the native mapAsync promise /
+      // WebGL2 sync object). 256 B per pick covers those; M2 was ~30 KB per picking frame.
+      check('library JS allocations per pick < 256 B on the page', perPick.page.library < 256, perPick.page);
+      if (worker) check('library JS allocations per pick < 256 B in the worker', (perPick.worker?.library ?? 0) < 256, perPick.worker);
+      check('total page allocations per pick < 1 KB (incl. runtime/native)', perPick.page.total < 1024, perPick.page);
+      check(`page heap after GC did not grow over ${PICK_SOAK_S}s of picking (< 1 MB)`, h1.pageMB - h0.pageMB < 1, { before: h0.pageMB, after: h1.pageMB });
+      if (worker) check(`worker heap after GC did not grow over ${PICK_SOAK_S}s of picking (< 1 MB)`, h1.workerMB - h0.workerMB < 1, { before: h0.workerMB, after: h1.workerMB });
+      const gpu = gpuErrorLines(p.logs, since);
+      check('no GPU errors', gpu.length === 0, gpu.slice(0, 3).map(l => l.text));
+      check('no cozygpu errors', cozyErrors(p.logs, since).length === 0, cozyErrors(p.logs, since).slice(0, 3).map(l => l.text));
+      await p.page.evaluate(i => stress.dropCtx(i), id);
+    });
+  } finally {
+    await closeBrowser();
+    launchExtraArgs = [];
+  }
+}
+
+const EXT_R = [500, 20, 280, 440];
+const EXT_L = [20, 20, 280, 440];
+const EXT_RT = [500, 20, 280, 210];
+const EXT_RB = [500, 250, 280, 210];
+const EXT_P = [630, 520, 40, 40];
+const EXT_MARK = [0, 560, 40, 40];
+
+async function runExternal(mode, backend) {
+  const worker = mode === 'worker';
+  const N = backend === 'webgl2' ? 200_000 : EXT_N;
+  await scenario(`external instance buffer (interop) ${worker || backend === 'webgl2' ? '' : `${N.toLocaleString('en')} `}[${backend}/${mode}]`, async p => {
+    const since = p.logs.length;
+    const step = async (name, o = {}) => {
+      const r = await withTimeout(p.page.evaluate(q => stress.extStep(q), { step: name, ctxId: id, ...o }), 180000, `extStep ${name}`);
+      if (r.throws?.length || r.loopThrows?.length) check(`${name}: no throws`, false, { throws: r.throws, loopThrows: r.loopThrows });
+      return r;
+    };
+    let id = null;
+    const init = await step('init', { worker, backend, count: N });
+    id = init.ctxId;
+    note('init', init);
+    if (worker) {
+      check('worker mode: renderer.interop() rejects with UNSUPPORTED', init.interop === 'UNSUPPORTED', init.interop);
+      const img = await shot(p, id);
+      check('worker mode: the renderer keeps drawing', (img?.red ?? 0) > 500, img);
+      check('no cozygpu errors', cozyErrors(p.logs, since).length === 0, cozyErrors(p.logs, since).slice(0, 3).map(l => l.text));
+      await p.page.evaluate(i => stress.dropCtx(i), id);
+      return;
+    }
+    if (!check('main thread: renderer.interop() resolves', init.interop === 'ok', init.interop)) return;
+    check('interop.backend matches, device is the native object', init.interopBackend === backend && init.deviceKind === (backend === 'webgpu' ? 'GPUDevice' : 'WebGL2RenderingContext'), { backend: init.interopBackend, device: init.deviceKind });
+
+    if (backend === 'webgl2') {
+      const pre = p.logs.length;
+      const g = await step('webgl2');
+      note('webgl2', g);
+      check("webgl2: 'sprite-instance' is reserved (UNSUPPORTED)", g.spriteInstance === 'UNSUPPORTED', g.spriteInstance);
+      check('webgl2: registering a bound GL buffer as swarm-hot works', g.registerHot === 'ok', g.registerHot);
+      check('webgl2: setSource on a swarm that already ran throws UNSUPPORTED', g.setSourceAfterRun === 'UNSUPPORTED', g.setSourceAfterRun);
+      const uns = cozyErrors(p.logs, pre, 'UNSUPPORTED');
+      check('webgl2: a source set before the first frame disables that swarm with one UNSUPPORTED error; its readback rejects', (g.setSourceBeforeRun === 'ok' && uns.length === 1 && g.s2Read !== 'ok' && g.s2Read !== 'timeout') || g.setSourceBeforeRun === 'UNSUPPORTED', { set: g.setSourceBeforeRun, errors: uns.length, read: g.s2Read });
+      const rg = await regions(p, id, [EXT_L, EXT_MARK]);
+      check('webgl2: own swarm and marker still draw (invalidateState after outside GL calls)', rg[0].blue > 5000 && rg[1].red > 500, rg);
+      const gl = gpuErrorLines(p.logs, since);
+      check('webgl2: no GL errors', gl.length === 0, gl.slice(0, 3).map(l => l.text));
+      await p.page.evaluate(i => stress.dropCtx(i), id);
+      return;
+    }
+
+    let rg = await regions(p, id, [EXT_L, EXT_R, EXT_P, EXT_MARK]);
+    check('own swarm drawn before a source is set (left lit, right dark)', rg[0].blue > 5000 && rg[1].lit < 200, rg);
+
+    const set = await step('set');
+    note('set', set);
+    check('registerInstanceBuffer → valid handle', set.valid === true && set.id > 0 && set.layout === 'swarm-hot', set);
+    rg = await regions(p, id, [EXT_L, EXT_R, EXT_P, EXT_MARK]);
+    check('setSource: external records drawn (right lit), own buffers not drawn (left dark)', rg[1].blue > 5000 && rg[0].lit < 200 && rg[2].blue > 800, rg);
+
+    const rb = await step('readback');
+    note('readback', rb);
+    check('readHot of the external source returns the records written from outside', rb.headMismatch === 0 && rb.tailMismatch === 0, { head: rb.headMismatch, tail: rb.tailMismatch });
+    check(`aliveCount() over the external source = ${N}`, rb.alive === N, rb.alive);
+    check('readCold without an external cold: own cold (user 77)', rb.coldUser === 77, rb.coldUser);
+
+    const th = await step('throws');
+    check('spawn/kill/killList/write/clear throw INVALID_ARGUMENT while a source is set', Object.values(th.codes).every(c => c === 'INVALID_ARGUMENT'), th.codes);
+
+    await step('count0');
+    rg = await regions(p, id, [EXT_R, EXT_P]);
+    check('setSourceCount(0): nothing drawn', rg[0].lit < 200 && rg[1].lit < 50, rg);
+    await step('countHalf');
+    rg = await regions(p, id, [EXT_RT, EXT_RB, EXT_P]);
+    check('setSourceCount(N/2): first half (top band) drawn, second half not', rg[0].blue > 3000 && rg[1].lit < 200 && rg[2].blue > 800, rg);
+    await step('countFull');
+    rg = await regions(p, id, [EXT_RT, EXT_RB]);
+    check('setSourceCount(N) (and 2N, clamped): both bands drawn', rg[0].blue > 3000 && rg[1].blue > 3000, rg);
+
+    const pk = await step('pick');
+    note('pick', pk);
+    check('pick on external record 0 → the swarm, instance 0, userId 77 (own cold)', pk.hit && pk.hit.swarm && pk.hit.instance === 0 && pk.hit.userId === 77, pk.hit);
+    check('pick where only (undrawn) own objects are → null', pk.ownHit === null, pk.ownHit);
+
+    const cp = await step('compute', { frames: 240 });
+    note('outside compute pass + render', { stats: cp.stats, submits: cp.submits, moved: cp.moved, expected: cp.expectedMove });
+    check('outside compute writes are visible to cozygpu (queue order): records moved by submits × dx', Array.isArray(cp.moved) && cp.moved.every(m => Math.abs(m - cp.expectedMove) < 0.05), { moved: cp.moved, expected: cp.expectedMove });
+    check(`outside compute + draw of ${N.toLocaleString('en')} external records ≥ 55 fps`, cp.stats.fps >= 55, cp.stats);
+
+    const sim = await step('simulate');
+    note('simulate', sim);
+    check('simulate: true runs the swarm behaviors on the external buffer (velocity moved x)', Array.isArray(sim.moved) && sim.moved.every(m => m > 5), sim.moved);
+
+    const inv = await step('invalid');
+    note('invalid', inv.codes);
+    const c = inv.codes;
+    check('register: too small / no STORAGE / not a buffer / bad layout → INVALID_ARGUMENT', ['tooSmall', 'noStorage', 'notABuffer', 'badLayout'].every(k => c[k] === 'INVALID_ARGUMENT'), c);
+    check("register: 'sprite-instance' → UNSUPPORTED", c.spriteInstance === 'UNSUPPORTED', c.spriteInstance);
+    check('setSource: cold layout as hot, hot as cold, count > records, released buffer → INVALID_ARGUMENT', ['coldAsHot', 'hotAsCold', 'countOverRecords', 'releasedSource'].every(k => c[k] === 'INVALID_ARGUMENT'), c);
+    check('setSourceCount without a source → INVALID_ARGUMENT', c.countWithoutSource === 'INVALID_ARGUMENT', c.countWithoutSource);
+    rg = await regions(p, id, [EXT_R]);
+    check('after the rejected calls the swarm still draws source A', rg[0].blue > 5000, rg);
+
+    const nc = await step('nocopysrc');
+    check('readHot of a source without COPY_SRC rejects UNSUPPORTED', nc.readHot === 'UNSUPPORTED', nc.readHot);
+
+    const rel = await step('release');
+    note('release', rel);
+    check('release(): handle invalid', rel.valid === false, rel.valid);
+    rg = await regions(p, id, [EXT_L, EXT_R]);
+    check('released source in use: the swarm draws nothing', rg[1].lit < 200 && rg[0].lit < 200, rg);
+    check('readHot of a released source rejects UNSUPPORTED', rel.readHot === 'UNSUPPORTED', rel.readHot);
+    check('aliveCount() while the source is gone waits (does not resolve yet)', rel.pendingAlive === 'pending', rel.pendingAlive);
+
+    const nul = await step('null');
+    note('null', nul);
+    rg = await regions(p, id, [EXT_L, EXT_R]);
+    check('setSource(null): own buffers drawn again with their kept contents', rg[0].blue > 5000 && rg[1].lit < 200, rg);
+    check('the waiting aliveCount() resolves once the swarm has buffers again (own alive count)', typeof nul.pendingAlive === 'number' && nul.pendingAlive >= N - 1, nul.pendingAlive);
+    check('spawn works again after setSource(null)', nul.spawn === 'ok', nul.spawn);
+
+    const ch = await step('churn', { cycles: 100 });
+    check('100 register / setSource / release / destroy cycles', ch.cycles === 100 && ch.throws.length === 0, { cycles: ch.cycles, throws: ch.throws });
+    rg = await regions(p, id, [EXT_L]);
+    check('after the churn the own swarm draws', rg[0].blue > 5000, rg);
+    const gpuBeforeLoss = gpuErrorLines(p.logs, since);
+    check('no GPU errors before the device loss (incl. release/destroy of in-use buffers)', gpuBeforeLoss.length === 0, gpuBeforeLoss.slice(0, 3).map(l => l.text));
+    const errBeforeLoss = cozyErrors(p.logs, since);
+    check('no cozygpu errors before the device loss', errBeforeLoss.length === 0, errBeforeLoss.slice(0, 3).map(l => l.text));
+
+    const lossSince = p.logs.length;
+    const ls = await step('loss');
+    note('loss', ls);
+    if (check('device loss triggered and restored', ls.trigger === 'ok' && ls.restored, ls)) {
+      check('after the loss: registration invalid, interop.device replaced', ls.validAfter === false && ls.newDevice === true, ls);
+      rg = await regions(p, id, [EXT_R, EXT_MARK]);
+      check('after the loss: the swarm with a lost source draws nothing, the rest draws', rg[0].lit < 200 && rg[1].red > 500, rg);
+      check('after the loss: readHot of the lost source rejects (no hang)', ls.readHotAfter !== 'ok' && ls.readHotAfter !== 'timeout', ls.readHotAfter);
+      const re = await step('reregister');
+      note('reregister', re);
+      rg = await regions(p, id, [EXT_R, EXT_P]);
+      check('new buffer on the new device registers and setSource accepts it (readHot = new records)', re.valid === true && re.headOk === true, re);
+      // Draw-only sources take colors / user ids from the swarm's own cold
+      // buffer, which the loss emptied: nothing visible until it is refilled.
+      note('after re-registering only (own cold records lost with the device)', rg);
+      const rc = await step('restoreCold');
+      note('restoreCold', rc);
+      rg = await regions(p, id, [EXT_R, EXT_P]);
+      check('after refilling the own cold records (spawn) + setSource: external records drawn again', rc.spawn === 'ok' && rg[0].blue > 5000 && rg[1].blue > 800, { spawn: rc.spawn, rg });
+      check('pick after the restore → swarm, instance 0, userId 77', rc.hit && rc.hit.swarm && rc.hit.instance === 0 && rc.hit.userId === 77, rc.hit);
+      const gpu = gpuErrorLines(p.logs, lossSince).filter(l => !/destroyed|lost/i.test(l.text));
+      check('no GPU errors after the loss beyond lost-device noise', gpu.length === 0, gpu.slice(0, 3).map(l => l.text));
+    }
+    await p.page.evaluate(i => stress.dropCtx(i), id);
+  });
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────────
 async function main() {
   outDir = await mkdtemp(path.join(os.tmpdir(), 'cozygpu-stress-'));
@@ -1353,6 +1941,14 @@ async function main() {
     // Worker-only scenarios (the command ring and its heap behaviour).
     ['ring', (mode, backend) => (mode === 'worker' ? runRing(backend) : undefined)],
     ['soak', (mode, backend) => (mode === 'worker' ? runSoak(backend) : undefined)],
+    // M2.5 integration hooks.
+    ['columns', runColumns],
+    ['pickuid', runPickUid],
+    ['events', runEvents],
+    // 'auto' with WebGPU hidden: once per mode (in the last backend's pass).
+    ['fallback', (mode, backend) => (backend === BACKENDS[BACKENDS.length - 1] ? runFallback(mode) : undefined)],
+    ['pickalloc', runPickAlloc],
+    ['external', runExternal],
   ];
   if (argv['crash-test']) {
     const kind = String(argv['crash-test']);

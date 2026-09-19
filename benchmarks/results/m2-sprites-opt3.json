@@ -1,0 +1,1986 @@
+{
+  "meta": {
+    "label": "m2-sprites-opt3",
+    "date": "2026-09-17T19:39:37.239Z",
+    "chrome": "Google Chrome 152.0.7977.84",
+    "chromeFlags": [
+      "--enable-unsafe-webgpu",
+      "--use-angle=metal",
+      "--ignore-gpu-blocklist",
+      "--enable-precise-memory-info",
+      "--js-flags=--expose-gc",
+      "--disable-background-timer-throttling",
+      "--disable-renderer-backgrounding",
+      "--disable-backgrounding-occluded-windows",
+      "--no-first-run",
+      "--no-default-browser-check",
+      "--window-size=1280,720",
+      "--disable-gpu-vsync",
+      "--disable-frame-rate-limit"
+    ],
+    "headful": false,
+    "vsync": false,
+    "warmupSec": 2,
+    "durationSec": 5,
+    "repeat": 3,
+    "width": 1280,
+    "height": 720,
+    "scenarios": [
+      "s1"
+    ],
+    "filter": "cozygpu-webgpu|three-webgpu|pixi-webgl-particle",
+    "versions": {
+      "pixi.js": "8.20.1",
+      "three": "0.186.0",
+      "puppeteer-core": "25.11.0",
+      "esbuild": "0.28.2",
+      "cozygpu": "0.0.1"
+    },
+    "gpu": "apple metal-3",
+    "machine": {
+      "cpu": "Apple M4",
+      "cores": 10,
+      "memGB": 16,
+      "platform": "darwin 25.5.0 arm64"
+    }
+  },
+  "bundles": [],
+  "results": [
+    {
+      "id": "sprites-moving/100000/cozygpu-webgpu-auto",
+      "status": "ok",
+      "params": {
+        "lib": "cozygpu",
+        "renderer": "webgpu",
+        "variant": "auto",
+        "scenario": "sprites-moving",
+        "count": 100000,
+        "warmupSec": 2,
+        "durationSec": 5,
+        "width": 1280,
+        "height": 720,
+        "seed": 1337
+      },
+      "tool": "Sprite",
+      "init": {
+        "rendererMs": 19.380000114440918,
+        "populateMs": 14.355000019073486,
+        "firstFrameMs": 14.975000143051147,
+        "totalMs": 48.71000027656555
+      },
+      "frame": {
+        "frames": 4043,
+        "elapsedMs": 5000.745000123978,
+        "fps": 808.578976928093,
+        "avgMs": 1.2367375711388675,
+        "p50Ms": 1.2150001525878906,
+        "p95Ms": 1.440000057220459,
+        "p99Ms": 1.554999828338623,
+        "maxMs": 2.0799999237060547
+      },
+      "cpu": {
+        "avgMs": 1.0844014331960101,
+        "p50Ms": 1.0649998188018799,
+        "p99Ms": 1.3799998760223389,
+        "maxMs": 1.8900001049041748
+      },
+      "heap": {
+        "precise": true,
+        "baselineBytes": 19575996,
+        "afterInitBytes": 19985095,
+        "afterPopulateBytes": 55402677,
+        "endBytes": 58483260,
+        "perObjectBytes": 354.17582,
+        "growthPerFrameBytes": 631.8487669854052
+      },
+      "info": {
+        "version": "0.0.1",
+        "backend": "webgpu",
+        "worker": false,
+        "sharedMemory": true,
+        "drawCalls": 1,
+        "packetBytes": 96,
+        "frontCpuMs": 0.3399999141693115,
+        "skippedFrames": 0,
+        "frameId": 5565
+      },
+      "env": {
+        "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36",
+        "devicePixelRatio": 1,
+        "crossOriginIsolated": true,
+        "hardwareConcurrency": 10,
+        "gpu": {
+          "vendor": "apple",
+          "architecture": "metal-3",
+          "device": "",
+          "description": ""
+        }
+      },
+      "destroyMs": 2.169999837875366,
+      "loadedJs": {
+        "files": 9,
+        "min": 237756,
+        "gzip": 80384
+      },
+      "logs": [
+        "log: [bench] cozygpu/webgpu/auto sprites-moving 100000 → ok 808.6 fps"
+      ],
+      "wallMs": 7969,
+      "reps": {
+        "n": 3,
+        "ok": 3,
+        "statuses": [
+          "ok",
+          "ok",
+          "ok"
+        ],
+        "range": {
+          "avgMs": [
+            1.1957783357541794,
+            1.2585795168667866
+          ],
+          "p99Ms": [
+            1.5499999523162842,
+            1.6050000190734863
+          ],
+          "cpuAvgMs": [
+            1.0589909132789164,
+            1.119257674363611
+          ]
+        }
+      },
+      "runs": [
+        {
+          "id": "sprites-moving/100000/cozygpu-webgpu-auto",
+          "status": "ok",
+          "params": {
+            "lib": "cozygpu",
+            "renderer": "webgpu",
+            "variant": "auto",
+            "scenario": "sprites-moving",
+            "count": 100000,
+            "warmupSec": 2,
+            "durationSec": 5,
+            "width": 1280,
+            "height": 720,
+            "seed": 1337
+          },
+          "tool": "Sprite",
+          "init": {
+            "rendererMs": 10.539999961853027,
+            "populateMs": 15.400000095367432,
+            "firstFrameMs": 13.355000019073486,
+            "totalMs": 39.295000076293945
+          },
+          "frame": {
+            "frames": 4043,
+            "elapsedMs": 5000.130000114441,
+            "fps": 808.578976928093,
+            "avgMs": 1.2367375711388675,
+            "p50Ms": 1.2150001525878906,
+            "p95Ms": 1.4700000286102295,
+            "p99Ms": 1.6050000190734863,
+            "maxMs": 2.0799999237060547
+          },
+          "cpu": {
+            "avgMs": 1.0844014331960101,
+            "p50Ms": 1.0649998188018799,
+            "p99Ms": 1.3799998760223389,
+            "maxMs": 1.8799998760223389
+          },
+          "heap": {
+            "precise": true,
+            "baselineBytes": 19575996,
+            "afterInitBytes": 19985095,
+            "afterPopulateBytes": 55402709,
+            "endBytes": 58483260,
+            "perObjectBytes": 354.17614,
+            "growthPerFrameBytes": -534.1006678209251
+          },
+          "info": {
+            "version": "0.0.1",
+            "backend": "webgpu",
+            "worker": false,
+            "sharedMemory": true,
+            "drawCalls": 1,
+            "packetBytes": 96,
+            "frontCpuMs": 0.33500003814697266,
+            "skippedFrames": 0,
+            "frameId": 5565
+          },
+          "env": {
+            "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36",
+            "devicePixelRatio": 1,
+            "crossOriginIsolated": true,
+            "hardwareConcurrency": 10,
+            "gpu": {
+              "vendor": "apple",
+              "architecture": "metal-3",
+              "device": "",
+              "description": ""
+            }
+          },
+          "destroyMs": 2.169999837875366,
+          "loadedJs": {
+            "files": 9,
+            "min": 237756,
+            "gzip": 80384
+          },
+          "wallMs": 8006
+        },
+        {
+          "id": "sprites-moving/100000/cozygpu-webgpu-auto",
+          "status": "ok",
+          "params": {
+            "lib": "cozygpu",
+            "renderer": "webgpu",
+            "variant": "auto",
+            "scenario": "sprites-moving",
+            "count": 100000,
+            "warmupSec": 2,
+            "durationSec": 5,
+            "width": 1280,
+            "height": 720,
+            "seed": 1337
+          },
+          "tool": "Sprite",
+          "init": {
+            "rendererMs": 39.200000047683716,
+            "populateMs": 13.880000114440918,
+            "firstFrameMs": 16.144999980926514,
+            "totalMs": 69.22500014305115
+          },
+          "frame": {
+            "frames": 4182,
+            "elapsedMs": 5000.745000123978,
+            "fps": 836.2753949454172,
+            "avgMs": 1.1957783357541794,
+            "p50Ms": 1.1750001907348633,
+            "p95Ms": 1.4099998474121094,
+            "p99Ms": 1.554999828338623,
+            "maxMs": 2.065000057220459
+          },
+          "cpu": {
+            "avgMs": 1.0589909132789164,
+            "p50Ms": 1.0400002002716064,
+            "p99Ms": 1.3849999904632568,
+            "maxMs": 1.8900001049041748
+          },
+          "heap": {
+            "precise": true,
+            "baselineBytes": 19575996,
+            "afterInitBytes": 19985095,
+            "afterPopulateBytes": 55402677,
+            "endBytes": 63284884,
+            "perObjectBytes": 354.17582,
+            "growthPerFrameBytes": 1205.4526542324247
+          },
+          "info": {
+            "version": "0.0.1",
+            "backend": "webgpu",
+            "worker": false,
+            "sharedMemory": true,
+            "drawCalls": 1,
+            "packetBytes": 96,
+            "frontCpuMs": 0.3399999141693115,
+            "skippedFrames": 0,
+            "frameId": 5823
+          },
+          "env": {
+            "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36",
+            "devicePixelRatio": 1,
+            "crossOriginIsolated": true,
+            "hardwareConcurrency": 10,
+            "gpu": {
+              "vendor": "apple",
+              "architecture": "metal-3",
+              "device": "",
+              "description": ""
+            }
+          },
+          "destroyMs": 5.724999904632568,
+          "loadedJs": {
+            "files": 9,
+            "min": 237756,
+            "gzip": 80384
+          },
+          "wallMs": 7950
+        },
+        {
+          "id": "sprites-moving/100000/cozygpu-webgpu-auto",
+          "status": "ok",
+          "params": {
+            "lib": "cozygpu",
+            "renderer": "webgpu",
+            "variant": "auto",
+            "scenario": "sprites-moving",
+            "count": 100000,
+            "warmupSec": 2,
+            "durationSec": 5,
+            "width": 1280,
+            "height": 720,
+            "seed": 1337
+          },
+          "tool": "Sprite",
+          "init": {
+            "rendererMs": 19.380000114440918,
+            "populateMs": 14.355000019073486,
+            "firstFrameMs": 14.975000143051147,
+            "totalMs": 48.71000027656555
+          },
+          "frame": {
+            "frames": 3974,
+            "elapsedMs": 5001.59500002861,
+            "fps": 794.5465396493055,
+            "avgMs": 1.2585795168667866,
+            "p50Ms": 1.2549998760223389,
+            "p95Ms": 1.440000057220459,
+            "p99Ms": 1.5499999523162842,
+            "maxMs": 2.559999942779541
+          },
+          "cpu": {
+            "avgMs": 1.119257674363611,
+            "p50Ms": 1.1150000095367432,
+            "p99Ms": 1.3650000095367432,
+            "maxMs": 1.9900000095367432
+          },
+          "heap": {
+            "precise": true,
+            "baselineBytes": 19575996,
+            "afterInitBytes": 19985095,
+            "afterPopulateBytes": 55402221,
+            "endBytes": 58322812,
+            "perObjectBytes": 354.17126,
+            "growthPerFrameBytes": 631.8487669854052
+          },
+          "info": {
+            "version": "0.0.1",
+            "backend": "webgpu",
+            "worker": false,
+            "sharedMemory": true,
+            "drawCalls": 1,
+            "packetBytes": 96,
+            "frontCpuMs": 0.39499998092651367,
+            "skippedFrames": 0,
+            "frameId": 5540
+          },
+          "env": {
+            "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36",
+            "devicePixelRatio": 1,
+            "crossOriginIsolated": true,
+            "hardwareConcurrency": 10,
+            "gpu": {
+              "vendor": "apple",
+              "architecture": "metal-3",
+              "device": "",
+              "description": ""
+            }
+          },
+          "destroyMs": 2.1599998474121094,
+          "loadedJs": {
+            "files": 9,
+            "min": 237756,
+            "gzip": 80384
+          },
+          "wallMs": 7969
+        }
+      ]
+    },
+    {
+      "id": "sprites-moving/100000/pixi-webgl-particle",
+      "status": "ok",
+      "params": {
+        "lib": "pixi",
+        "renderer": "webgl",
+        "variant": "particle",
+        "scenario": "sprites-moving",
+        "count": 100000,
+        "warmupSec": 2,
+        "durationSec": 5,
+        "width": 1280,
+        "height": 720,
+        "seed": 1337
+      },
+      "tool": "ParticleContainer",
+      "init": {
+        "rendererMs": 57.03999996185303,
+        "populateMs": 43.049999952316284,
+        "firstFrameMs": 18.81000018119812,
+        "totalMs": 117.89499998092651
+      },
+      "frame": {
+        "frames": 3602,
+        "elapsedMs": 5000.625,
+        "fps": 720.2465874686266,
+        "avgMs": 1.3884133814706332,
+        "p50Ms": 1.3650000095367432,
+        "p95Ms": 1.5850000381469727,
+        "p99Ms": 1.690000057220459,
+        "maxMs": 2.0450000762939453
+      },
+      "cpu": {
+        "avgMs": 1.1999319818270067,
+        "p50Ms": 1.179999828338623,
+        "p99Ms": 1.445000171661377,
+        "maxMs": 1.6449999809265137
+      },
+      "heap": {
+        "precise": true,
+        "baselineBytes": 20617014,
+        "afterInitBytes": 21101825,
+        "afterPopulateBytes": 51526226,
+        "endBytes": 59411325,
+        "perObjectBytes": 304.24425,
+        "growthPerFrameBytes": 63.32486440194119
+      },
+      "info": {
+        "backend": "webgl",
+        "version": "8.20.1"
+      },
+      "env": {
+        "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36",
+        "devicePixelRatio": 1,
+        "crossOriginIsolated": true,
+        "hardwareConcurrency": 10,
+        "gpu": {
+          "vendor": "apple",
+          "architecture": "metal-3",
+          "device": "",
+          "description": ""
+        }
+      },
+      "destroyMs": 3.509999990463257,
+      "loadedJs": {
+        "files": 22,
+        "min": 555816,
+        "gzip": 170390
+      },
+      "logs": [
+        "log: [bench] pixi/webgl/particle sprites-moving 100000 → ok 700.5 fps"
+      ],
+      "wallMs": 7954,
+      "reps": {
+        "n": 3,
+        "ok": 3,
+        "statuses": [
+          "ok",
+          "ok",
+          "ok"
+        ],
+        "range": {
+          "avgMs": [
+            1.3441572580927161,
+            1.4275264059377677
+          ],
+          "p99Ms": [
+            1.6499998569488525,
+            1.8199999332427979
+          ],
+          "cpuAvgMs": [
+            1.155256719999416,
+            1.2421010576450175
+          ]
+        }
+      },
+      "runs": [
+        {
+          "id": "sprites-moving/100000/pixi-webgl-particle",
+          "status": "ok",
+          "params": {
+            "lib": "pixi",
+            "renderer": "webgl",
+            "variant": "particle",
+            "scenario": "sprites-moving",
+            "count": 100000,
+            "warmupSec": 2,
+            "durationSec": 5,
+            "width": 1280,
+            "height": 720,
+            "seed": 1337
+          },
+          "tool": "ParticleContainer",
+          "init": {
+            "rendererMs": 51.34500002861023,
+            "populateMs": 41.605000019073486,
+            "firstFrameMs": 24.944999933242798,
+            "totalMs": 117.89499998092651
+          },
+          "frame": {
+            "frames": 3503,
+            "elapsedMs": 5000.625,
+            "fps": 700.5124359455068,
+            "avgMs": 1.4275264059377677,
+            "p50Ms": 1.3999998569488525,
+            "p95Ms": 1.7000000476837158,
+            "p99Ms": 1.8199999332427979,
+            "maxMs": 3.549999952316284
+          },
+          "cpu": {
+            "avgMs": 1.2421010576450175,
+            "p50Ms": 1.2100000381469727,
+            "p99Ms": 1.5900001525878906,
+            "maxMs": 3.259999990463257
+          },
+          "heap": {
+            "precise": true,
+            "baselineBytes": 20617130,
+            "afterInitBytes": 21101885,
+            "afterPopulateBytes": 51526310,
+            "endBytes": 64162757,
+            "perObjectBytes": 304.24425,
+            "growthPerFrameBytes": 63.32486440194119
+          },
+          "info": {
+            "backend": "webgl",
+            "version": "8.20.1"
+          },
+          "env": {
+            "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36",
+            "devicePixelRatio": 1,
+            "crossOriginIsolated": true,
+            "hardwareConcurrency": 10,
+            "gpu": {
+              "vendor": "apple",
+              "architecture": "metal-3",
+              "device": "",
+              "description": ""
+            }
+          },
+          "destroyMs": 3.509999990463257,
+          "loadedJs": {
+            "files": 22,
+            "min": 555816,
+            "gzip": 170390
+          },
+          "wallMs": 7954
+        },
+        {
+          "id": "sprites-moving/100000/pixi-webgl-particle",
+          "status": "ok",
+          "params": {
+            "lib": "pixi",
+            "renderer": "webgl",
+            "variant": "particle",
+            "scenario": "sprites-moving",
+            "count": 100000,
+            "warmupSec": 2,
+            "durationSec": 5,
+            "width": 1280,
+            "height": 720,
+            "seed": 1337
+          },
+          "tool": "ParticleContainer",
+          "init": {
+            "rendererMs": 57.03999996185303,
+            "populateMs": 43.049999952316284,
+            "firstFrameMs": 17.27999997138977,
+            "totalMs": 117.36999988555908
+          },
+          "frame": {
+            "frames": 3720,
+            "elapsedMs": 5000.265000104904,
+            "fps": 743.9605700741771,
+            "avgMs": 1.3441572580927161,
+            "p50Ms": 1.3199999332427979,
+            "p95Ms": 1.5399999618530273,
+            "p99Ms": 1.6499998569488525,
+            "maxMs": 1.8100001811981201
+          },
+          "cpu": {
+            "avgMs": 1.155256719999416,
+            "p50Ms": 1.1349999904632568,
+            "p99Ms": 1.4100000858306885,
+            "maxMs": 1.5699999332427979
+          },
+          "heap": {
+            "precise": true,
+            "baselineBytes": 20617014,
+            "afterInitBytes": 21101769,
+            "afterPopulateBytes": 51526194,
+            "endBytes": 59411325,
+            "perObjectBytes": 304.24425,
+            "growthPerFrameBytes": 80.61693548387096
+          },
+          "info": {
+            "backend": "webgl",
+            "version": "8.20.1"
+          },
+          "env": {
+            "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36",
+            "devicePixelRatio": 1,
+            "crossOriginIsolated": true,
+            "hardwareConcurrency": 10,
+            "gpu": {
+              "vendor": "apple",
+              "architecture": "metal-3",
+              "device": "",
+              "description": ""
+            }
+          },
+          "destroyMs": 4.069999933242798,
+          "loadedJs": {
+            "files": 22,
+            "min": 555816,
+            "gzip": 170390
+          },
+          "wallMs": 7922
+        },
+        {
+          "id": "sprites-moving/100000/pixi-webgl-particle",
+          "status": "ok",
+          "params": {
+            "lib": "pixi",
+            "renderer": "webgl",
+            "variant": "particle",
+            "scenario": "sprites-moving",
+            "count": 100000,
+            "warmupSec": 2,
+            "durationSec": 5,
+            "width": 1280,
+            "height": 720,
+            "seed": 1337
+          },
+          "tool": "ParticleContainer",
+          "init": {
+            "rendererMs": 69.00999999046326,
+            "populateMs": 43.18499994277954,
+            "firstFrameMs": 18.81000018119812,
+            "totalMs": 131.00500011444092
+          },
+          "frame": {
+            "frames": 3602,
+            "elapsedMs": 5001.0650000572205,
+            "fps": 720.2465874686266,
+            "avgMs": 1.3884133814706332,
+            "p50Ms": 1.3650000095367432,
+            "p95Ms": 1.5850000381469727,
+            "p99Ms": 1.690000057220459,
+            "maxMs": 2.0450000762939453
+          },
+          "cpu": {
+            "avgMs": 1.1999319818270067,
+            "p50Ms": 1.179999828338623,
+            "p99Ms": 1.445000171661377,
+            "maxMs": 1.6449999809265137
+          },
+          "heap": {
+            "precise": true,
+            "baselineBytes": 20616109,
+            "afterInitBytes": 21101825,
+            "afterPopulateBytes": 51526226,
+            "endBytes": 54573345,
+            "perObjectBytes": 304.24401,
+            "growthPerFrameBytes": -1935.028595224875
+          },
+          "info": {
+            "backend": "webgl",
+            "version": "8.20.1"
+          },
+          "env": {
+            "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36",
+            "devicePixelRatio": 1,
+            "crossOriginIsolated": true,
+            "hardwareConcurrency": 10,
+            "gpu": {
+              "vendor": "apple",
+              "architecture": "metal-3",
+              "device": "",
+              "description": ""
+            }
+          },
+          "destroyMs": 1.3899998664855957,
+          "loadedJs": {
+            "files": 22,
+            "min": 555816,
+            "gzip": 170390
+          },
+          "wallMs": 7964
+        }
+      ]
+    },
+    {
+      "id": "sprites-moving/100000/three-webgpu-instanced",
+      "status": "ok",
+      "params": {
+        "lib": "three",
+        "renderer": "webgpu",
+        "variant": "instanced",
+        "scenario": "sprites-moving",
+        "count": 100000,
+        "warmupSec": 2,
+        "durationSec": 5,
+        "width": 1280,
+        "height": 720,
+        "seed": 1337
+      },
+      "tool": "InstancedMesh",
+      "init": {
+        "rendererMs": 20.945000171661377,
+        "populateMs": 3.0949997901916504,
+        "firstFrameMs": 15.765000104904175,
+        "totalMs": 39.62500023841858
+      },
+      "frame": {
+        "frames": 3780,
+        "elapsedMs": 5008.035000085831,
+        "fps": 755.871501859101,
+        "avgMs": 1.322976190450961,
+        "p50Ms": 1.2949998378753662,
+        "p95Ms": 1.7799999713897705,
+        "p99Ms": 2.2100000381469727,
+        "maxMs": 8.759999990463257
+      },
+      "cpu": {
+        "avgMs": 1.1024986764110585,
+        "p50Ms": 1.065000057220459,
+        "p99Ms": 1.9150002002716064,
+        "maxMs": 3.120000123977661
+      },
+      "heap": {
+        "precise": true,
+        "baselineBytes": 22137993,
+        "afterInitBytes": 22149530,
+        "afterPopulateBytes": 29434070,
+        "endBytes": 31449757,
+        "perObjectBytes": 72.8454,
+        "growthPerFrameBytes": 42.09285714285714
+      },
+      "info": {
+        "backend": "webgpu",
+        "version": "r186",
+        "drawCalls": 3
+      },
+      "env": {
+        "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36",
+        "devicePixelRatio": 1,
+        "crossOriginIsolated": true,
+        "hardwareConcurrency": 10,
+        "gpu": {
+          "vendor": "apple",
+          "architecture": "metal-3",
+          "device": "",
+          "description": ""
+        }
+      },
+      "destroyMs": 0.47499990463256836,
+      "loadedJs": {
+        "files": 4,
+        "min": 917726,
+        "gzip": 255289
+      },
+      "logs": [
+        "log: [bench] three/webgpu/instanced sprites-moving 100000 → ok 816.4 fps"
+      ],
+      "wallMs": 7957,
+      "reps": {
+        "n": 3,
+        "ok": 3,
+        "statuses": [
+          "ok",
+          "ok",
+          "ok"
+        ],
+        "range": {
+          "avgMs": [
+            1.2249082905005988,
+            1.3930556328472408
+          ],
+          "p99Ms": [
+            1.8650000095367432,
+            2.990000009536743
+          ],
+          "cpuAvgMs": [
+            1.0075556371287222,
+            1.140403335449261
+          ]
+        }
+      },
+      "runs": [
+        {
+          "id": "sprites-moving/100000/three-webgpu-instanced",
+          "status": "ok",
+          "params": {
+            "lib": "three",
+            "renderer": "webgpu",
+            "variant": "instanced",
+            "scenario": "sprites-moving",
+            "count": 100000,
+            "warmupSec": 2,
+            "durationSec": 5,
+            "width": 1280,
+            "height": 720,
+            "seed": 1337
+          },
+          "tool": "InstancedMesh",
+          "init": {
+            "rendererMs": 23.480000019073486,
+            "populateMs": 3.0949997901916504,
+            "firstFrameMs": 15.765000104904175,
+            "totalMs": 42.33999991416931
+          },
+          "frame": {
+            "frames": 4089,
+            "elapsedMs": 5008.649999856949,
+            "fps": 816.3876493899124,
+            "avgMs": 1.2249082905005988,
+            "p50Ms": 1.2049999237060547,
+            "p95Ms": 1.5999999046325684,
+            "p99Ms": 1.8650000095367432,
+            "maxMs": 8.759999990463257
+          },
+          "cpu": {
+            "avgMs": 1.0075556371287222,
+            "p50Ms": 0.9900000095367432,
+            "p99Ms": 1.5600001811981201,
+            "maxMs": 2.680000066757202
+          },
+          "heap": {
+            "precise": true,
+            "baselineBytes": 22137993,
+            "afterInitBytes": 22149530,
+            "afterPopulateBytes": 29434022,
+            "endBytes": 31366133,
+            "perObjectBytes": 72.84492,
+            "growthPerFrameBytes": -562.0193201271704
+          },
+          "info": {
+            "backend": "webgpu",
+            "version": "r186",
+            "drawCalls": 3
+          },
+          "env": {
+            "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36",
+            "devicePixelRatio": 1,
+            "crossOriginIsolated": true,
+            "hardwareConcurrency": 10,
+            "gpu": {
+              "vendor": "apple",
+              "architecture": "metal-3",
+              "device": "",
+              "description": ""
+            }
+          },
+          "destroyMs": 1.1200001239776611,
+          "loadedJs": {
+            "files": 4,
+            "min": 917726,
+            "gzip": 255289
+          },
+          "wallMs": 7958
+        },
+        {
+          "id": "sprites-moving/100000/three-webgpu-instanced",
+          "status": "ok",
+          "params": {
+            "lib": "three",
+            "renderer": "webgpu",
+            "variant": "instanced",
+            "scenario": "sprites-moving",
+            "count": 100000,
+            "warmupSec": 2,
+            "durationSec": 5,
+            "width": 1280,
+            "height": 720,
+            "seed": 1337
+          },
+          "tool": "InstancedMesh",
+          "init": {
+            "rendererMs": 20.945000171661377,
+            "populateMs": 3.120000123977661,
+            "firstFrameMs": 15.559999942779541,
+            "totalMs": 39.62500023841858
+          },
+          "frame": {
+            "frames": 3595,
+            "elapsedMs": 5008.035000085831,
+            "fps": 717.8464207894687,
+            "avgMs": 1.3930556328472408,
+            "p50Ms": 1.3249998092651367,
+            "p95Ms": 2.2049999237060547,
+            "p99Ms": 2.990000009536743,
+            "maxMs": 9.100000143051147
+          },
+          "cpu": {
+            "avgMs": 1.140403335449261,
+            "p50Ms": 1.065000057220459,
+            "p99Ms": 2.5749998092651367,
+            "maxMs": 3.120000123977661
+          },
+          "heap": {
+            "precise": true,
+            "baselineBytes": 22137993,
+            "afterInitBytes": 22149530,
+            "afterPopulateBytes": 29434070,
+            "endBytes": 31449757,
+            "perObjectBytes": 72.8454,
+            "growthPerFrameBytes": 235.49235048678722
+          },
+          "info": {
+            "backend": "webgpu",
+            "version": "r186",
+            "drawCalls": 3
+          },
+          "env": {
+            "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36",
+            "devicePixelRatio": 1,
+            "crossOriginIsolated": true,
+            "hardwareConcurrency": 10,
+            "gpu": {
+              "vendor": "apple",
+              "architecture": "metal-3",
+              "device": "",
+              "description": ""
+            }
+          },
+          "destroyMs": 0.4500000476837158,
+          "loadedJs": {
+            "files": 4,
+            "min": 917726,
+            "gzip": 255289
+          },
+          "wallMs": 7957
+        },
+        {
+          "id": "sprites-moving/100000/three-webgpu-instanced",
+          "status": "ok",
+          "params": {
+            "lib": "three",
+            "renderer": "webgpu",
+            "variant": "instanced",
+            "scenario": "sprites-moving",
+            "count": 100000,
+            "warmupSec": 2,
+            "durationSec": 5,
+            "width": 1280,
+            "height": 720,
+            "seed": 1337
+          },
+          "tool": "InstancedMesh",
+          "init": {
+            "rendererMs": 3.3350000381469727,
+            "populateMs": 3.009999990463257,
+            "firstFrameMs": 16.200000047683716,
+            "totalMs": 22.545000076293945
+          },
+          "frame": {
+            "frames": 3780,
+            "elapsedMs": 5000.849999904633,
+            "fps": 755.871501859101,
+            "avgMs": 1.322976190450961,
+            "p50Ms": 1.2949998378753662,
+            "p95Ms": 1.7799999713897705,
+            "p99Ms": 2.2100000381469727,
+            "maxMs": 4.2200000286102295
+          },
+          "cpu": {
+            "avgMs": 1.1024986764110585,
+            "p50Ms": 1.0750000476837158,
+            "p99Ms": 1.9150002002716064,
+            "maxMs": 3.1700000762939453
+          },
+          "heap": {
+            "precise": true,
+            "baselineBytes": 22137993,
+            "afterInitBytes": 22149530,
+            "afterPopulateBytes": 29434086,
+            "endBytes": 33203449,
+            "perObjectBytes": 72.84556,
+            "growthPerFrameBytes": 42.09285714285714
+          },
+          "info": {
+            "backend": "webgpu",
+            "version": "r186",
+            "drawCalls": 3
+          },
+          "env": {
+            "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36",
+            "devicePixelRatio": 1,
+            "crossOriginIsolated": true,
+            "hardwareConcurrency": 10,
+            "gpu": {
+              "vendor": "apple",
+              "architecture": "metal-3",
+              "device": "",
+              "description": ""
+            }
+          },
+          "destroyMs": 0.47499990463256836,
+          "loadedJs": {
+            "files": 4,
+            "min": 917726,
+            "gzip": 255289
+          },
+          "wallMs": 7921
+        }
+      ]
+    },
+    {
+      "id": "sprites-moving/1000000/cozygpu-webgpu-auto",
+      "status": "ok",
+      "params": {
+        "lib": "cozygpu",
+        "renderer": "webgpu",
+        "variant": "auto",
+        "scenario": "sprites-moving",
+        "count": 1000000,
+        "warmupSec": 2,
+        "durationSec": 5,
+        "width": 1280,
+        "height": 720,
+        "seed": 1337
+      },
+      "tool": "Sprite",
+      "init": {
+        "rendererMs": 13.369999885559082,
+        "populateMs": 128.70499992370605,
+        "firstFrameMs": 88.61999988555908,
+        "totalMs": 231.92499995231628
+      },
+      "frame": {
+        "frames": 380,
+        "elapsedMs": 5010.884999990463,
+        "fps": 75.83490740672022,
+        "avgMs": 13.186539473659113,
+        "p50Ms": 13.125,
+        "p95Ms": 15.099999904632568,
+        "p99Ms": 15.59500002861023,
+        "maxMs": 16.210000038146973
+      },
+      "cpu": {
+        "avgMs": 12.989065783902218,
+        "p50Ms": 12.929999828338623,
+        "p99Ms": 15.369999885559082,
+        "maxMs": 16.02999997138977
+      },
+      "heap": {
+        "precise": true,
+        "baselineBytes": 33975044,
+        "afterInitBytes": 34385096,
+        "afterPopulateBytes": 330120386,
+        "endBytes": 355384397,
+        "perObjectBytes": 295.73529,
+        "growthPerFrameBytes": 21732.611731843575
+      },
+      "info": {
+        "version": "0.0.1",
+        "backend": "webgpu",
+        "worker": false,
+        "sharedMemory": true,
+        "drawCalls": 1,
+        "packetBytes": 96,
+        "frontCpuMs": 4.049999952316284,
+        "skippedFrames": 0,
+        "frameId": 536
+      },
+      "env": {
+        "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36",
+        "devicePixelRatio": 1,
+        "crossOriginIsolated": true,
+        "hardwareConcurrency": 10,
+        "gpu": {
+          "vendor": "apple",
+          "architecture": "metal-3",
+          "device": "",
+          "description": ""
+        }
+      },
+      "destroyMs": 13.21500015258789,
+      "loadedJs": {
+        "files": 9,
+        "min": 237756,
+        "gzip": 80384
+      },
+      "logs": [
+        "log: [bench] cozygpu/webgpu/auto sprites-moving 1000000 → ok 75.8 fps"
+      ],
+      "wallMs": 8120,
+      "reps": {
+        "n": 3,
+        "ok": 3,
+        "statuses": [
+          "ok",
+          "ok",
+          "ok"
+        ],
+        "range": {
+          "avgMs": [
+            12.687734177142758,
+            13.966494413727489
+          ],
+          "p99Ms": [
+            15.569999933242798,
+            16.68499994277954
+          ],
+          "cpuAvgMs": [
+            12.507354431514498,
+            13.77058658586534
+          ]
+        }
+      },
+      "runs": [
+        {
+          "id": "sprites-moving/1000000/cozygpu-webgpu-auto",
+          "status": "ok",
+          "params": {
+            "lib": "cozygpu",
+            "renderer": "webgpu",
+            "variant": "auto",
+            "scenario": "sprites-moving",
+            "count": 1000000,
+            "warmupSec": 2,
+            "durationSec": 5,
+            "width": 1280,
+            "height": 720,
+            "seed": 1337
+          },
+          "tool": "Sprite",
+          "init": {
+            "rendererMs": 40.78500008583069,
+            "populateMs": 120.75500011444092,
+            "firstFrameMs": 89.71000003814697,
+            "totalMs": 251.25000023841858
+          },
+          "frame": {
+            "frames": 380,
+            "elapsedMs": 5010.884999990463,
+            "fps": 75.83490740672022,
+            "avgMs": 13.186539473659113,
+            "p50Ms": 13.125,
+            "p95Ms": 15.099999904632568,
+            "p99Ms": 15.59500002861023,
+            "maxMs": 16.210000038146973
+          },
+          "cpu": {
+            "avgMs": 12.989065783902218,
+            "p50Ms": 12.929999828338623,
+            "p99Ms": 15.239999771118164,
+            "maxMs": 16.02999997138977
+          },
+          "heap": {
+            "precise": true,
+            "baselineBytes": 33975997,
+            "afterInitBytes": 34385096,
+            "afterPopulateBytes": 330120506,
+            "endBytes": 362040053,
+            "perObjectBytes": 295.73541,
+            "growthPerFrameBytes": 72213.38684210526
+          },
+          "info": {
+            "version": "0.0.1",
+            "backend": "webgpu",
+            "worker": false,
+            "sharedMemory": true,
+            "drawCalls": 1,
+            "packetBytes": 96,
+            "frontCpuMs": 4.555000066757202,
+            "skippedFrames": 0,
+            "frameId": 536
+          },
+          "env": {
+            "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36",
+            "devicePixelRatio": 1,
+            "crossOriginIsolated": true,
+            "hardwareConcurrency": 10,
+            "gpu": {
+              "vendor": "apple",
+              "architecture": "metal-3",
+              "device": "",
+              "description": ""
+            }
+          },
+          "destroyMs": 13.21500015258789,
+          "loadedJs": {
+            "files": 9,
+            "min": 237756,
+            "gzip": 80384
+          },
+          "wallMs": 8006
+        },
+        {
+          "id": "sprites-moving/1000000/cozygpu-webgpu-auto",
+          "status": "ok",
+          "params": {
+            "lib": "cozygpu",
+            "renderer": "webgpu",
+            "variant": "auto",
+            "scenario": "sprites-moving",
+            "count": 1000000,
+            "warmupSec": 2,
+            "durationSec": 5,
+            "width": 1280,
+            "height": 720,
+            "seed": 1337
+          },
+          "tool": "Sprite",
+          "init": {
+            "rendererMs": 11.990000009536743,
+            "populateMs": 131.31500005722046,
+            "firstFrameMs": 88.61999988555908,
+            "totalMs": 231.92499995231628
+          },
+          "frame": {
+            "frames": 358,
+            "elapsedMs": 5000.005000114441,
+            "fps": 71.59992839843281,
+            "avgMs": 13.966494413727489,
+            "p50Ms": 13.875,
+            "p95Ms": 16.024999856948853,
+            "p99Ms": 16.68499994277954,
+            "maxMs": 17.169999837875366
+          },
+          "cpu": {
+            "avgMs": 13.77058658586534,
+            "p50Ms": 13.684999942779541,
+            "p99Ms": 16.49500012397766,
+            "maxMs": 17.024999856948853
+          },
+          "heap": {
+            "precise": true,
+            "baselineBytes": 33975044,
+            "afterInitBytes": 34385096,
+            "afterPopulateBytes": 330120386,
+            "endBytes": 355384397,
+            "perObjectBytes": 295.73529,
+            "growthPerFrameBytes": 21732.611731843575
+          },
+          "info": {
+            "version": "0.0.1",
+            "backend": "webgpu",
+            "worker": false,
+            "sharedMemory": true,
+            "drawCalls": 1,
+            "packetBytes": 96,
+            "frontCpuMs": 4.049999952316284,
+            "skippedFrames": 0,
+            "frameId": 507
+          },
+          "env": {
+            "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36",
+            "devicePixelRatio": 1,
+            "crossOriginIsolated": true,
+            "hardwareConcurrency": 10,
+            "gpu": {
+              "vendor": "apple",
+              "architecture": "metal-3",
+              "device": "",
+              "description": ""
+            }
+          },
+          "destroyMs": 9.674999952316284,
+          "loadedJs": {
+            "files": 9,
+            "min": 237756,
+            "gzip": 80384
+          },
+          "wallMs": 8179
+        },
+        {
+          "id": "sprites-moving/1000000/cozygpu-webgpu-auto",
+          "status": "ok",
+          "params": {
+            "lib": "cozygpu",
+            "renderer": "webgpu",
+            "variant": "auto",
+            "scenario": "sprites-moving",
+            "count": 1000000,
+            "warmupSec": 2,
+            "durationSec": 5,
+            "width": 1280,
+            "height": 720,
+            "seed": 1337
+          },
+          "tool": "Sprite",
+          "init": {
+            "rendererMs": 13.369999885559082,
+            "populateMs": 128.70499992370605,
+            "firstFrameMs": 87.42000007629395,
+            "totalMs": 229.49499988555908
+          },
+          "frame": {
+            "frames": 395,
+            "elapsedMs": 5011.65499997139,
+            "fps": 78.81627925351106,
+            "avgMs": 12.687734177142758,
+            "p50Ms": 12.59000015258789,
+            "p95Ms": 14.809999942779541,
+            "p99Ms": 15.569999933242798,
+            "maxMs": 15.975000143051147
+          },
+          "cpu": {
+            "avgMs": 12.507354431514498,
+            "p50Ms": 12.419999837875366,
+            "p99Ms": 15.369999885559082,
+            "maxMs": 15.820000171661377
+          },
+          "heap": {
+            "precise": true,
+            "baselineBytes": 33975044,
+            "afterInitBytes": 34385096,
+            "afterPopulateBytes": 330120346,
+            "endBytes": 341494089,
+            "perObjectBytes": 295.73525,
+            "growthPerFrameBytes": -41183.26329113924
+          },
+          "info": {
+            "version": "0.0.1",
+            "backend": "webgpu",
+            "worker": false,
+            "sharedMemory": true,
+            "drawCalls": 1,
+            "packetBytes": 96,
+            "frontCpuMs": 3.6449999809265137,
+            "skippedFrames": 0,
+            "frameId": 559
+          },
+          "env": {
+            "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36",
+            "devicePixelRatio": 1,
+            "crossOriginIsolated": true,
+            "hardwareConcurrency": 10,
+            "gpu": {
+              "vendor": "apple",
+              "architecture": "metal-3",
+              "device": "",
+              "description": ""
+            }
+          },
+          "destroyMs": 24.53499984741211,
+          "loadedJs": {
+            "files": 9,
+            "min": 237756,
+            "gzip": 80384
+          },
+          "wallMs": 8120
+        }
+      ]
+    },
+    {
+      "id": "sprites-moving/1000000/pixi-webgl-particle",
+      "status": "ok",
+      "params": {
+        "lib": "pixi",
+        "renderer": "webgl",
+        "variant": "particle",
+        "scenario": "sprites-moving",
+        "count": 1000000,
+        "warmupSec": 2,
+        "durationSec": 5,
+        "width": 1280,
+        "height": 720,
+        "seed": 1337
+      },
+      "tool": "ParticleContainer",
+      "init": {
+        "rendererMs": 37.02500009536743,
+        "populateMs": 429.69000005722046,
+        "firstFrameMs": 71.75,
+        "totalMs": 538.4650001525879
+      },
+      "frame": {
+        "frames": 316,
+        "elapsedMs": 5010.90499997139,
+        "fps": 63.17580366466597,
+        "avgMs": 15.828844937342632,
+        "p50Ms": 15.785000085830688,
+        "p95Ms": 16.390000104904175,
+        "p99Ms": 16.764999866485596,
+        "maxMs": 17.015000104904175
+      },
+      "cpu": {
+        "avgMs": 15.708702529533,
+        "p50Ms": 15.680000066757202,
+        "p99Ms": 16.569999933242798,
+        "maxMs": 16.890000104904175
+      },
+      "heap": {
+        "precise": true,
+        "baselineBytes": 35017071,
+        "afterInitBytes": 35501826,
+        "afterPopulateBytes": 338244007,
+        "endBytes": 367252742,
+        "perObjectBytes": 302.742181,
+        "growthPerFrameBytes": -4928.585443037975
+      },
+      "info": {
+        "backend": "webgl",
+        "version": "8.20.1"
+      },
+      "env": {
+        "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36",
+        "devicePixelRatio": 1,
+        "crossOriginIsolated": true,
+        "hardwareConcurrency": 10,
+        "gpu": {
+          "vendor": "apple",
+          "architecture": "metal-3",
+          "device": "",
+          "description": ""
+        }
+      },
+      "destroyMs": 1.5800001621246338,
+      "loadedJs": {
+        "files": 22,
+        "min": 555816,
+        "gzip": 170390
+      },
+      "logs": [
+        "log: [bench] pixi/webgl/particle sprites-moving 1000000 → ok 63.2 fps"
+      ],
+      "wallMs": 8101,
+      "reps": {
+        "n": 3,
+        "ok": 3,
+        "statuses": [
+          "ok",
+          "ok",
+          "ok"
+        ],
+        "range": {
+          "avgMs": [
+            15.659078124910593,
+            16.875959596248588
+          ],
+          "p99Ms": [
+            16.59000015258789,
+            19.100000143051147
+          ],
+          "cpuAvgMs": [
+            15.545781246572734,
+            16.738535355237197
+          ]
+        }
+      },
+      "runs": [
+        {
+          "id": "sprites-moving/1000000/pixi-webgl-particle",
+          "status": "ok",
+          "params": {
+            "lib": "pixi",
+            "renderer": "webgl",
+            "variant": "particle",
+            "scenario": "sprites-moving",
+            "count": 1000000,
+            "warmupSec": 2,
+            "durationSec": 5,
+            "width": 1280,
+            "height": 720,
+            "seed": 1337
+          },
+          "tool": "ParticleContainer",
+          "init": {
+            "rendererMs": 27.554999828338623,
+            "populateMs": 459.6050000190735,
+            "firstFrameMs": 73.02999997138977,
+            "totalMs": 560.1899998188019
+          },
+          "frame": {
+            "frames": 316,
+            "elapsedMs": 5001.915000200272,
+            "fps": 63.17580366466597,
+            "avgMs": 15.828844937342632,
+            "p50Ms": 15.785000085830688,
+            "p95Ms": 16.390000104904175,
+            "p99Ms": 16.764999866485596,
+            "maxMs": 17.015000104904175
+          },
+          "cpu": {
+            "avgMs": 15.708702529533,
+            "p50Ms": 15.680000066757202,
+            "p99Ms": 16.569999933242798,
+            "maxMs": 16.890000104904175
+          },
+          "heap": {
+            "precise": true,
+            "baselineBytes": 35017071,
+            "afterInitBytes": 35501826,
+            "afterPopulateBytes": 338244007,
+            "endBytes": 367252742,
+            "perObjectBytes": 302.742181,
+            "growthPerFrameBytes": -4928.585443037975
+          },
+          "info": {
+            "backend": "webgl",
+            "version": "8.20.1"
+          },
+          "env": {
+            "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36",
+            "devicePixelRatio": 1,
+            "crossOriginIsolated": true,
+            "hardwareConcurrency": 10,
+            "gpu": {
+              "vendor": "apple",
+              "architecture": "metal-3",
+              "device": "",
+              "description": ""
+            }
+          },
+          "destroyMs": 1.5800001621246338,
+          "loadedJs": {
+            "files": 22,
+            "min": 555816,
+            "gzip": 170390
+          },
+          "wallMs": 8260
+        },
+        {
+          "id": "sprites-moving/1000000/pixi-webgl-particle",
+          "status": "ok",
+          "params": {
+            "lib": "pixi",
+            "renderer": "webgl",
+            "variant": "particle",
+            "scenario": "sprites-moving",
+            "count": 1000000,
+            "warmupSec": 2,
+            "durationSec": 5,
+            "width": 1280,
+            "height": 720,
+            "seed": 1337
+          },
+          "tool": "ParticleContainer",
+          "init": {
+            "rendererMs": 37.02500009536743,
+            "populateMs": 429.69000005722046,
+            "firstFrameMs": 71.75,
+            "totalMs": 538.4650001525879
+          },
+          "frame": {
+            "frames": 297,
+            "elapsedMs": 5012.160000085831,
+            "fps": 59.255889675292494,
+            "avgMs": 16.875959596248588,
+            "p50Ms": 16.894999980926514,
+            "p95Ms": 18.19000005722046,
+            "p99Ms": 19.100000143051147,
+            "maxMs": 20.984999895095825
+          },
+          "cpu": {
+            "avgMs": 16.738535355237197,
+            "p50Ms": 16.74500012397766,
+            "p99Ms": 18.960000038146973,
+            "maxMs": 20.865000009536743
+          },
+          "heap": {
+            "precise": true,
+            "baselineBytes": 35017071,
+            "afterInitBytes": 35501826,
+            "afterPopulateBytes": 338244007,
+            "endBytes": 368126914,
+            "perObjectBytes": 302.742181,
+            "growthPerFrameBytes": 41480.73737373737
+          },
+          "info": {
+            "backend": "webgl",
+            "version": "8.20.1"
+          },
+          "env": {
+            "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36",
+            "devicePixelRatio": 1,
+            "crossOriginIsolated": true,
+            "hardwareConcurrency": 10,
+            "gpu": {
+              "vendor": "apple",
+              "architecture": "metal-3",
+              "device": "",
+              "description": ""
+            }
+          },
+          "destroyMs": 3.0199999809265137,
+          "loadedJs": {
+            "files": 22,
+            "min": 555816,
+            "gzip": 170390
+          },
+          "wallMs": 8101
+        },
+        {
+          "id": "sprites-moving/1000000/pixi-webgl-particle",
+          "status": "ok",
+          "params": {
+            "lib": "pixi",
+            "renderer": "webgl",
+            "variant": "particle",
+            "scenario": "sprites-moving",
+            "count": 1000000,
+            "warmupSec": 2,
+            "durationSec": 5,
+            "width": 1280,
+            "height": 720,
+            "seed": 1337
+          },
+          "tool": "ParticleContainer",
+          "init": {
+            "rendererMs": 57.11500000953674,
+            "populateMs": 378.5499999523163,
+            "firstFrameMs": 59.860000133514404,
+            "totalMs": 495.52500009536743
+          },
+          "frame": {
+            "frames": 320,
+            "elapsedMs": 5010.90499997139,
+            "fps": 63.860719770545856,
+            "avgMs": 15.659078124910593,
+            "p50Ms": 15.634999990463257,
+            "p95Ms": 16.335000038146973,
+            "p99Ms": 16.59000015258789,
+            "maxMs": 16.679999828338623
+          },
+          "cpu": {
+            "avgMs": 15.545781246572734,
+            "p50Ms": 15.514999866485596,
+            "p99Ms": 16.484999895095825,
+            "maxMs": 16.554999828338623
+          },
+          "heap": {
+            "precise": true,
+            "baselineBytes": 35017071,
+            "afterInitBytes": 35501826,
+            "afterPopulateBytes": 338244483,
+            "endBytes": 353244342,
+            "perObjectBytes": 302.742657,
+            "growthPerFrameBytes": -15647.103125
+          },
+          "info": {
+            "backend": "webgl",
+            "version": "8.20.1"
+          },
+          "env": {
+            "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36",
+            "devicePixelRatio": 1,
+            "crossOriginIsolated": true,
+            "hardwareConcurrency": 10,
+            "gpu": {
+              "vendor": "apple",
+              "architecture": "metal-3",
+              "device": "",
+              "description": ""
+            }
+          },
+          "destroyMs": 1.4800000190734863,
+          "loadedJs": {
+            "files": 22,
+            "min": 555816,
+            "gzip": 170390
+          },
+          "wallMs": 8009
+        }
+      ]
+    },
+    {
+      "id": "sprites-moving/1000000/three-webgpu-instanced",
+      "status": "ok",
+      "params": {
+        "lib": "three",
+        "renderer": "webgpu",
+        "variant": "instanced",
+        "scenario": "sprites-moving",
+        "count": 1000000,
+        "warmupSec": 2,
+        "durationSec": 5,
+        "width": 1280,
+        "height": 720,
+        "seed": 1337
+      },
+      "tool": "InstancedMesh",
+      "init": {
+        "rendererMs": 14.434999942779541,
+        "populateMs": 15.699999809265137,
+        "firstFrameMs": 18.930000066757202,
+        "totalMs": 52.125
+      },
+      "frame": {
+        "frames": 374,
+        "elapsedMs": 5004.755000114441,
+        "fps": 74.72893278321276,
+        "avgMs": 13.381697861268558,
+        "p50Ms": 12.879999876022339,
+        "p95Ms": 17.84000015258789,
+        "p99Ms": 22.819999933242798,
+        "maxMs": 32.855000019073486
+      },
+      "cpu": {
+        "avgMs": 13.151885023091566,
+        "p50Ms": 12.664999961853027,
+        "p99Ms": 22.649999856948853,
+        "maxMs": 32.58500003814697
+      },
+      "heap": {
+        "precise": true,
+        "baselineBytes": 36537994,
+        "afterInitBytes": 36549531,
+        "afterPopulateBytes": 101434023,
+        "endBytes": 104054222,
+        "perObjectBytes": 64.884492,
+        "growthPerFrameBytes": 949.4312668463612
+      },
+      "info": {
+        "backend": "webgpu",
+        "version": "r186",
+        "drawCalls": 3
+      },
+      "env": {
+        "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36",
+        "devicePixelRatio": 1,
+        "crossOriginIsolated": true,
+        "hardwareConcurrency": 10,
+        "gpu": {
+          "vendor": "apple",
+          "architecture": "metal-3",
+          "device": "",
+          "description": ""
+        }
+      },
+      "destroyMs": 0.9650001525878906,
+      "loadedJs": {
+        "files": 4,
+        "min": 917726,
+        "gzip": 255289
+      },
+      "logs": [
+        "log: [bench] three/webgpu/instanced sprites-moving 1000000 → ok 74.2 fps"
+      ],
+      "wallMs": 14617,
+      "reps": {
+        "n": 3,
+        "ok": 3,
+        "statuses": [
+          "ok",
+          "ok",
+          "ok"
+        ],
+        "range": {
+          "avgMs": [
+            12.719505076481001,
+            13.480768194095786
+          ],
+          "p99Ms": [
+            22.43999981880188,
+            25.74500012397766
+          ],
+          "cpuAvgMs": [
+            12.546053299443976,
+            13.266590297061478
+          ]
+        }
+      },
+      "runs": [
+        {
+          "id": "sprites-moving/1000000/three-webgpu-instanced",
+          "status": "ok",
+          "params": {
+            "lib": "three",
+            "renderer": "webgpu",
+            "variant": "instanced",
+            "scenario": "sprites-moving",
+            "count": 1000000,
+            "warmupSec": 2,
+            "durationSec": 5,
+            "width": 1280,
+            "height": 720,
+            "seed": 1337
+          },
+          "tool": "InstancedMesh",
+          "init": {
+            "rendererMs": 14.434999942779541,
+            "populateMs": 17.25,
+            "firstFrameMs": 20.44000005722046,
+            "totalMs": 52.125
+          },
+          "frame": {
+            "frames": 371,
+            "elapsedMs": 5001.365000009537,
+            "fps": 74.17974892840105,
+            "avgMs": 13.480768194095786,
+            "p50Ms": 12.879999876022339,
+            "p95Ms": 18.265000104904175,
+            "p99Ms": 25.74500012397766,
+            "maxMs": 32.855000019073486
+          },
+          "cpu": {
+            "avgMs": 13.266590297061478,
+            "p50Ms": 12.664999961853027,
+            "p99Ms": 25.605000019073486,
+            "maxMs": 32.58500003814697
+          },
+          "heap": {
+            "precise": true,
+            "baselineBytes": 36537994,
+            "afterInitBytes": 36549531,
+            "afterPopulateBytes": 101434023,
+            "endBytes": 102894102,
+            "perObjectBytes": 64.884492,
+            "growthPerFrameBytes": 949.4312668463612
+          },
+          "info": {
+            "backend": "webgpu",
+            "version": "r186",
+            "drawCalls": 3
+          },
+          "env": {
+            "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36",
+            "devicePixelRatio": 1,
+            "crossOriginIsolated": true,
+            "hardwareConcurrency": 10,
+            "gpu": {
+              "vendor": "apple",
+              "architecture": "metal-3",
+              "device": "",
+              "description": ""
+            }
+          },
+          "destroyMs": 0.8899998664855957,
+          "loadedJs": {
+            "files": 4,
+            "min": 917726,
+            "gzip": 255289
+          },
+          "wallMs": 13547
+        },
+        {
+          "id": "sprites-moving/1000000/three-webgpu-instanced",
+          "status": "ok",
+          "params": {
+            "lib": "three",
+            "renderer": "webgpu",
+            "variant": "instanced",
+            "scenario": "sprites-moving",
+            "count": 1000000,
+            "warmupSec": 2,
+            "durationSec": 5,
+            "width": 1280,
+            "height": 720,
+            "seed": 1337
+          },
+          "tool": "InstancedMesh",
+          "init": {
+            "rendererMs": 13.359999895095825,
+            "populateMs": 15.699999809265137,
+            "firstFrameMs": 18.930000066757202,
+            "totalMs": 47.989999771118164
+          },
+          "frame": {
+            "frames": 374,
+            "elapsedMs": 5004.755000114441,
+            "fps": 74.72893278321276,
+            "avgMs": 13.381697861268558,
+            "p50Ms": 12.990000009536743,
+            "p95Ms": 17.84000015258789,
+            "p99Ms": 22.43999981880188,
+            "maxMs": 26.640000104904175
+          },
+          "cpu": {
+            "avgMs": 13.151885023091566,
+            "p50Ms": 12.799999952316284,
+            "p99Ms": 21.204999923706055,
+            "maxMs": 23.244999885559082
+          },
+          "heap": {
+            "precise": true,
+            "baselineBytes": 36537994,
+            "afterInitBytes": 36549531,
+            "afterPopulateBytes": 101434023,
+            "endBytes": 104054222,
+            "perObjectBytes": 64.884492,
+            "growthPerFrameBytes": -2173.6497326203207
+          },
+          "info": {
+            "backend": "webgpu",
+            "version": "r186",
+            "drawCalls": 3
+          },
+          "env": {
+            "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36",
+            "devicePixelRatio": 1,
+            "crossOriginIsolated": true,
+            "hardwareConcurrency": 10,
+            "gpu": {
+              "vendor": "apple",
+              "architecture": "metal-3",
+              "device": "",
+              "description": ""
+            }
+          },
+          "destroyMs": 0.9650001525878906,
+          "loadedJs": {
+            "files": 4,
+            "min": 917726,
+            "gzip": 255289
+          },
+          "wallMs": 14617
+        },
+        {
+          "id": "sprites-moving/1000000/three-webgpu-instanced",
+          "status": "ok",
+          "params": {
+            "lib": "three",
+            "renderer": "webgpu",
+            "variant": "instanced",
+            "scenario": "sprites-moving",
+            "count": 1000000,
+            "warmupSec": 2,
+            "durationSec": 5,
+            "width": 1280,
+            "height": 720,
+            "seed": 1337
+          },
+          "tool": "InstancedMesh",
+          "init": {
+            "rendererMs": 20.824999809265137,
+            "populateMs": 14.835000038146973,
+            "firstFrameMs": 18.115000009536743,
+            "totalMs": 53.77499985694885
+          },
+          "frame": {
+            "frames": 394,
+            "elapsedMs": 5011.485000133514,
+            "fps": 78.61941121035046,
+            "avgMs": 12.719505076481001,
+            "p50Ms": 12.194999933242798,
+            "p95Ms": 16.549999952316284,
+            "p99Ms": 22.819999933242798,
+            "maxMs": 44.03999996185303
+          },
+          "cpu": {
+            "avgMs": 12.546053299443976,
+            "p50Ms": 12.06000018119812,
+            "p99Ms": 22.649999856948853,
+            "maxMs": 43.84000015258789
+          },
+          "heap": {
+            "precise": true,
+            "baselineBytes": 36537994,
+            "afterInitBytes": 36549531,
+            "afterPopulateBytes": 101434023,
+            "endBytes": 104976462,
+            "perObjectBytes": 64.884492,
+            "growthPerFrameBytes": 4520.484771573604
+          },
+          "info": {
+            "backend": "webgpu",
+            "version": "r186",
+            "drawCalls": 3
+          },
+          "env": {
+            "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36",
+            "devicePixelRatio": 1,
+            "crossOriginIsolated": true,
+            "hardwareConcurrency": 10,
+            "gpu": {
+              "vendor": "apple",
+              "architecture": "metal-3",
+              "device": "",
+              "description": ""
+            }
+          },
+          "destroyMs": 2.115000009536743,
+          "loadedJs": {
+            "files": 4,
+            "min": 917726,
+            "gzip": 255289
+          },
+          "wallMs": 15081
+        }
+      ]
+    }
+  ]
+}

@@ -1,31 +1,36 @@
 /**
- * Owner: "sprites". Core half of GPU picking (ARCHITECTURE §16.3). DOM-free.
- * Loaded on the first PICK command by the proxy in pickingCore.ts, which
- * RenderCore.ts (frozen) creates and calls `request` (execute phase), `render` (after the main pass, same
- * CommandList), `afterSubmit` (starts `backend.readTexture`), `failAll`,
- * `restore` and `destroy`.
+ * Owner: "renderer-hooks" (M2.5; was "sprites"). Core half of GPU picking
+ * (ARCHITECTURE §16.3, §19.6). DOM-free. Loaded on the first PICK command by
+ * the proxy in pickingCore.ts; RenderCore calls `request` (execute phase),
+ * `render` (after the main pass, same CommandList), `poll` (start of every
+ * packet), `failAll`, `restore` and `destroy`.
  *
- * Per request slot (at most PICK_SLOTS per packet; the rest wait for the next
- * one): a 1×1 `rg32uint` target and a pick View uniform + bind group, so
- * several picks in one frame never overwrite each other (writes to one
- * buffer range before a submit collapse to the last one).
+ * Per slot (PICK_SLOTS): a 1×1 PICK_TARGET_FORMAT target, a pick View
+ * uniform + bind group and a slot of one readback ring, so picks in flight
+ * never overwrite each other (writes to one buffer range before a submit
+ * collapse to the last one). A slot is busy from its pick pass until `poll`
+ * sees its readback READY; requests wait while every slot is busy.
  *
  * Pick View = identity stage → css transform with `translate = 0.5 - (x, y)`
  * and `resolution = (1, 1)`: the target's only texel center samples css
- * point (x, y). (M2 has no camera API, so the frame's View is always the
- * identity; see openIssues for a camera-aware contract.)
+ * point (x, y). (There is no camera API yet, so the frame's View is always
+ * the identity.)
  *
  * Systems create pick pipelines lazily. While any is compiling
  * (`pickPipelinesPending`), a rendered pick pass is not read back and its
  * requests stay queued, so a pick never reports a miss because a pipeline was
  * not ready.
+ *
+ * Nothing is allocated per pick: the answer is a reused message object
+ * (posted synchronously in local mode, structured-cloned in worker mode).
  */
-import { BufferUsage, TextureUsage } from '../backend/types';
+import { BufferUsage, ReadbackState, TextureUsage } from '../backend/types';
 import type {
   CommandList,
   RenderPassDesc,
   RhiBindGroup,
   RhiBuffer,
+  RhiReadbackRing,
   RhiTexture,
 } from '../backend/types';
 import type {
@@ -34,10 +39,13 @@ import type {
   CorePicking,
   PickReplay,
 } from '../types/core';
-import { CozyGPUError, type CozyGPUErrorCode } from '../types/errors';
+import type { CozyGPUErrorCode } from '../types/errors';
 import {
   PICK_RESULT_BYTES,
   PICK_TARGET_FORMAT,
+  PICK_TEXEL_INSTANCE,
+  PICK_TEXEL_OBJECT,
+  PICK_TEXEL_USER,
   VIEW_UNIFORM_BYTES,
   VU_COL0,
   VU_COL1,
@@ -48,8 +56,7 @@ import {
   VU_TRANSLATE,
 } from '../types/layouts';
 
-/** Pick requests rendered per packet. */
-/** Pick requests rendered per packet. */
+/** Picks in flight at once (pick targets and readback ring slots). */
 export const PICK_SLOTS = 4;
 
 interface Slot {
@@ -67,13 +74,22 @@ class CorePickingImpl implements CorePicking {
   private size = 0;
 
   private slots: Slot[] = [];
-  /** Requests rendered this packet, waiting for afterSubmit(). */
-  private rendered = 0;
-  private readonly renderedIds = new Uint32Array(PICK_SLOTS);
+  private ring: RhiReadbackRing | null = null;
+  /** Per ring slot: request in flight (0 = none). */
+  private readonly flight = new Uint32Array(PICK_SLOTS);
+  private inFlight = 0;
+  /** Ring slots acquired in the current render(). */
+  private readonly used = new Int32Array(PICK_SLOTS);
   private readonly viewData = new Float32Array(VIEW_UNIFORM_BYTES / 4);
   private readonly clearColor = new Float32Array(4);
   private readonly passDesc: RenderPassDesc;
-  /** Bumped by restore/destroy so late readbacks of old slots still answer. */
+  private readonly answer = {
+    type: 'pick' as const,
+    requestId: 0,
+    objectId: 0,
+    instance: -1,
+    userId: 0,
+  };
   private destroyed = false;
 
   constructor(
@@ -117,14 +133,18 @@ class CorePickingImpl implements CorePicking {
 
   render(list: CommandList, replay: PickReplay, frame: CoreFrameState): void {
     if (this.destroyed || this.size === 0) return;
-    const n = this.size < PICK_SLOTS ? this.size : PICK_SLOTS;
-    this.ensureSlots(n);
+    const ring = this.ensureSlots();
     const backend = this.ctx.backend;
     const view = this.viewData;
     const cap = this.ids.length;
-    for (let i = 0; i < n; i++) {
-      const at = (this.head + i) % cap;
-      const slot = this.slots[i];
+    const used = this.used;
+    let n = 0;
+    while (n < this.size) {
+      const s = ring.acquire();
+      if (s < 0) break; // every slot busy: the rest wait
+      used[n] = s;
+      const at = (this.head + n) % cap;
+      const slot = this.slots[s];
       view[VU_COL0 >> 2] = 1;
       view[(VU_COL0 >> 2) + 1] = 0;
       view[VU_COL1 >> 2] = 0;
@@ -144,55 +164,52 @@ class CorePickingImpl implements CorePicking {
         replay.drawPick(d, pass, slot.bindGroup);
       }
       pass.end();
+      n++;
     }
     // A pipeline still compiling skipped its draws: render again next packet.
-    if (this.pipelinesPending(this.ctx)) return;
+    const retry = this.pipelinesPending(this.ctx);
     for (let i = 0; i < n; i++) {
-      this.renderedIds[i] = this.ids[(this.head + i) % cap];
+      const s = used[i];
+      if (retry) {
+        ring.release(s);
+        continue;
+      }
+      ring.copyTexture(list, s, this.slots[s].texture, 0, 0, 1, 1);
+      this.flight[s] = this.ids[(this.head + i) % cap];
+      this.inFlight++;
     }
+    if (retry) return;
     this.head = (this.head + n) % cap;
     this.size -= n;
-    this.rendered = n;
   }
 
-  afterSubmit(): void {
-    const n = this.rendered;
-    if (n === 0) return;
-    this.rendered = 0;
-    const backend = this.ctx.backend;
-    for (let i = 0; i < n; i++) {
-      const requestId = this.renderedIds[i];
-      let read: Promise<ArrayBuffer>;
-      try {
-        read = backend.readTexture(this.slots[i].texture, 0, 0, 1, 1);
-      } catch (err) {
-        read = Promise.reject(err);
+  /** Readbacks start in the CommandList's submit (the ring maps them). */
+  afterSubmit(): void {}
+
+  poll(): void {
+    if (this.inFlight === 0) return;
+    const ring = this.ring!;
+    const flight = this.flight;
+    for (let s = 0; s < PICK_SLOTS; s++) {
+      const requestId = flight[s];
+      if (requestId === 0) continue;
+      const state = ring.poll(s);
+      if (state === ReadbackState.PENDING) continue;
+      flight[s] = 0;
+      this.inFlight--;
+      if (state === ReadbackState.READY) {
+        const texel = ring.data(s);
+        const msg = this.answer;
+        msg.requestId = requestId;
+        msg.objectId = texel[PICK_TEXEL_OBJECT];
+        msg.instance = msg.objectId === 0 ? -1 : texel[PICK_TEXEL_INSTANCE] - 1;
+        msg.userId = msg.objectId === 0 ? 0 : texel[PICK_TEXEL_USER];
+        ring.release(s);
+        this.ctx.post(msg);
+      } else {
+        ring.release(s);
+        this.answerError(requestId, 'DEVICE_LOST', 'pick readback failed');
       }
-      read.then(
-        data => {
-          if (data.byteLength < PICK_RESULT_BYTES) {
-            this.answerError(requestId, 'INTERNAL', 'short pick readback');
-            return;
-          }
-          const texel = new Uint32Array(data, 0, 2);
-          const objectId = texel[0];
-          this.ctx.post({
-            type: 'pick',
-            requestId,
-            objectId,
-            instance: objectId === 0 ? -1 : texel[1] - 1,
-          });
-        },
-        (err: unknown) => {
-          const code =
-            err instanceof CozyGPUError ? err.code : ('INTERNAL' as const);
-          this.answerError(
-            requestId,
-            code,
-            (err as Error)?.message ?? String(err),
-          );
-        },
-      );
     }
   }
 
@@ -203,17 +220,22 @@ class CorePickingImpl implements CorePicking {
     }
     this.head = 0;
     this.size = 0;
-    // Rendered but not yet read back: the readback never starts.
-    for (let i = 0; i < this.rendered; i++) {
-      this.answerError(this.renderedIds[i], code, message);
+    // Rendered, readback in flight: it can never answer now.
+    const flight = this.flight;
+    for (let s = 0; s < PICK_SLOTS; s++) {
+      if (flight[s] === 0) continue;
+      this.ring?.release(s);
+      this.answerError(flight[s], code, message);
+      flight[s] = 0;
     }
-    this.rendered = 0;
+    this.inFlight = 0;
   }
 
   async restore(ctx: CoreContext): Promise<void> {
     // The old device's objects are gone; recreate lazily on the next pick.
     this.ctx = ctx;
     this.slots = [];
+    this.ring = null;
   }
 
   destroy(): void {
@@ -224,6 +246,8 @@ class CorePickingImpl implements CorePicking {
       slot.buffer.destroy();
     }
     this.slots = [];
+    this.ring?.destroy();
+    this.ring = null;
   }
 
   private answerError(
@@ -258,10 +282,10 @@ class CorePickingImpl implements CorePicking {
     this.head = 0;
   }
 
-  private ensureSlots(n: number): void {
+  private ensureSlots(): RhiReadbackRing {
     const ctx = this.ctx;
     const backend = ctx.backend;
-    while (this.slots.length < n) {
+    while (this.slots.length < PICK_SLOTS) {
       const i = this.slots.length;
       const texture = backend.createTexture({
         label: `cozygpu.pick#${i}`,
@@ -282,6 +306,11 @@ class CorePickingImpl implements CorePicking {
       });
       this.slots.push({ texture, buffer, bindGroup });
     }
+    return (this.ring ??= backend.createReadbackRing({
+      label: 'cozygpu.pick',
+      slots: PICK_SLOTS,
+      slotBytes: PICK_RESULT_BYTES,
+    }));
   }
 }
 

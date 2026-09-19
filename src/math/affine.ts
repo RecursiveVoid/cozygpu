@@ -1,5 +1,5 @@
 /**
- * 2D affine helpers — owner: "sprites". See ./types.ts for the layout.
+ * 2D affine helpers. See ./types.ts for the layout.
  * Every function writes into `out` at `o` and returns nothing (no allocation).
  * `out` may alias an input: inputs are read into locals first.
  */

@@ -158,7 +158,7 @@ export function composeGlsl(input: ComposeInput): {
       'void main() {',
       '  vec4 color = swarm_color();',
       `  if (color.a < ${PICK_ALPHA_THRESHOLD.toFixed(3)}) { discard; }`,
-      '  outPick = uvec4(swarmPick.id, v_slot + 1u, 0u, 0u);',
+      '  outPick = uvec4(swarmPick.id, v_slot + 1u, v_user, 0u);',
       '}',
     ].join('\n'),
   );

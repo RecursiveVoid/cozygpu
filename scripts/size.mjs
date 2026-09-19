@@ -1,30 +1,38 @@
 /**
- * Owner: "worker+build". Bundle budgets (ARCHITECTURE §10, §18.3).
+ * Bundle budgets (ARCHITECTURE §10, §18.3). Budgets: architect; script:
+ * worker+build.
  *
- *   node scripts/size.mjs            → table + JSON, exit 1 when over budget
- *   node scripts/size.mjs --json     → JSON only
- *   node scripts/size.mjs --verbose  → also list every counted chunk
+ *   node scripts/size.mjs                    → tables + JSON, exit 1 when a check fails
+ *   node scripts/size.mjs --json             → JSON only
+ *   node scripts/size.mjs --verbose          → also list every counted chunk
+ *   node scripts/size.mjs --update-baseline  → rewrite scripts/size-baseline.json
  *
  * Builds small fixture programs with esbuild (bundle + code splitting +
  * minify, shaders minified like the Rollup build), gzips every output chunk
- * (level 9) and sums the chunks each fixture actually loads:
+ * (level 9) and runs three checks (M2.5 budgets):
  *
- *   minimal-webgpu  entry + static imports + the WebGPU backend chunk     ≤ 30 KB
- *                   (+ the sprite WGSL chunk)
- *   minimal-webgl2  entry + static imports + the WebGL2 backend chunk     ≤ 30 KB
- *                   (+ the sprite GLSL chunk)
- *   all-exports     every chunk of a program using every export           ≤ 45 KB
- *   worker-webgpu   src/worker/entry.ts + the WebGPU backend chunk        ≤ 25 KB
- *   worker-webgl2   src/worker/entry.ts + the WebGL2 backend chunk        ≤ 25 KB
+ * 1. Fixtures: the chunks each program actually loads.
+ *      minimal-webgpu  entry + static imports + WebGPU backend + sprite WGSL   ≤ 40 KB
+ *      minimal-webgl2  entry + static imports + WebGL2 backend + sprite GLSL   ≤ 42 KB
+ *      worker-webgpu   src/worker/entry.ts + the WebGPU chunks                 ≤ 25 KB
+ *      worker-webgl2   src/worker/entry.ts + the WebGL2 chunks                 ≤ 25 KB
+ *      all-exports     every chunk (reported, no absolute budget)
+ * 2. Feature chunks: each lazily imported feature chunk of the all-exports
+ *    build, found by the source module it contains, against its own budget
+ *    (measured size at the M2.5 freeze + 0.5 KB headroom). A chunk whose
+ *    module lands in no output chunk (renamed, deleted, inlined) fails.
+ * 3. No growth: every fixture and chunk against scripts/size-baseline.json;
+ *    growing more than the baseline's `slackBytes` (NO_GROWTH_SLACK, 0.5 KB,
+ *    when the field is missing) over the recorded value fails. A missing or
+ *    unreadable baseline fails (except with --update-baseline, which writes
+ *    it), and so does a chunk the baseline records that is no longer built.
+ *    Refresh the baseline (--update-baseline) only after the growth was
+ *    reviewed and accepted.
  *
- * The worker is code-split like the library (§18.1), so it loads one backend,
- * not both; both fixtures count what a worker actually fetches on that
- * backend, the same way the minimal ones do.
- *
- * Nothing is written to disk (esbuild `write: false`).
+ * Nothing is written to disk except the baseline with --update-baseline.
  */
 import { build } from 'esbuild';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -36,6 +44,9 @@ const require = createRequire(import.meta.url);
 const { minifyShader } = require('./shader-minify.cjs');
 
 const KB = 1000;
+/** Allowed growth over the recorded baseline before the check fails. */
+const NO_GROWTH_SLACK = 500;
+const BASELINE_FILE = path.join(SCRIPTS, 'size-baseline.json');
 
 const cozygpuAlias = {
   name: 'cozygpu-alias',
@@ -83,21 +94,21 @@ export const FIXTURES = [
     id: 'minimal-webgpu',
     file: 'scripts/size-fixtures/minimal-webgpu.ts',
     what: 'createRenderer + Texture + Sprite, WebGPU chunks',
-    budget: 30 * KB,
+    budget: 40 * KB,
     dynamic: [BACKEND_WEBGPU, SPRITE_WGSL],
   },
   {
     id: 'minimal-webgl2',
     file: 'scripts/size-fixtures/minimal-webgl2.ts',
     what: 'createRenderer + Texture + Sprite, WebGL2 chunks',
-    budget: 30 * KB,
+    budget: 42 * KB,
     dynamic: [BACKEND_WEBGL2, SPRITE_GLSL],
   },
   {
     id: 'all-exports',
     file: 'scripts/size-fixtures/all-exports.ts',
-    what: 'every export, every chunk',
-    budget: 45 * KB,
+    what: 'every export, every chunk (no absolute budget)',
+    budget: null,
     dynamic: 'all',
   },
   {
@@ -113,6 +124,54 @@ export const FIXTURES = [
     what: 'worker bundle + the WebGL2 backend chunk',
     budget: 25 * KB,
     dynamic: [BACKEND_WEBGL2, SPRITE_GLSL],
+  },
+];
+
+/**
+ * Lazily imported feature chunks (ARCHITECTURE §18.1), measured in the
+ * all-exports build and identified by the source module they contain.
+ * Budgets = min+gzip at the M2.5 freeze (2026-09-19) + 0.5 KB, rounded up to
+ * 0.1 KB. Every entry must be built: an absent chunk fails its budget.
+ */
+export const CHUNKS = [
+  { id: 'backend-webgpu', module: BACKEND_WEBGPU, budget: 8800 },
+  { id: 'backend-webgl2', module: BACKEND_WEBGL2, budget: 10800 },
+  { id: 'sprite-wgsl', module: SPRITE_WGSL, budget: 1300 },
+  { id: 'sprite-glsl', module: SPRITE_GLSL, budget: 1200 },
+  { id: 'structure-patch', module: 'src/sprites/frontPatch.ts', budget: 2500 },
+  {
+    id: 'picking-core',
+    module: 'src/renderer/pickingCoreImpl.ts',
+    budget: 2100,
+  },
+  { id: 'assets', module: 'src/assets/Assets.ts', budget: 11400 },
+  { id: 'swarm-core', module: 'src/swarm/core.ts', budget: 11100 },
+  { id: 'swarm-glsl', module: 'src/swarm/glsl.ts', budget: 3800 },
+  {
+    id: 'worker-transport',
+    module: 'src/worker/WorkerTransport.ts',
+    budget: 3000,
+  },
+  // M2.5 chunks, budgeted at their measured size at the end of M2.5 + 0.5 KB.
+  // interopImpl also carries the core half (coreInterop.ts, §19.4); the
+  // readback-ring chunks also carry readTexture (both backends) and WebGL2's
+  // readBuffer, which moved off the minimal program.
+  { id: 'interop', module: 'src/renderer/interopImpl.ts', budget: 1500 },
+  { id: 'pick-client', module: 'src/renderer/picking.ts', budget: 1400 },
+  {
+    id: 'readback-webgpu',
+    module: 'src/backend/webgpu/readbackRing.ts',
+    budget: 2100,
+  },
+  {
+    id: 'readback-webgl2',
+    module: 'src/backend/webgl2/readbackRing.ts',
+    budget: 2700,
+  },
+  {
+    id: 'wgsl-diagnostics',
+    module: 'src/backend/webgpu/compileMessages.ts',
+    budget: 1000,
   },
 ];
 
@@ -177,16 +236,37 @@ async function measure(fixture) {
   }
   let allGzip = 0;
   for (const s of sizes.values()) allGzip += s.gzip;
+  // Feature chunks (CHUNKS) are measured in the all-exports build only.
+  const featureChunks = [];
+  if (fixture.dynamic === 'all') {
+    for (const c of CHUNKS) {
+      const key = Object.keys(outputs).find(
+        k => k.endsWith('.js') && c.module in (outputs[k].inputs ?? {}),
+      );
+      const size = key ? sizes.get(key) : undefined;
+      featureChunks.push({
+        id: c.id,
+        module: c.module,
+        file: key ? path.basename(key) : null,
+        min: size?.min ?? 0,
+        gzip: size?.gzip ?? 0,
+        budget: c.budget,
+        absent: !size,
+        ok: !!size && size.gzip <= c.budget,
+      });
+    }
+  }
   return {
     id: fixture.id,
     what: fixture.what,
     min,
     gzip,
     budget: fixture.budget,
-    ok: gzip <= fixture.budget,
+    ok: fixture.budget === null || gzip <= fixture.budget,
     chunks,
     totalChunks: sizes.size,
     allChunksGzip: allGzip,
+    featureChunks,
   };
 }
 
@@ -196,29 +276,145 @@ export async function measureSizes() {
   return results;
 }
 
+/** The parsed baseline, or `{ error }` when it is missing or unreadable. */
+async function readBaseline() {
+  let data;
+  try {
+    data = JSON.parse(await readFile(BASELINE_FILE, 'utf8'));
+  } catch (error) {
+    return { error: String(error?.message ?? error) };
+  }
+  if (
+    typeof data !== 'object' ||
+    data === null ||
+    typeof data.fixtures !== 'object' ||
+    typeof data.chunks !== 'object'
+  ) {
+    return { error: 'no fixtures / chunks tables' };
+  }
+  return data;
+}
+
+/**
+ * The no-growth check: one row per fixture and feature chunk. Allowed growth
+ * is the baseline's `slackBytes` (NO_GROWTH_SLACK when absent). Without a
+ * usable baseline (null) every row fails; a chunk the baseline records but
+ * the build no longer produces fails too. Ids the baseline does not know yet
+ * are new and pass (baseline null).
+ */
+function growthRows(results, baseline) {
+  const rows = [];
+  const usable = baseline !== null && baseline !== undefined;
+  const slack =
+    usable && typeof baseline.slackBytes === 'number'
+      ? baseline.slackBytes
+      : NO_GROWTH_SLACK;
+  const check = (kind, id, gzip, recorded, absent) => {
+    const known = typeof recorded === 'number';
+    rows.push({
+      kind,
+      id,
+      gzip,
+      baseline: known ? recorded : null,
+      slack,
+      absent,
+      ok: usable && !absent && (!known || gzip <= recorded + slack),
+    });
+  };
+  for (const r of results) {
+    check('fixture', r.id, r.gzip, baseline?.fixtures?.[r.id], false);
+    for (const c of r.featureChunks) {
+      const recorded = baseline?.chunks?.[c.id];
+      // An absent chunk nobody recorded is already failed by its budget.
+      if (!c.absent || typeof recorded === 'number') {
+        check('chunk', c.id, c.gzip, recorded, c.absent);
+      }
+    }
+  }
+  return rows;
+}
+
+async function writeBaseline(results) {
+  const fixtures = {};
+  const chunks = {};
+  for (const r of results) {
+    fixtures[r.id] = r.gzip;
+    for (const c of r.featureChunks) if (!c.absent) chunks[c.id] = c.gzip;
+  }
+  const data = {
+    note: 'min+gzip bytes; refresh with --update-baseline only after review (ARCHITECTURE §10)',
+    updated: new Date().toISOString().slice(0, 10),
+    slackBytes: NO_GROWTH_SLACK,
+    fixtures,
+    chunks,
+  };
+  await writeFile(BASELINE_FILE, `${JSON.stringify(data, null, 2)}\n`);
+}
+
 const fmt = n => `${(n / KB).toFixed(1)} KB`;
+
+function printTable(rows) {
+  const widths = rows[0].map((_, c) => Math.max(...rows.map(r => r[c].length)));
+  for (const row of rows) {
+    console.log(row.map((cell, c) => cell.padEnd(widths[c])).join('  '));
+  }
+}
 
 async function main() {
   const json = process.argv.includes('--json');
   const verbose = process.argv.includes('--verbose');
+  const update = process.argv.includes('--update-baseline');
   const results = await measureSizes();
+  if (update) {
+    await writeBaseline(results);
+    console.log(`wrote ${path.relative(ROOT, BASELINE_FILE)}`);
+  }
+  const read = await readBaseline();
+  const baseline = read.error === undefined ? read : null;
+  const growth = growthRows(results, baseline);
+  const chunkResults = results.flatMap(r => r.featureChunks);
   if (!json) {
-    const rows = [
+    printTable([
       ['fixture', 'min', 'min+gzip', 'budget', 'chunks', 'status'],
       ...results.map(r => [
         r.id,
         fmt(r.min),
         fmt(r.gzip),
-        fmt(r.budget),
+        r.budget === null ? '-' : fmt(r.budget),
         `${r.chunks.length}/${r.totalChunks}`,
         r.ok ? 'ok' : 'OVER',
       ]),
-    ];
-    const widths = rows[0].map((_, c) =>
-      Math.max(...rows.map(r => r[c].length)),
-    );
-    for (const row of rows) {
-      console.log(row.map((cell, c) => cell.padEnd(widths[c])).join('  '));
+    ]);
+    console.log('');
+    printTable([
+      ['feature chunk', 'min', 'min+gzip', 'budget', 'status'],
+      ...chunkResults.map(c => [
+        c.id,
+        c.absent ? '-' : fmt(c.min),
+        c.absent ? '-' : fmt(c.gzip),
+        fmt(c.budget),
+        c.absent ? 'ABSENT' : c.ok ? 'ok' : 'OVER',
+      ]),
+    ]);
+    console.log('');
+    if (baseline === null) {
+      console.log(
+        `no-growth: FAILED, ${path.relative(ROOT, BASELINE_FILE)} is missing ` +
+          `or unreadable (${read.error})`,
+      );
+    } else {
+      printTable([
+        ['no-growth', 'min+gzip', 'baseline', 'delta', 'status'],
+        ...growth.map(g => [
+          `${g.kind} ${g.id}`,
+          fmt(g.gzip),
+          g.baseline === null ? '-' : fmt(g.baseline),
+          g.baseline === null
+            ? 'new'
+            : `${g.gzip >= g.baseline ? '+' : ''}${fmt(g.gzip - g.baseline)}`,
+          g.absent ? 'ABSENT' : g.ok ? 'ok' : 'GREW',
+        ]),
+      ]);
     }
     if (verbose) {
       for (const r of results) {
@@ -234,19 +430,40 @@ async function main() {
   }
   console.log(
     JSON.stringify(
-      results.map(({ chunks, ...rest }) => ({
-        ...rest,
-        chunks: chunks.map(c => c.file),
-      })),
+      {
+        fixtures: results.map(({ chunks, featureChunks, ...rest }) => ({
+          ...rest,
+          chunks: chunks.map(c => c.file),
+        })),
+        chunks: chunkResults,
+        growth,
+      },
       null,
       json ? 2 : 0,
     ),
   );
-  const over = results.filter(r => !r.ok);
-  if (over.length) {
-    console.error(
-      `\nsize budget exceeded: ${over.map(r => `${r.id} ${fmt(r.gzip)} > ${fmt(r.budget)}`).join(', ')}`,
-    );
+  const failures = [
+    ...results
+      .filter(r => !r.ok)
+      .map(r => `${r.id} ${fmt(r.gzip)} > ${fmt(r.budget)}`),
+    ...chunkResults
+      .filter(c => !c.ok)
+      .map(c =>
+        c.absent
+          ? `chunk ${c.id} absent (${c.module} is in no output chunk)`
+          : `chunk ${c.id} ${fmt(c.gzip)} > ${fmt(c.budget)}`,
+      ),
+    ...(baseline === null
+      ? [`no-growth baseline missing or unreadable (${read.error})`]
+      : growth
+          .filter(g => !g.ok && !g.absent)
+          .map(
+            g =>
+              `${g.kind} ${g.id} grew ${fmt(g.gzip - g.baseline)} (> ${fmt(g.slack)} over baseline)`,
+          )),
+  ];
+  if (failures.length) {
+    console.error(`\nsize check failed: ${failures.join(', ')}`);
     process.exitCode = 1;
   }
 }

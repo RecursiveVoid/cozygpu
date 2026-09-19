@@ -12,6 +12,8 @@
  * A2: S3 + renderer.pick() with one pick outstanding at a time.
  * A3: Swarm allocation 'gpu' (variant gpu) or 'ring' (variant ring), spawning
  * CHURN_SPAWN_PER_FRAME mortal objects every frame, stepped with SIM_DT.
+ * S1b (M2.5, variant columns): S1, but the sim's x/y Float32Arrays are bound
+ * once with `container.bindColumns` and each frame calls `binding.commit`.
  */
 import * as GPU from 'cozygpu';
 import {
@@ -41,8 +43,11 @@ function createCozyAdapter(ctx: BenchContext): Adapter {
   let renderer: GPU.Renderer | null = null;
   const sprites: GPU.Sprite[] = [];
   let swarm: GPU.Swarm | null = null;
+  let columns: GPU.ColumnBinding | null = null;
   let spawnOptions: GPU.SpawnOptions | null = null;
   let aliveAtEnd = NaN;
+  let skippedAtStart = 0;
+  let measuredSkipped = 0;
   let assetInfo: Record<string, unknown> = {};
 
   // A2 picking
@@ -63,7 +68,7 @@ function createCozyAdapter(ctx: BenchContext): Adapter {
 
   const backend = params.renderer === 'webgl2' ? 'webgl2' : 'webgpu';
 
-  function addSprites(texture: GPU.Texture): void {
+  function addSprites(texture: GPU.Texture): GPU.Container {
     const { sim } = ctx;
     const world = new GPU.Container();
     renderer!.stage.addChild(world);
@@ -78,6 +83,7 @@ function createCozyAdapter(ctx: BenchContext): Adapter {
       });
       sprites.push(world.addChild(s));
     }
+    return world;
   }
 
   return {
@@ -221,7 +227,12 @@ function createCozyAdapter(ctx: BenchContext): Adapter {
         SPRITE_TEXTURE_SIZE,
         ctx.pixels,
       );
-      addSprites(texture);
+      const world = addSprites(texture);
+      if (scenario === 'sprites-moving' && params.variant === 'columns') {
+        // M2.5 §19.1: register once, commit per frame.
+        columns = world.bindColumns({ x: sim.x, y: sim.y });
+        return { cpuSim: true, tool: 'Sprite + bindColumns' };
+      }
       if (scenario === 'picking') {
         const rand = rng(params.seed + 7);
         pickOrder = new Uint32Array(4096);
@@ -235,7 +246,9 @@ function createCozyAdapter(ctx: BenchContext): Adapter {
 
     frame(_ctx, cpuSim) {
       const r = renderer!;
-      if (cpuSim) {
+      if (columns !== null) {
+        columns.commit(ctx.sim.count);
+      } else if (cpuSim) {
         const { x, y, count } = ctx.sim;
         for (let i = 0; i < count; i++) {
           sprites[i].setPosition(x[i], y[i]);
@@ -256,9 +269,13 @@ function createCozyAdapter(ctx: BenchContext): Adapter {
 
     measureStart() {
       picks.reset();
+      skippedAtStart = renderer?.stats.skippedFrames ?? 0;
     },
 
     async finish() {
+      // Skipped frames inside the measured window only (A3, §19.5); the
+      // finish phase below may hold frames behind a deep GPU queue.
+      measuredSkipped = (renderer?.stats.skippedFrames ?? 0) - skippedAtStart;
       if (swarm === null || spawnOptions === null) return;
       // The readback resolves after a later render(), so keep the same churn
       // frames running (steady state unchanged) until it lands (≤ 5 s).
@@ -294,6 +311,7 @@ function createCozyAdapter(ctx: BenchContext): Adapter {
         packetBytes: s.packetBytes,
         frontCpuMs: s.cpuMs,
         skippedFrames: s.skippedFrames,
+        measuredSkippedFrames: measuredSkipped,
         frameId: s.frameId,
         ...assetInfo,
       };

@@ -1,5 +1,5 @@
 /**
- * Up to MAX_RANGES half-open instance ranges [start, end) — owner: "sprites"
+ * Up to MAX_RANGES half-open instance ranges [start, end)
  * (ARCHITECTURE §5.2 step 3). Adds are O(1) for the common in-order case.
  */
 export const MAX_RANGES = 8;

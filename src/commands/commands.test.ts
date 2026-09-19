@@ -60,7 +60,7 @@ const specs: Array<[number, number, Field[]]> = [
   [Op.TEXTURE_UPLOAD_PIXELS, 0, [u(3), u(0), u(0), u(3), u(1), b(12)]],
   [Op.TEXTURE_UPLOAD_BITMAP, 0, [u(3), u(0), u(1)]],
   [Op.TEXTURE_DESTROY, 0, [u(3)]],
-  // M2 (payloads frozen by the architect; ARCHITECTURE §3.4)
+  // M2 payloads (ARCHITECTURE §3.4)
   [Op.TEXTURE_UPLOAD_BITMAP_REGION, 0, [u(3), u(0), u(16), u(32), u(0)]],
   [
     Op.TEXTURE_UPLOAD_COMPRESSED,
@@ -123,6 +123,7 @@ const specs: Array<[number, number, Field[]]> = [
   ],
   [Op.SWARM_SET_FRAMES, 0, [u(7), u(1), f(0), f(0), f(0.5), f(0.5)]],
   [Op.SWARM_SET_PICK, 0, [u(7), u(42)]],
+  [Op.SWARM_SET_SOURCE, 0, [u(7), u(3), u(0), u(1)]],
   [Op.FRAME_END, 0, []],
 ];
 

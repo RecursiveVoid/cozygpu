@@ -17,6 +17,12 @@
  * nothing until it is ready. On WebGL2 a behavior without `glsl`, allocation
  * 'gpu' or a capacity above SWARM_GL_MAX_CAPACITY disables the swarm for that
  * renderer: one console error, nothing drawn, readbacks reject with the code.
+ *
+ * External sources (M2.5, ARCHITECTURE §19.4): `setSource` queues
+ * SWARM_SET_SOURCE behind the commands already queued, so earlier spawns and
+ * writes still reach the own buffers. While a source is set the draw (and,
+ * with `simulate`, step) count is `setSourceCount`'s value, carried by the
+ * existing SWARM_DRAW / SWARM_STEP words; nothing else is sent per frame.
  */
 import { BlendModeId } from '../backend/types';
 import type { BlendMode } from '../backend/types';
@@ -25,13 +31,15 @@ import {
   Op,
   OpcodeRange,
   ReadbackSource,
+  SwarmSourceFlag,
 } from '../commands/opcodes';
 import { registerCoreSystemLoader } from '../renderer/lazySystems';
 import type { CommandWriter } from '../commands/types';
 import { ensureTextureUploaded } from '../scene/Texture';
 import { NodeBase } from '../scene/Node';
 import type { DestroyOptions, TextureHandle } from '../scene/types';
-import type { CustomDrawable, FrontFrame } from '../types/core';
+import type { SwarmExternalSource } from './types';
+import type { CustomDrawable, FrontFrame, RendererHost } from '../types/core';
 import { CozyGPUError } from '../types/errors';
 import type { CozyGPUErrorCode } from '../types/errors';
 import { ids, NO_ID } from '../types/ids';
@@ -71,6 +79,9 @@ import type {
   SwarmNode,
   SwarmOptions,
 } from './types';
+
+/** The renderer's Frame forwards rare events (optional: test frames do not). */
+type FrameWithEmit = FrontFrame & { _emit?: RendererHost['_emit'] };
 
 function validateOptions(options: SwarmOptions): SwarmOptions {
   const capacity = Math.floor(options?.capacity ?? 0);
@@ -175,6 +186,11 @@ export class Swarm extends NodeBase implements SwarmNode, CustomDrawable {
   private glWarned = false;
   /** SWARM_SET_PICK value the core has for this swarm. */
   private sentPickId = 0;
+  /** M2.5 external source (null = own buffers) and its draw count. */
+  private source: SwarmExternalSource | null = null;
+  private sourceCount = 0;
+  /** A source was set at least once (clear() must keep a queued switch). */
+  private sourceUsed = false;
 
   constructor(options: SwarmOptions) {
     super(validateOptions(options));
@@ -300,7 +316,7 @@ export class Swarm extends NodeBase implements SwarmNode, CustomDrawable {
   // ─── Mutations (queued) ───────────────────────────────────────────────────
 
   spawn(count: number, options?: SpawnOptions): number {
-    this.assertAlive();
+    this.assertOwnData();
     const n = Math.min(Math.floor(count), this.capacity);
     if (!(n > 0)) {
       return this.allocator ? -1 : this.allocation === 'gpu' ? 0 : this.cursor;
@@ -342,7 +358,7 @@ export class Swarm extends NodeBase implements SwarmNode, CustomDrawable {
   }
 
   write(first: number, hot?: Float32Array, cold?: Uint32Array): void {
-    this.assertAlive();
+    this.assertOwnData();
     if (first < 0 || first >= this.capacity) {
       throw new CozyGPUError(
         'INVALID_ARGUMENT',
@@ -383,7 +399,7 @@ export class Swarm extends NodeBase implements SwarmNode, CustomDrawable {
   }
 
   kill(first: number, count = 1): void {
-    this.assertAlive();
+    this.assertOwnData();
     const f = Math.floor(first);
     const start = Math.max(0, f);
     // Clip [first, first + count) to [0, capacity).
@@ -401,7 +417,7 @@ export class Swarm extends NodeBase implements SwarmNode, CustomDrawable {
   }
 
   killList(indices: Uint32Array, count = indices.length): void {
-    this.assertAlive();
+    this.assertOwnData();
     const n = Math.min(count, indices.length);
     if (!(n > 0)) return;
     const w = this.queue.begin(
@@ -420,8 +436,10 @@ export class Swarm extends NodeBase implements SwarmNode, CustomDrawable {
   }
 
   clear(): void {
-    this.assertAlive();
+    this.assertOwnData();
     this.queue.reset();
+    // The reset may have dropped a queued setSource(null).
+    if (this.sourceUsed) this.enqueueSource();
     if (this._activeCount > 0) {
       const w = this.queue.begin(Op.SWARM_KILL_RANGE, 12, CommandFlag.COMPUTE);
       const u32 = this.queue.u32;
@@ -458,9 +476,76 @@ export class Swarm extends NodeBase implements SwarmNode, CustomDrawable {
    * counted by a compute pass (WebGPU) or on the core thread (WebGL2).
    */
   aliveCount(): Promise<number> {
-    return this.readback(ReadbackSource.SWARM_ALIVE, 0, this._activeCount).then(
-      buffer => (buffer.byteLength >= 4 ? new Uint32Array(buffer, 0, 1)[0] : 0),
+    const range = this.source ? this.sourceCount : this._activeCount;
+    return this.readback(ReadbackSource.SWARM_ALIVE, 0, range).then(buffer =>
+      buffer.byteLength >= 4 ? new Uint32Array(buffer, 0, 1)[0] : 0,
     );
+  }
+
+  /** M2.5 (ARCHITECTURE §19.4). See SwarmNode.setSource. */
+  setSource(source: SwarmExternalSource | null): void {
+    this.assertAlive();
+    if (!source) {
+      if (!this.source) return;
+      this.source = null;
+      this.enqueueSource();
+      return;
+    }
+    if (this.allocation === 'gpu') {
+      throw new CozyGPUError(
+        'INVALID_ARGUMENT',
+        "Swarm.setSource: allocation 'gpu' swarms cannot use an external source",
+      );
+    }
+    if (this.created && this.language === 'glsl300es') {
+      throw new CozyGPUError(
+        'UNSUPPORTED',
+        'Swarm.setSource: external sources need the WebGPU backend',
+      );
+    }
+    const { hot, cold } = source;
+    if (!hot || hot.layout !== 'swarm-hot' || !hot.valid) {
+      throw new CozyGPUError(
+        'INVALID_ARGUMENT',
+        "Swarm.setSource: hot must be a valid 'swarm-hot' buffer",
+      );
+    }
+    if (cold && (cold.layout !== 'swarm-cold' || !cold.valid)) {
+      throw new CozyGPUError(
+        'INVALID_ARGUMENT',
+        "Swarm.setSource: cold must be a valid 'swarm-cold' buffer",
+      );
+    }
+    const count = Math.floor(source.count);
+    if (
+      !(count >= 0) ||
+      count > hot.capacity ||
+      (cold !== undefined && count > cold.capacity)
+    ) {
+      throw new CozyGPUError(
+        'INVALID_ARGUMENT',
+        `Swarm.setSource: count ${source.count} exceeds the buffer capacity`,
+      );
+    }
+    this.source = source;
+    this.sourceUsed = true;
+    this.sourceCount = Math.min(count, this.capacity);
+    this.enqueueSource();
+  }
+
+  /** M2.5 (ARCHITECTURE §19.4). See SwarmNode.setSourceCount. */
+  setSourceCount(count: number): void {
+    const source = this.source;
+    if (!source) {
+      throw new CozyGPUError(
+        'INVALID_ARGUMENT',
+        'Swarm.setSourceCount: no external source is set',
+      );
+    }
+    let limit = Math.min(this.capacity, source.hot.capacity);
+    if (source.cold) limit = Math.min(limit, source.cold.capacity);
+    const n = Math.floor(count);
+    this.sourceCount = n > 0 ? Math.min(n, limit) : 0;
   }
 
   // ─── Frame encoding ───────────────────────────────────────────────────────
@@ -485,7 +570,7 @@ export class Swarm extends NodeBase implements SwarmNode, CustomDrawable {
         ? 'glsl300es'
         : 'wgsl';
     if (language === 'glsl300es') {
-      if (!this.checkGlSupport()) {
+      if (!this.checkGlSupport(frame)) {
         // Nothing will consume the queue on this renderer.
         this.queue.reset();
         this.pendingStepDt = 0;
@@ -511,6 +596,7 @@ export class Swarm extends NodeBase implements SwarmNode, CustomDrawable {
       frame.rendererId !== this.rendererId ||
       frame.generation !== this.generation
     ) {
+      const recreated = this.created;
       const restored =
         this.created &&
         frame.rendererId === this.rendererId &&
@@ -538,6 +624,10 @@ export class Swarm extends NodeBase implements SwarmNode, CustomDrawable {
         this.allocator?.reset();
         this.onRestore?.(this);
       }
+      // A new core-side swarm (device loss, other renderer) starts on its own
+      // buffers. After a loss the old registrations are gone: the swarm draws
+      // nothing until the caller sets a source registered on the new device.
+      if (recreated && this.source) this.enqueueSource();
     } else if (this.pipelineDirty || language !== this.language) {
       this.pipelineDirty = false;
       this.language = language;
@@ -571,8 +661,9 @@ export class Swarm extends NodeBase implements SwarmNode, CustomDrawable {
     const dt =
       this.pendingStepDt + (this.autoStep ? frame.dt * this.timeScale : 0);
     this.pendingStepDt = 0;
-    const active = this._activeCount;
-    if (dt > 0 && active > 0) {
+    const source = this.source;
+    const active = source ? this.sourceCount : this._activeCount;
+    if (dt > 0 && active > 0 && (!source || source.simulate)) {
       enc.begin(Op.SWARM_STEP, 16, CommandFlag.COMPUTE);
       enc.u32(this.swarmId);
       enc.f32(dt);
@@ -599,15 +690,42 @@ export class Swarm extends NodeBase implements SwarmNode, CustomDrawable {
     }
   }
 
+  /** Mutations need the swarm's own buffers (no external source, §19.4). */
+  private assertOwnData(): void {
+    this.assertAlive();
+    if (this.source) {
+      throw new CozyGPUError(
+        'INVALID_ARGUMENT',
+        'Swarm: spawn, kill, killList, write and clear are not available ' +
+          'while an external source is set (setSource(null) first)',
+      );
+    }
+  }
+
+  /** Queues SWARM_SET_SOURCE behind the commands already queued. */
+  private enqueueSource(): void {
+    const w = this.queue.begin(Op.SWARM_SET_SOURCE, 16);
+    const u32 = this.queue.u32;
+    const source = this.source;
+    u32[w] = this.swarmId;
+    u32[w + 1] = source ? source.hot.id : 0;
+    u32[w + 2] = source?.cold ? source.cold.id : 0;
+    u32[w + 3] = source?.simulate ? SwarmSourceFlag.SIMULATE : 0;
+  }
+
   /**
    * WebGL2 limits (ARCHITECTURE §14.1). Returns false (and reports once) when
    * this swarm cannot run there.
    */
-  private checkGlSupport(): boolean {
+  private checkGlSupport(frame: FrontFrame): boolean {
     let code: CozyGPUErrorCode | null = null;
     let message = '';
     const missing = firstBehaviorWithoutGlsl(this.definitions);
-    if (this.allocation === 'gpu') {
+    if (this.source) {
+      // M2.5: setSource before the first WebGL2 frame (it throws after).
+      code = 'UNSUPPORTED';
+      message = 'Swarm: external sources (setSource) need the WebGPU backend';
+    } else if (this.allocation === 'gpu') {
       code = 'UNSUPPORTED';
       message =
         "Swarm: allocation 'gpu' needs WebGPU compute; use 'ring' on WebGL2";
@@ -628,7 +746,11 @@ export class Swarm extends NodeBase implements SwarmNode, CustomDrawable {
     if (code) {
       if (this.reportedDisabled !== message) {
         this.reportedDisabled = message;
-        console?.error(`[cozygpu:${code}] ${message}; nothing is drawn.`);
+        const text = `${message}; nothing is drawn.`;
+        console?.error(`[cozygpu:${code}] ${text}`);
+        // The same refusal a WebGPU core reports as an 'error' message: tell
+        // RendererOptions.events too (once per refusal, never per frame).
+        (frame as FrameWithEmit)._emit?.('error', { code, message: text });
       }
       return false;
     }

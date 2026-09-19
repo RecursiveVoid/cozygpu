@@ -1,0 +1,29 @@
+{
+  "note": "min+gzip bytes; refreshed only by the integrator with --update-baseline after review (ARCHITECTURE §10)",
+  "updated": "2026-09-19",
+  "slackBytes": 500,
+  "fixtures": {
+    "minimal-webgpu": 39885,
+    "minimal-webgl2": 41699,
+    "all-exports": 104292,
+    "worker-webgpu": 21601,
+    "worker-webgl2": 23416
+  },
+  "chunks": {
+    "backend-webgpu": 7978,
+    "backend-webgl2": 9914,
+    "sprite-wgsl": 774,
+    "sprite-glsl": 651,
+    "structure-patch": 1995,
+    "picking-core": 1713,
+    "assets": 11034,
+    "swarm-core": 11097,
+    "swarm-glsl": 3310,
+    "worker-transport": 2508,
+    "interop": 921,
+    "pick-client": 887,
+    "readback-webgpu": 1514,
+    "readback-webgl2": 2144,
+    "wgsl-diagnostics": 402
+  }
+}

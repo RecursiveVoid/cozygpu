@@ -1,7 +1,8 @@
 /**
- * Owner: "sprites". Core half of GPU picking (ARCHITECTURE §16.3). DOM-free.
- * RenderCore.ts (frozen) creates it on the first PICK command and calls
- * `request`, `render`, `afterSubmit`, `failAll`, `restore` and `destroy`.
+ * Owner: "renderer-hooks" (M2.5; was "sprites"). Core half of GPU picking
+ * (ARCHITECTURE §16.3, §19.6). DOM-free. RenderCore creates it on the first
+ * PICK command and calls `request`, `render`, `poll`, `failAll`, `restore`
+ * and `destroy`.
  *
  * This is a small proxy: the implementation (pickingCoreImpl.ts: pick
  * targets, pick pass, readback) loads with a dynamic import on the first
@@ -25,8 +26,13 @@ class LazyCorePicking implements CorePicking {
   private queued: number[] = [];
 
   constructor(private ctx: CoreContext) {
-    import('./pickingCoreImpl').then(
-      m => {
+    // The backend's readback ring is a lazy chunk too; load both before the
+    // first pick.
+    Promise.all([
+      import('./pickingCoreImpl'),
+      ctx.backend.loadReadbackRing?.(),
+    ]).then(
+      ([m]) => {
         if (this.dead) return;
         const impl = m.createCorePickingNow(this.ctx, pickPipelinesPending);
         this.impl = impl;
@@ -52,8 +58,10 @@ class LazyCorePicking implements CorePicking {
     this.impl?.render(list, replay, frame);
   }
 
-  afterSubmit(): void {
-    this.impl?.afterSubmit();
+  afterSubmit(): void {}
+
+  poll(): void {
+    this.impl?.poll!();
   }
 
   failAll(code: 'DEVICE_LOST' | 'DESTROYED', message: string): void {

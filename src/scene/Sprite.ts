@@ -1,4 +1,4 @@
-/** Sprite — owner: "sprites". A textured quad; leaf node. */
+/** Sprite. A textured quad; leaf node. */
 import { BlendModeId } from '../backend/types';
 import type { BlendMode } from '../backend/types';
 import { CozyGPUError } from '../types/errors';

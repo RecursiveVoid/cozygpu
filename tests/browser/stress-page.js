@@ -4,7 +4,12 @@
 import * as GPU from 'cozygpu';
 
 const S = globalThis.__stress;
-const WORKER_URL = '/cozygpu.worker.js';
+// Marks where the stress page's own code starts in the bundle (after the
+// library), so heap profiles can tell library allocations from the driver's.
+S.pageCodeMarker = '__stress_page_code_begins__';
+// The page query (?nogpu=1 / ?noadapter=1, M2.5 fallback checks) is passed on
+// to the worker so the build banner hides WebGPU there too.
+const WORKER_URL = `/cozygpu.worker.js${location.search}`;
 const HOT_WORDS = GPU.layouts.SWARM_HOT_BYTES / 4;
 const LIFE = GPU.layouts.SH_LIFE / 4;
 
@@ -27,6 +32,10 @@ function whiteTex(r = 255, g = 255, b = 255) {
 async function createCtx(opts = {}) {
   const canvas = opts.canvas ?? makeCanvas(opts.cssW, opts.cssH);
   const events = { lost: [], restored: 0 };
+  // M2.5: an events sink that records every emit in order, interleaved with
+  // the onDeviceLost / onDeviceRestored callbacks ('cb:*' entries).
+  const log = opts.eventLog ?? null;
+  const sink = opts.sink ?? (log ? { emit: (name, payload) => log.push({ name, payload, t: performance.now() }) } : undefined);
   // M2 command ring (worker + crossOriginIsolated). `ring: false` forces the
   // transfer path (WorkerTransport reads __COZYGPU_RING__ at create time).
   if (opts.ring === false) globalThis.__COZYGPU_RING__ = false;
@@ -41,9 +50,17 @@ async function createCtx(opts = {}) {
     debug: !!opts.debug,
     autoResize: opts.autoResize,
     assets: opts.assets,
-    onDeviceLost: info => events.lost.push(info),
-    onDeviceRestored: () => events.restored++,
+    onDeviceLost: info => {
+      events.lost.push(info);
+      if (log) log.push({ name: 'cb:lost', payload: { willRestore: info.willRestore }, t: performance.now() });
+    },
+    onDeviceRestored: () => {
+      events.restored++;
+      if (log) log.push({ name: 'cb:restored', payload: null, t: performance.now() });
+    },
+    events: sink,
   });
+  if (log) log.push({ name: '@resolved', payload: null, t: performance.now() });
   const ctx = {
     renderer,
     canvas,
@@ -51,6 +68,7 @@ async function createCtx(opts = {}) {
     createMs: performance.now() - t0,
     loop: null,
     backend: renderer.info.backend,
+    eventLog: log,
   };
   return ctx;
 }
@@ -1671,7 +1689,1223 @@ async function rawContextLose(id, { waitMs = 6000 } = {}) {
   };
 }
 
+// ═══ M2.5 scenarios (ARCHITECTURE §19) ══════════════════════════════════════
+
+/** Per-rect pixel counts of a canvas screenshot. rects: [[x, y, w, h], …] (CSS px). */
+async function regionStats(b64, rects) {
+  const blob = await (await fetch(`data:image/png;base64,${b64}`)).blob();
+  const bmp = await createImageBitmap(blob);
+  const oc = new OffscreenCanvas(bmp.width, bmp.height);
+  const g = oc.getContext('2d');
+  g.drawImage(bmp, 0, 0);
+  const d = g.getImageData(0, 0, bmp.width, bmp.height).data;
+  return rects.map(([rx, ry, rw, rh]) => {
+    let lit = 0;
+    let blue = 0;
+    let red = 0;
+    const x1 = Math.min(bmp.width, rx + rw);
+    const y1 = Math.min(bmp.height, ry + rh);
+    for (let y = Math.max(0, ry); y < y1; y++) {
+      for (let x = Math.max(0, rx); x < x1; x++) {
+        const i = (y * bmp.width + x) * 4;
+        if (d[i] + d[i + 1] + d[i + 2] > 90) lit++;
+        if (d[i + 2] > 150 && d[i] < 160) blue++;
+        if (d[i] > 150 && d[i + 1] < 100) red++;
+      }
+    }
+    return { lit, blue, red, area: rw * rh };
+  });
+}
+
+const codeOf = e => (e && e.code) || errText(e);
+/** Runs f; returns 'ok' or the thrown error code. */
+function codeOfCall(f) {
+  try {
+    f();
+    return 'ok';
+  } catch (e) {
+    return codeOf(e);
+  }
+}
+async function codeOfAsync(p, ms = 8000) {
+  try {
+    const v = await Promise.race([p, sleep(ms).then(() => '__timeout')]);
+    return v === '__timeout' ? 'timeout' : 'ok';
+  } catch (e) {
+    return codeOf(e);
+  }
+}
+
+// ─── Columns world: plain typed arrays driving one container (§19.1) ───────
+
+/**
+ * Rows 0..3 are fixed "probe" rows (big, distinct tint and userId); rows 4..n
+ * move every frame. Grow = new arrays + rebind (and a layout switch between
+ * dense and interleaved x/y); shrink = swap-remove of random moving rows.
+ */
+const PROBES = [
+  { x: 40, y: 530, tint: 0xff0000, user: 0xffffffff },
+  { x: 240, y: 530, tint: 0x00ff00, user: 0x80000000 },
+  { x: 440, y: 530, tint: 0x0000ff, user: 1 },
+  { x: 640, y: 530, tint: 0xffff00, user: 0xdeadbeef },
+];
+const PROBE_PX = 30;
+
+function makeWorld(cap, interleaved) {
+  return {
+    cap,
+    n: 0,
+    interleaved,
+    xy: interleaved ? new Float32Array(cap * 2) : null,
+    x: interleaved ? null : new Float32Array(cap),
+    y: interleaved ? null : new Float32Array(cap),
+    vx: new Float32Array(cap),
+    vy: new Float32Array(cap),
+    rotation: new Float32Array(cap),
+    scale: new Float32Array(cap),
+    alpha: new Float32Array(cap),
+    tint: new Uint32Array(cap),
+    frame: new Uint32Array(cap),
+    userId: new Uint32Array(cap),
+    serial: 1_000_000,
+  };
+}
+const wx = (w, i) => (w.interleaved ? w.xy[i * 2] : w.x[i]);
+const wy = (w, i) => (w.interleaved ? w.xy[i * 2 + 1] : w.y[i]);
+function wset(w, i, x, y) {
+  if (w.interleaved) {
+    w.xy[i * 2] = x;
+    w.xy[i * 2 + 1] = y;
+  } else {
+    w.x[i] = x;
+    w.y[i] = y;
+  }
+}
+function worldColumns(w) {
+  const pos = w.interleaved
+    ? { x: { array: w.xy, offset: 0, stride: 2 }, y: { array: w.xy, offset: 1, stride: 2 } }
+    : { x: w.x, y: w.y };
+  return { ...pos, rotation: w.rotation, scaleX: w.scale, scaleY: w.scale, alpha: w.alpha, tint: w.tint, frame: w.frame, userId: w.userId };
+}
+function initRow(w, i) {
+  if (i < PROBES.length) {
+    const p = PROBES[i];
+    wset(w, i, p.x, p.y);
+    w.vx[i] = 0;
+    w.vy[i] = 0;
+    w.rotation[i] = 0;
+    w.scale[i] = PROBE_PX; // the slot texture is a 1×1 frame: scale = px
+    w.tint[i] = p.tint;
+    w.userId[i] = p.user;
+    w.frame[i] = i & 1;
+  } else {
+    wset(w, i, 10 + Math.random() * 770, 20 + Math.random() * 440);
+    w.vx[i] = (Math.random() - 0.5) * 4;
+    w.vy[i] = (Math.random() - 0.5) * 4;
+    w.rotation[i] = Math.random() * 6.28;
+    w.scale[i] = 2;
+    w.tint[i] = 0x406080;
+    w.userId[i] = w.serial++;
+    w.frame[i] = i & 1;
+  }
+  w.alpha[i] = 1;
+}
+/** New arrays of `cap` rows (optionally switching the x/y layout), rows copied. */
+function regrow(w, cap, interleaved) {
+  const nw = makeWorld(cap, interleaved);
+  nw.serial = w.serial;
+  for (let i = 0; i < w.n; i++) wset(nw, i, wx(w, i), wy(w, i));
+  nw.vx.set(w.vx.subarray(0, w.n));
+  nw.vy.set(w.vy.subarray(0, w.n));
+  nw.rotation.set(w.rotation.subarray(0, w.n));
+  nw.scale.set(w.scale.subarray(0, w.n));
+  nw.alpha.set(w.alpha.subarray(0, w.n));
+  nw.tint.set(w.tint.subarray(0, w.n));
+  nw.frame.set(w.frame.subarray(0, w.n));
+  nw.userId.set(w.userId.subarray(0, w.n));
+  nw.n = w.n;
+  return nw;
+}
+function moveWorld(w) {
+  const n = w.n;
+  if (w.interleaved) {
+    const xy = w.xy;
+    for (let i = PROBES.length; i < n; i++) {
+      let x = xy[i * 2] + w.vx[i];
+      let y = xy[i * 2 + 1] + w.vy[i];
+      if (x < 10 || x > 780) w.vx[i] = -w.vx[i];
+      if (y < 20 || y > 470) w.vy[i] = -w.vy[i];
+      xy[i * 2] = x;
+      xy[i * 2 + 1] = y;
+      w.rotation[i] += 0.02;
+    }
+  } else {
+    const X = w.x;
+    const Y = w.y;
+    for (let i = PROBES.length; i < n; i++) {
+      const x = X[i] + w.vx[i];
+      const y = Y[i] + w.vy[i];
+      if (x < 10 || x > 780) w.vx[i] = -w.vx[i];
+      if (y < 20 || y > 470) w.vy[i] = -w.vy[i];
+      X[i] = x;
+      Y[i] = y;
+      w.rotation[i] += 0.02;
+    }
+  }
+}
+function copyRow(w, from, to) {
+  wset(w, to, wx(w, from), wy(w, from));
+  w.vx[to] = w.vx[from];
+  w.vy[to] = w.vy[from];
+  w.rotation[to] = w.rotation[from];
+  w.scale[to] = w.scale[from];
+  w.alpha[to] = w.alpha[from];
+  w.tint[to] = w.tint[from];
+  w.frame[to] = w.frame[from];
+  w.userId[to] = w.userId[from];
+}
+
+/** The columns scene: `count` slot sprites under one layer, bound once. */
+function columnsLayer(ctx, count, { interleaved = false } = {}) {
+  const px = new Uint8Array(8).fill(255);
+  const atlas = GPU.Texture.fromPixels(2, 1, px);
+  const frames = [atlas.sub(0, 0, 1, 1), atlas.sub(1, 0, 1, 1)];
+  const layer = new GPU.Container();
+  ctx.renderer.stage.addChild(layer);
+  let w = makeWorld(count, interleaved);
+  for (let i = 0; i < count; i++) initRow(w, i);
+  w.n = count;
+  for (let i = 0; i < count; i++) layer.addChild(new GPU.Sprite({ texture: frames[0], width: 2, height: 2 }));
+  const binding = layer.bindColumns(worldColumns(w), { frames });
+  const C = {
+    layer,
+    frames,
+    binding,
+    get w() {
+      return w;
+    },
+    rebinds: 0,
+    unbinds: 0,
+    grows: 0,
+    shrinks: 0,
+    partials: 0,
+    /** Last commit() duration, in a typed array (a double stored on an object allocates). */
+    commitMs: new Float64Array(1),
+    /** Adds k rows: new arrays (layout toggled), rebind, add children. */
+    grow(k) {
+      const nw = regrow(w, w.n + k, !w.interleaved);
+      for (let i = w.n; i < w.n + k; i++) initRow(nw, i);
+      nw.n = w.n + k;
+      w = nw;
+      binding.rebind(worldColumns(w), { frames });
+      C.rebinds++;
+      for (let i = layer.children.length; i < w.n; i++) layer.addChild(new GPU.Sprite({ texture: frames[0], width: 2, height: 2 }));
+      C.grows++;
+    },
+    /** Swap-removes k random moving rows, then drops the last k children. */
+    shrink(k) {
+      const old = w.n;
+      for (let j = 0; j < k && w.n > PROBES.length + 1; j++) {
+        const row = PROBES.length + ((Math.random() * (w.n - PROBES.length)) | 0);
+        copyRow(w, w.n - 1, row);
+        w.n--;
+      }
+      const removed = layer.removeChildren(w.n, old);
+      for (let i = 0; i < removed.length; i++) removed[i].destroy();
+      C.shrinks++;
+    },
+    commit() {
+      const t = performance.now();
+      binding.commit(w.n);
+      C.commitMs[0] = performance.now() - t;
+    },
+  };
+  return C;
+}
+
+/** Validation paths of bindColumns / commit; ends with the proper binding restored. */
+function columnsValidation(C) {
+  const { layer, frames, binding } = C;
+  const w = C.w;
+  const n = w.n;
+  const out = {};
+  out.commitPastChildren = codeOfCall(() => binding.commit(n + 1));
+  out.commitFirstPastChildren = codeOfCall(() => binding.commit(2, n - 1));
+  out.strideZero = codeOfCall(() => layer.bindColumns({ x: w.vx, y: w.vy }, { stride: 0 }));
+  out.frameWithoutFrames = codeOfCall(() => layer.bindColumns({ x: w.vx, y: w.vy, frame: w.frame }));
+  out.wrongArrayType = codeOfCall(() => layer.bindColumns({ x: new Float64Array(n), y: w.vy }));
+  const short = new Float32Array(n - 1);
+  out.shortColumnBind = codeOfCall(() => layer.bindColumns({ x: short, y: w.vy }));
+  out.shortColumnCommit = codeOfCall(() => layer.bindColumns({ x: short, y: w.vy }).commit(n));
+  out.shortColumnCommitFits = codeOfCall(() => layer.bindColumns({ x: short, y: w.vy }).commit(n - 1));
+  out.strided = codeOfCall(() => layer.bindColumns({ x: { array: new Float32Array(n * 3), offset: 2, stride: 3 }, y: w.vy }).commit(n));
+  out.stridedShort = codeOfCall(() => layer.bindColumns({ x: { array: new Float32Array(n * 3 - 1), offset: 2, stride: 3 }, y: w.vy }).commit(n));
+  out.sameObject = layer.bindColumns(worldColumns(w), { frames }) === binding;
+  out.rebindOk = codeOfCall(() => binding.rebind(worldColumns(w), { frames }));
+  out.commitOk = codeOfCall(() => binding.commit(n));
+  out.fields = binding.fields;
+  out.allFields = GPU.BulkField.POSITION | GPU.BulkField.ROTATION | GPU.BulkField.SCALE | GPU.BulkField.ALPHA | GPU.BulkField.TINT | GPU.BulkField.FRAME | GPU.BulkField.USER_ID;
+  return out;
+}
+
+/**
+ * 100k slot sprites driven by bindColumns for `seconds`: every frame a full
+ * x/y/rotation/... commit; every `structEvery` frames a grow (new arrays,
+ * rebind, layout toggle) or a swap-remove shrink; every 7th structural change
+ * also unbind() + rebind of the same arrays; partial commits with first/fields.
+ */
+async function columnsChurn({ worker, backend, count = 100_000, seconds = 20, structEvery = 30, step = 5000 }) {
+  const ctx = await createCtx({ worker, backend, cssW: 800, cssH: 600 });
+  const { renderer } = ctx;
+  const C = columnsLayer(ctx, count);
+  ctx.cols = C;
+  const out = { worker, count, backend: renderer.info.backend };
+  out.validation = columnsValidation(C);
+  const maxFrames = Math.ceil(seconds * 240);
+  const times = new Float64Array(maxFrames);
+  const cpu = new Float64Array(maxFrames);
+  const commit = new Float64Array(maxFrames);
+  const throws = [];
+  let minRows = count;
+  let maxRows = count;
+  let n = 0;
+  let structural = 0;
+  const end = performance.now() + seconds * 1000;
+  let last = performance.now();
+  while (performance.now() < end && n < maxFrames) {
+    try {
+      if (n > 0 && n % structEvery === 0) {
+        structural++;
+        if (structural % 2) C.grow(step);
+        else C.shrink(step);
+        if (structural % 7 === 0) {
+          C.binding.unbind();
+          C.unbinds++;
+          C.binding.rebind(worldColumns(C.w), { frames: C.frames });
+          C.rebinds++;
+        }
+        minRows = Math.min(minRows, C.w.n);
+        maxRows = Math.max(maxRows, C.w.n);
+      }
+      moveWorld(C.w);
+      C.commit();
+      if (n % 50 === 25) {
+        // Partial commit: only tints of the last 1000 rows.
+        const k = Math.min(1000, C.w.n - PROBES.length);
+        C.binding.commit(k, C.w.n - k, GPU.BulkField.TINT);
+        C.partials++;
+      }
+      renderer.render();
+    } catch (e) {
+      if (throws.length < 10) throws.push(errText(e));
+    }
+    commit[n] = C.commitMs[0];
+    cpu[n] = renderer.stats.cpuMs;
+    await raf();
+    const now = performance.now();
+    times[n++] = now - last;
+    last = now;
+  }
+  const cs = summarize(commit.subarray(0, n), commit.subarray(0, n));
+  Object.assign(out, {
+    stats: summarize(times.subarray(0, n), cpu.subarray(0, n)),
+    commitMsAvg: cs.cpuMsAvg,
+    commitMsP99: cs.cpuMsP99,
+    throws,
+    rows: C.w.n,
+    children: C.layer.children.length,
+    minRows,
+    maxRows,
+    rebinds: C.rebinds,
+    unbinds: C.unbinds,
+    grows: C.grows,
+    shrinks: C.shrinks,
+    partials: C.partials,
+    interleavedNow: C.w.interleaved,
+    drawCalls: renderer.stats.drawCalls,
+  });
+  out.ctxId = registerCtx(ctx);
+  return out;
+}
+
+/**
+ * Steady state: move + commit + render from a plain rAF callback (no promise
+ * or closure per frame), timings into preallocated arrays, so the page's
+ * own per-frame allocations are ~0 and a heap profile over this window shows
+ * the library's. columnsSteadyStop() summarizes.
+ */
+function columnsSteadyStart(id) {
+  const ctx = getCtx(id);
+  const { renderer } = ctx;
+  const C = ctx.cols;
+  const cap = 1 << 16;
+  const S2 = { times: new Float64Array(cap), cpu: new Float64Array(cap), commit: new Float64Array(cap), n: 0, last: new Float64Array(1), throws: [] };
+  ctx.steady = S2;
+  startLoop(ctx, () => {
+    const i = S2.n;
+    if (i < cap) {
+      const now = performance.now();
+      S2.times[i] = i === 0 ? 0 : now - S2.last[0];
+      S2.last[0] = now;
+    }
+    moveWorld(C.w);
+    C.commit();
+    if (i < cap) {
+      S2.commit[i] = C.commitMs[0];
+      S2.cpu[i] = renderer.stats.cpuMs; // the previous render()'s
+    }
+    S2.n++;
+  });
+  return { started: true };
+}
+
+function columnsSteadyStop(id) {
+  const ctx = getCtx(id);
+  const l = stopLoop(ctx);
+  const S2 = ctx.steady;
+  const n = Math.min(S2.n, S2.times.length);
+  // Skip the first frame (no interval) and the first cpu sample (previous loop).
+  const st = summarize(S2.times.subarray(1, n), S2.cpu.subarray(1, n));
+  const cs = summarize(S2.commit.subarray(1, n), S2.commit.subarray(1, n));
+  return { stats: st, commitMsAvg: cs.cpuMsAvg, commitMsP99: cs.cpuMsP99, frames: n, throws: l ? l.throws : [], rows: ctx.cols.w.n, interleaved: ctx.cols.w.interleaved };
+}
+
+/** Stops moving; renders a few frames; returns the probe rows (points, tints, user ids). */
+async function columnsProbes(id) {
+  const ctx = getCtx(id);
+  stopLoop(ctx);
+  const C = ctx.cols;
+  C.commit();
+  await settle(ctx, 8);
+  const probes = PROBES.map((p, i) => ({
+    row: i,
+    center: [p.x + PROBE_PX / 2, p.y + PROBE_PX / 2],
+    tint: p.tint,
+    userId: C.w.userId[i],
+    nodeUserId: C.layer.children[i].userId,
+    nodeX: C.layer.children[i].x,
+    nodeY: C.layer.children[i].y,
+  }));
+  // The moving load goes on for the picks that follow.
+  startLoop(ctx, () => {
+    moveWorld(C.w);
+    C.commit();
+  });
+  return { probes, rows: C.w.n, children: C.layer.children.length };
+}
+
+/** Picks every probe (moving load keeps running). Checks node + userId. */
+async function columnsPickProbes(id) {
+  const ctx = getCtx(id);
+  const C = ctx.cols;
+  const res = [];
+  for (let i = 0; i < PROBES.length; i++) {
+    const [x, y] = [PROBES[i].x + PROBE_PX / 2, PROBES[i].y + PROBE_PX / 2];
+    try {
+      const hit = await Promise.race([ctx.renderer.pick(x, y), sleep(8000).then(() => 'timeout')]);
+      if (hit === 'timeout') res.push({ row: i, timeout: true });
+      else res.push({ row: i, want: C.w.userId[i], got: hit ? hit.userId : null, nodeOk: !!hit && hit.node === C.layer.children[i], instance: hit ? hit.instance : null });
+    } catch (e) {
+      res.push({ row: i, error: errText(e) });
+    }
+  }
+  return res;
+}
+
+// ─── userId picking under load (§19.3) ─────────────────────────────────────
+
+/**
+ * Columns layer (moving + churning, 4 fixed probe rows), 4 stage sprites
+ * with NodeOptions.userId (one without), and a 'manual' Swarm whose slots
+ * 0..4 are fixed 40 px objects with SpawnOptions.user; the other slots are
+ * killed and respawned every frame.
+ */
+const UID_SPRITES = [
+  { x: 40, y: 20, user: 0xfffffffe },
+  { x: 160, y: 20, user: 0 },
+  { x: 280, y: 20, user: 0x7fffffff },
+  { x: 400, y: 20, user: 12345 }, // its userId is changed through the setter every round
+];
+const UID_SWARM = [
+  { x: 80, y: 250, user: 0xffffffff },
+  { x: 200, y: 250, user: 0 },
+  { x: 320, y: 250, user: 0x80000001 },
+  { x: 440, y: 250, user: 7 },
+  { x: 560, y: 250, user: 42 }, // rewritten with write() every round
+];
+
+async function uidScene({ worker, backend, count = 100_000, swarmCount = 200_000, structEvery = 20, step = 2000 }) {
+  const ctx = await createCtx({ worker, backend, cssW: 800, cssH: 600 });
+  const { renderer } = ctx;
+  const C = columnsLayer(ctx, count);
+  ctx.cols = C;
+  const white = whiteTex(200, 120, 255);
+  const targets = UID_SPRITES.map(t => {
+    const s = new GPU.Sprite({ texture: white, x: t.x, y: t.y, width: 60, height: 60, ...(t.user ? { userId: t.user } : {}) });
+    renderer.stage.addChild(s);
+    return s;
+  });
+  ctx.uidTargets = targets;
+  const out = { backend: renderer.info.backend, worker, count, swarm: null, targetUserIds: targets.map(t => t.userId) };
+  let swarm = null;
+  const blocks = [];
+  if (swarmCount > 0 && swarmSupported(renderer, swarmCount)) {
+    swarm = new GPU.Swarm({ capacity: swarmCount, shape: 'quad', allocation: 'manual', behaviors: [GPU.behaviors.velocity()] });
+    swarm.pickable = true;
+    renderer.stage.addChild(swarm);
+    const slots = UID_SWARM.map(o => swarm.spawn(1, { x: o.x, y: o.y, size: 40, color: '#ff4444', user: o.user }));
+    for (let first = UID_SWARM.length; first + 1000 <= swarmCount; first += 1000) {
+      const f = swarm.spawn(1000, { x: [20, 780], y: [560, 590], vx: [-10, 10], size: 1, color: '#4444ff', user: 0x1000 + first });
+      if (f >= 0) blocks.push(f);
+    }
+    out.swarm = { capacity: swarmCount, slots, blocks: blocks.length };
+    ctx.swarm = swarm;
+  }
+  ctx.uidChurn = { structural: 0, respawnFails: 0, swarmChurn: 0 };
+  const ch = ctx.uidChurn;
+  startLoop(ctx, f => {
+    if (f > 0 && f % structEvery === 0) {
+      ch.structural++;
+      if (ch.structural % 2) C.grow(step);
+      else C.shrink(step);
+    }
+    moveWorld(C.w);
+    C.commit();
+    if (swarm && blocks.length) {
+      const b = blocks[(f * 7) % blocks.length];
+      swarm.kill(b, 1000);
+      const again = swarm.spawn(1000, { x: [20, 780], y: [560, 590], vx: [-10, 10], size: 1, color: '#4444ff', user: (0x2000 + f) >>> 0 });
+      if (again < 0) ch.respawnFails++;
+      ch.swarmChurn++;
+    }
+  });
+  await sleep(800);
+  // Slot 4's cold record, so write() can change only its user id.
+  if (swarm) {
+    try {
+      ctx.uidCold4 = await Promise.race([swarm.readCold(4, 1), sleep(8000).then(() => null)]);
+    } catch (e) {
+      out.readColdError = errText(e);
+    }
+    out.cold4 = ctx.uidCold4 ? Array.from(ctx.uidCold4) : null;
+  }
+  // Warm-up: the first pick loads the pick client and the readback ring.
+  out.warmPick = await codeOfAsync(renderer.pick(5, 5));
+  out.ctxId = registerCtx(ctx);
+  return out;
+}
+
+/**
+ * One round: new user ids for the 4 column probes (column write + commit in
+ * the loop), the setter target and swarm slot 4 (write()); then every target
+ * is picked on its own and all of them once more in a single frame.
+ */
+async function uidRound(id, round) {
+  const ctx = getCtx(id);
+  const C = ctx.cols;
+  const swarm = ctx.swarm;
+  const out = { round, cases: 0, bad: [], timeouts: 0, errors: [], frames: [] };
+  // New ids (u32, some above 2^31).
+  for (let i = 0; i < PROBES.length; i++) C.w.userId[i] = (PROBES[i].user + round * 0x01000193) >>> 0;
+  const setterTarget = ctx.uidTargets[3];
+  setterTarget.userId = (0x70000000 + round) >>> 0;
+  let swarmUser4 = UID_SWARM[4].user;
+  if (swarm && ctx.uidCold4) {
+    swarmUser4 = (0x50000000 + round) >>> 0;
+    const cold = new Uint32Array(ctx.uidCold4);
+    cold[GPU.layouts.SC_USER / 4] = swarmUser4;
+    swarm.write(4, undefined, cold);
+  }
+  await raf();
+  await raf();
+  await raf();
+  const cases = [];
+  for (let i = 0; i < PROBES.length; i++) cases.push({ kind: 'column', x: PROBES[i].x + 15, y: PROBES[i].y + 15, node: C.layer.children[i], user: C.w.userId[i], instance: -1 });
+  for (let i = 0; i < UID_SPRITES.length; i++) {
+    const t = ctx.uidTargets[i];
+    cases.push({ kind: 'sprite', x: UID_SPRITES[i].x + 30, y: UID_SPRITES[i].y + 30, node: t, user: i === 3 ? setterTarget.userId : UID_SPRITES[i].user >>> 0, instance: -1 });
+  }
+  if (swarm) {
+    for (let i = 0; i < UID_SWARM.length; i++) cases.push({ kind: 'swarm', x: UID_SWARM[i].x, y: UID_SWARM[i].y, node: swarm, user: i === 4 ? swarmUser4 : UID_SWARM[i].user >>> 0, instance: i });
+  }
+  const judge = (c, hit, how) => {
+    out.cases++;
+    const ok = !!hit && hit.node === c.node && hit.userId === c.user && hit.instance === c.instance;
+    if (!ok && out.bad.length < 12) {
+      out.bad.push({ how, kind: c.kind, at: [c.x, c.y], want: { user: c.user, instance: c.instance }, got: hit ? { user: hit.userId, instance: hit.instance, sameNode: hit.node === c.node, kind: hit.node && hit.node.kind } : null });
+    }
+  };
+  for (const c of cases) {
+    const f0 = ctx.renderer.stats.frameId;
+    try {
+      const hit = await Promise.race([ctx.renderer.pick(c.x, c.y), sleep(8000).then(() => 'timeout')]);
+      if (hit === 'timeout') out.timeouts++;
+      else judge(c, hit, 'single');
+    } catch (e) {
+      out.errors.push(errText(e));
+    }
+    out.frames.push(ctx.renderer.stats.frameId - f0);
+  }
+  // All at once (more than the 4 ring slots: requests must queue).
+  try {
+    const hits = await Promise.race([Promise.all(cases.map(c => ctx.renderer.pick(c.x, c.y))), sleep(15000).then(() => 'timeout')]);
+    if (hits === 'timeout') out.timeouts++;
+    else cases.forEach((c, i) => judge(c, hits[i], 'batch'));
+  } catch (e) {
+    out.errors.push(errText(e));
+  }
+  out.loopThrows = ctx.loop?.throws ?? [];
+  out.rows = C.w.n;
+  out.churn = { ...ctx.uidChurn };
+  return out;
+}
+
+// ─── Events sink (§19.2) ───────────────────────────────────────────────────
+
+async function eventsInit({ worker, backend, debug = true, throwing = false }) {
+  const log = [];
+  const sink = throwing
+    ? {
+        emit(name, payload) {
+          log.push({ name, payload, t: performance.now() });
+          throw new Error(`sink failure on ${name}`);
+        },
+      }
+    : undefined;
+  let ctx;
+  try {
+    ctx = await createCtx({ worker, backend, debug, cssW: 640, cssH: 480, eventLog: log, sink });
+  } catch (e) {
+    return { createError: errText(e), log: log.map(e => ({ name: e.name, payload: e.payload })) };
+  }
+  const { renderer } = ctx;
+  ctx.eventLog = log;
+  const tex = whiteTex(255, 200, 80);
+  ctx.mover = new GPU.Sprite({ texture: tex, x: 20, y: 20, width: 80, height: 80 });
+  renderer.stage.addChild(ctx.mover);
+  startLoop(ctx, f => (ctx.mover.x = 20 + (f % 300)));
+  return {
+    ctxId: registerCtx(ctx),
+    info: { backend: renderer.info.backend, worker: renderer.info.worker, sharedMemory: renderer.info.sharedMemory, fallbackReason: renderer.info.fallbackReason ?? null },
+    log: log.map(e => ({ name: e.name, payload: e.payload })),
+  };
+}
+
+const eventsSince = (ctx, k) => ctx.eventLog.slice(k).map(e => ({ name: e.name, payload: e.payload }));
+
+async function eventsStep(id, step) {
+  const ctx = getCtx(id);
+  const { renderer } = ctx;
+  const k = ctx.eventLog.length;
+  const out = { step };
+  const waitFrames = async n => {
+    const f0 = ctx.loop ? ctx.loop.frames : 0;
+    const until = performance.now() + 15000;
+    while ((ctx.loop ? ctx.loop.frames : 0) - f0 < n && performance.now() < until) await raf();
+  };
+  if (step === 'frames') {
+    await waitFrames(300);
+  } else if (step === 'css') {
+    // autoResize: a CSS change → one resize event; the same size again → none.
+    ctx.canvas.style.width = '600px';
+    ctx.canvas.style.height = '450px';
+    await waitFrames(10);
+    out.afterFirst = ctx.eventLog.length - k;
+    ctx.canvas.style.width = '600px';
+    ctx.canvas.style.height = '450px';
+    await waitFrames(10);
+    out.state = { width: renderer.width, height: renderer.height, resolution: renderer.resolution };
+  } else if (step === 'manual') {
+    renderer.resize(600, 450, 2);
+    renderer.resize(600, 450, 2); // no change: no event
+    await waitFrames(10);
+    renderer.resize(600, 450, 1);
+    await waitFrames(10);
+    out.state = { width: renderer.width, height: renderer.height, resolution: renderer.resolution };
+  } else if (step === 'loss') {
+    const before = ctx.events.restored;
+    out.trigger = loseDevice(ctx);
+    const until = performance.now() + 15000;
+    while (ctx.events.restored <= before && performance.now() < until) await sleep(50);
+    await waitFrames(30);
+  } else if (step === 'glLose') {
+    const core = globalThis.__COZYGPU_CORE__;
+    const gl = core && core.backend && core.backend.gl;
+    const ext = gl && gl.getExtension('WEBGL_lose_context');
+    if (!ext) out.trigger = 'no WEBGL_lose_context';
+    else {
+      const before = ctx.events.restored;
+      ext.loseContext();
+      out.trigger = 'ok';
+      const until = performance.now() + 15000;
+      while (ctx.events.restored <= before && performance.now() < until) await sleep(50);
+      await waitFrames(30);
+    }
+  } else if (step === 'error') {
+    // A non-fatal core error: WebGPU refuses a Swarm whose hot buffer exceeds
+    // the default binding limit (OUT_OF_CAPACITY); WebGL2 refuses allocation
+    // 'gpu' (UNSUPPORTED).
+    const webgl2 = renderer.info.backend === 'webgl2';
+    const swarm = webgl2
+      ? new GPU.Swarm({ capacity: 10_000, allocation: 'gpu', behaviors: [GPU.behaviors.velocity()] })
+      : new GPU.Swarm({ capacity: 4_000_000, behaviors: [GPU.behaviors.velocity()] });
+    renderer.stage.addChild(swarm);
+    out.expectCode = webgl2 ? 'UNSUPPORTED' : 'OUT_OF_CAPACITY';
+    await waitFrames(60);
+    swarm.destroy();
+    await waitFrames(10);
+  } else if (step === 'assets') {
+    const base = new URL('/files/', location.href).href;
+    const a = renderer.assets;
+    try {
+      const h = await a.load(`${base}icon-3.png`);
+      out.loaded = true;
+      h.release();
+    } catch (e) {
+      out.loadError = errText(e);
+    }
+    try {
+      await a.load(`${base}missing-${Date.now()}.png`);
+      out.missing = 'resolved';
+    } catch (e) {
+      out.missing = codeOf(e);
+    }
+    await waitFrames(5);
+  }
+  out.events = eventsSince(ctx, k);
+  out.loopThrows = ctx.loop?.throws ?? [];
+  out.frameId = renderer.stats.frameId;
+  return out;
+}
+
+// ─── Uncapped picking without allocation growth (§19.6) ────────────────────
+
+/**
+ * Keeps exactly one pick in flight (issue → answer → issue), cycling over
+ * `points` = [[x, y, expectedId], …]. Allocation-free on the page side except
+ * the `.then` of each pick; latencies go to a preallocated array.
+ */
+function pickPumpStart(id, points) {
+  const ctx = getCtx(id);
+  const n = points.length;
+  const xs = new Float64Array(n);
+  const ys = new Float64Array(n);
+  const want = points.map(p => p[2]);
+  for (let i = 0; i < n; i++) {
+    xs[i] = points[i][0];
+    ys[i] = points[i][1];
+  }
+  const P = { on: true, picks: 0, bad: 0, errors: 0, badSamples: [], errSamples: [], lat: new Float64Array(1 << 20), k: 0, t0: 0, cur: 0, pending: false, startFrame: ctx.renderer.stats.frameId, startT: performance.now() };
+  ctx.pump = P;
+  let next = null;
+  const onHit = hit => {
+    const dt = performance.now() - P.t0;
+    if (P.k < P.lat.length) P.lat[P.k++] = dt;
+    const got = pickIdOf(ctx, hit && hit.node);
+    if (got !== want[P.cur]) {
+      P.bad++;
+      if (P.badSamples.length < 8) P.badSamples.push({ at: [xs[P.cur], ys[P.cur]], want: want[P.cur], got });
+    }
+    P.picks++;
+    next();
+  };
+  const onErr = e => {
+    P.errors++;
+    if (P.errSamples.length < 8) P.errSamples.push(errText(e));
+    next();
+  };
+  next = () => {
+    if (!P.on) {
+      P.pending = false;
+      return;
+    }
+    P.cur = P.cur + 1 === n ? 0 : P.cur + 1;
+    P.pending = true;
+    P.t0 = performance.now();
+    ctx.renderer.pick(xs[P.cur], ys[P.cur]).then(onHit, onErr);
+  };
+  next();
+  return { started: true };
+}
+
+function pickPumpState(id) {
+  const ctx = getCtx(id);
+  const P = ctx.pump;
+  return { picks: P ? P.picks : 0, pendingMs: P && P.pending ? +(performance.now() - P.t0).toFixed(1) : 0, frames: ctx.loop ? ctx.loop.frames : null, frameId: ctx.renderer.stats.frameId };
+}
+
+async function pickPumpStop(id) {
+  const ctx = getCtx(id);
+  const P = ctx.pump;
+  P.on = false;
+  const until = performance.now() + 10000;
+  while (P.pending && performance.now() < until) await sleep(20);
+  const lat = Float64Array.from(P.lat.subarray(0, P.k)).sort();
+  const q = f => (lat.length ? +lat[Math.min(lat.length - 1, Math.floor(lat.length * f))].toFixed(2) : null);
+  let sum = 0;
+  for (let i = 0; i < P.k; i++) sum += P.lat[i];
+  const spanS = (performance.now() - P.startT) / 1000;
+  return {
+    picks: P.picks,
+    bad: P.bad,
+    errors: P.errors,
+    badSamples: P.badSamples,
+    errSamples: P.errSamples,
+    stillPending: P.pending,
+    firstMs: P.k ? +P.lat[0].toFixed(2) : null,
+    avgMs: P.k ? +(sum / P.k).toFixed(2) : null,
+    p50Ms: q(0.5),
+    p99Ms: q(0.99),
+    maxMs: q(1),
+    over100: lat.filter(v => v > 100).length,
+    frames: ctx.renderer.stats.frameId - P.startFrame,
+    picksPerS: +(P.picks / spanS).toFixed(1),
+    loopThrows: ctx.loop?.throws ?? [],
+  };
+}
+
+function loopFrames(id) {
+  const ctx = getCtx(id);
+  return { frames: ctx.loop ? ctx.loop.frames : 0, frameId: ctx.renderer.stats.frameId, skipped: ctx.renderer.stats.skippedFrames, cpuMs: ctx.renderer.stats.cpuMs };
+}
+
+// ─── External instance buffer (WebGPU interop, §19.4) ──────────────────────
+
+const EXT_L = [20, 20, 280, 440]; // own objects
+const EXT_R = [500, 20, 280, 440]; // external records
+const EXT_RT = [500, 20, 280, 210];
+const EXT_RB = [500, 250, 280, 210];
+const EXT_P = [630, 520, 40, 40]; // external record 0 (40 px, pick target)
+const EXT_MARK = [0, 560, 40, 40]; // red marker sprite
+
+/** Hot records inside EXT_R: first half in the top band, second half in the bottom band. */
+function externalRecords(count, { vx = 0 } = {}) {
+  const f = new Float32Array(count * HOT_WORDS);
+  const half = count >> 1;
+  for (let i = 0; i < count; i++) {
+    const o = i * HOT_WORDS;
+    const top = i < half;
+    f[o] = 502 + ((i * 7919) % 274);
+    f[o + 1] = (top ? 22 : 252) + ((i * 104729) % 204);
+    f[o + 2] = vx;
+    f[o + 3] = 0;
+    f[o + 4] = 2;
+    f[o + 5] = 2;
+    f[o + 9] = 1e30;
+  }
+  // Record 0: a 40 px object at the pick point.
+  f[0] = 650;
+  f[1] = 540;
+  f[4] = 40;
+  f[5] = 40;
+  return f;
+}
+
+function extBuffer(device, records, usage) {
+  const b = device.createBuffer({ size: records.byteLength, usage });
+  device.queue.writeBuffer(b, 0, records);
+  return b;
+}
+
+const MOVE_X_WGSL = `
+struct Hot { pos: vec2f, vel: vec2f, scale: vec2f, rot: f32, angVel: f32, age: f32, life: f32 }
+@group(0) @binding(0) var<storage, read_write> hot: array<Hot>;
+@group(0) @binding(1) var<uniform> sim: vec4f;
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3u) {
+  let i = gid.x + gid.y * 65535u * 256u;
+  if (i == 0u || i >= u32(sim.y)) { return; }
+  hot[i].pos.x = hot[i].pos.x + sim.x;
+}`;
+
+async function extStep(o) {
+  const out = { step: o.step, throws: [] };
+  const tryit = (label, f) => {
+    try {
+      return f();
+    } catch (e) {
+      out.throws.push(`${label}: ${errText(e)}`);
+    }
+  };
+  if (o.step === 'init') {
+    const ctx = await createCtx({ worker: o.worker, backend: o.backend, debug: true, cssW: 800, cssH: 600 });
+    const { renderer } = ctx;
+    const N = o.count;
+    out.backend = renderer.info.backend;
+    const marker = new GPU.Sprite({ texture: whiteTex(255, 0, 0), x: EXT_MARK[0], y: EXT_MARK[1], width: 40, height: 40 });
+    renderer.stage.addChild(marker);
+    ctx.ext = { N, frames: 0 };
+    // interop availability first: worker mode rejects with UNSUPPORTED.
+    out.interop = await codeOfAsync(renderer.interop());
+    if (out.interop !== 'ok') {
+      startLoop(ctx);
+      await sleep(300);
+      out.ctxId = registerCtx(ctx);
+      return out;
+    }
+    const interop = await renderer.interop();
+    ctx.ext.interop = interop;
+    out.interopBackend = interop.backend;
+    out.deviceKind = interop.device ? interop.device.constructor.name : null;
+    const swarm = new GPU.Swarm({ capacity: N, shape: 'quad', behaviors: [GPU.behaviors.velocity()] });
+    swarm.pickable = true;
+    renderer.stage.addChild(swarm);
+    swarm.spawn(N, { x: [EXT_L[0] + 2, EXT_L[0] + EXT_L[2] - 4], y: [EXT_L[1] + 2, EXT_L[1] + EXT_L[3] - 4], size: 2, color: '#4488ff', user: 77 });
+    ctx.swarm = swarm;
+    startLoop(ctx, () => {
+      if (ctx.ext.each) ctx.ext.each();
+    });
+    await sleep(500);
+    out.ctxId = registerCtx(ctx);
+    return out;
+  }
+  const ctx = getCtx(o.ctxId);
+  const { renderer } = ctx;
+  const E = ctx.ext;
+  const swarm = ctx.swarm;
+  const N = E.N;
+  const settleLoop = async (n = 8) => {
+    const f0 = ctx.loop.frames;
+    const until = performance.now() + 15000;
+    while (ctx.loop.frames - f0 < n && performance.now() < until) await raf();
+  };
+  const interop = E.interop;
+  const device = interop && interop.device;
+  const U = typeof GPUBufferUsage !== 'undefined' ? GPUBufferUsage : null;
+  switch (o.step) {
+    case 'webgl2': {
+      // WebGL2 in M2.5: interop resolves, but Swarm external sources are
+      // refused (UNSUPPORTED) and 'sprite-instance' is reserved.
+      const gl = device;
+      out.isGL = typeof WebGL2RenderingContext !== 'undefined' && gl instanceof WebGL2RenderingContext;
+      const buf = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+      gl.bufferData(gl.ARRAY_BUFFER, 1000 * 40, gl.DYNAMIC_DRAW);
+      gl.bindBuffer(gl.ARRAY_BUFFER, null);
+      interop.invalidateState();
+      out.spriteInstance = codeOfCall(() => interop.registerInstanceBuffer(buf, { layout: 'sprite-instance', capacity: 1000 }));
+      let ext = null;
+      out.registerHot = codeOfCall(() => (ext = interop.registerInstanceBuffer(buf, { layout: 'swarm-hot', capacity: 1000 })));
+      if (ext) {
+        out.setSourceAfterRun = codeOfCall(() => swarm.setSource({ hot: ext, count: 1000 }));
+        // A swarm given a source before its first WebGL2 frame is disabled
+        // with one UNSUPPORTED error; its readbacks reject.
+        const s2 = new GPU.Swarm({ capacity: 1000, behaviors: [GPU.behaviors.velocity()] });
+        renderer.stage.addChild(s2);
+        out.setSourceBeforeRun = codeOfCall(() => s2.setSource({ hot: ext, count: 1000 }));
+        await settleLoop(20);
+        out.s2Read = await codeOfAsync(awaitWhileRendering(ctx, s2.readHot(0, 4), 8000));
+        E.s2 = s2;
+      }
+      await settleLoop(10);
+      break;
+    }
+    case 'set': {
+      E.recA = externalRecords(N);
+      E.bufA = extBuffer(device, E.recA, U.STORAGE | U.COPY_SRC | U.COPY_DST);
+      E.extA = interop.registerInstanceBuffer(E.bufA, { layout: 'swarm-hot', capacity: N, label: 'stress.A' });
+      out.valid = E.extA.valid;
+      out.id = E.extA.id;
+      out.layout = E.extA.layout;
+      tryit('setSource', () => swarm.setSource({ hot: E.extA, count: N }));
+      await settleLoop(10);
+      break;
+    }
+    case 'readback': {
+      const safe = p => awaitWhileRendering(ctx, p, 10000).catch(e => `rejected ${codeOf(e)}`);
+      const head = await safe(swarm.readHot(0, 8));
+      const tail = await safe(swarm.readHot(N - 8, 8));
+      const cmp = (got, first) => {
+        if (!(got instanceof Float32Array)) return String(got);
+        let bad = 0;
+        for (let i = 0; i < got.length; i++) if (Math.abs(got[i] - E.recA[first * HOT_WORDS + i]) > 1e-3 && !(got[i] > 1e29 && E.recA[first * HOT_WORDS + i] > 1e29)) bad++;
+        return bad;
+      };
+      out.headMismatch = cmp(head, 0);
+      out.tailMismatch = cmp(tail, N - 8);
+      try {
+        out.alive = await awaitWhileRendering(ctx, swarm.aliveCount(), 10000);
+      } catch (e) {
+        out.alive = codeOf(e);
+      }
+      try {
+        const cold = await awaitWhileRendering(ctx, swarm.readCold(0, 2), 10000);
+        out.coldUser = cold instanceof Uint32Array ? cold[GPU.layouts.SC_USER / 4] : String(cold);
+      } catch (e) {
+        out.coldUser = codeOf(e);
+      }
+      break;
+    }
+    case 'throws': {
+      out.codes = {
+        spawn: codeOfCall(() => swarm.spawn(10, { x: 10, y: 10 })),
+        kill: codeOfCall(() => swarm.kill(0, 10)),
+        killList: codeOfCall(() => swarm.killList(new Uint32Array([1, 2]))),
+        write: codeOfCall(() => swarm.write(0, new Float32Array(HOT_WORDS))),
+        clear: codeOfCall(() => swarm.clear()),
+      };
+      await settleLoop(4);
+      break;
+    }
+    case 'count0':
+      tryit('setSourceCount(0)', () => swarm.setSourceCount(0));
+      await settleLoop(8);
+      break;
+    case 'countHalf':
+      tryit('setSourceCount(N/2)', () => swarm.setSourceCount(N >> 1));
+      await settleLoop(8);
+      break;
+    case 'countFull':
+      tryit('setSourceCount(N)', () => swarm.setSourceCount(N));
+      tryit('setSourceCount(2N) clamps', () => swarm.setSourceCount(N * 2));
+      await settleLoop(8);
+      break;
+    case 'pick': {
+      const hit = await Promise.race([renderer.pick(650, 540), sleep(8000).then(() => 'timeout')]);
+      out.hit = hit === 'timeout' ? 'timeout' : hit ? { swarm: hit.node === swarm, instance: hit.instance, userId: hit.userId } : null;
+      // Own objects are not drawn while the source is set.
+      const own = await Promise.race([renderer.pick(160, 240), sleep(8000).then(() => 'timeout')]);
+      out.ownHit = own === 'timeout' ? 'timeout' : own ? { swarm: own.node === swarm, instance: own.instance } : null;
+      break;
+    }
+    case 'compute': {
+      // External compute moves records 1..N-1 by +dx per frame; submitted on
+      // the renderer's queue before each render().
+      const pipeline = await device.createComputePipelineAsync({ layout: 'auto', compute: { module: device.createShaderModule({ code: MOVE_X_WGSL }), entryPoint: 'main' } });
+      const sim = device.createBuffer({ size: 16, usage: U.UNIFORM | U.COPY_DST });
+      const dx = 0.05;
+      device.queue.writeBuffer(sim, 0, new Float32Array([dx, N, 0, 0]));
+      const group = device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: E.bufA } }, { binding: 1, resource: { buffer: sim } }] });
+      const groups = Math.ceil(N / 256);
+      const gx = Math.min(groups, 65535);
+      const gy = Math.ceil(groups / 65535);
+      let submits = 0;
+      const frames = o.frames ?? 240;
+      const times = new Float64Array(frames);
+      const cpu = new Float64Array(frames);
+      stopLoop(ctx);
+      let last = performance.now();
+      for (let i = 0; i < frames; i++) {
+        const enc = device.createCommandEncoder();
+        const pass = enc.beginComputePass();
+        pass.setPipeline(pipeline);
+        pass.setBindGroup(0, group);
+        pass.dispatchWorkgroups(gx, gy);
+        pass.end();
+        device.queue.submit([enc.finish()]);
+        submits++;
+        renderer.render();
+        cpu[i] = renderer.stats.cpuMs;
+        await raf();
+        const now = performance.now();
+        times[i] = now - last;
+        last = now;
+      }
+      out.stats = summarize(times, cpu);
+      out.submits = submits;
+      out.dx = dx;
+      const head = await awaitWhileRendering(ctx, swarm.readHot(1, 4), 10000).catch(e => `rejected ${codeOf(e)}`);
+      out.moved = head instanceof Float32Array ? [0, 1, 2, 3].map(j => +(head[j * HOT_WORDS] - E.recA[(1 + j) * HOT_WORDS]).toFixed(3)) : String(head);
+      out.expectedMove = +(submits * dx).toFixed(3);
+      sim.destroy();
+      startLoop(ctx, () => {
+        if (ctx.ext.each) ctx.ext.each();
+      });
+      await settleLoop(4);
+      break;
+    }
+    case 'simulate': {
+      const M = 1000;
+      const rec = externalRecords(M, { vx: 60 });
+      const buf = extBuffer(device, rec, U.STORAGE | U.COPY_SRC | U.COPY_DST);
+      const ext = interop.registerInstanceBuffer(buf, { layout: 'swarm-hot', capacity: M });
+      tryit('setSource simulate', () => swarm.setSource({ hot: ext, count: M, simulate: true }));
+      await settleLoop(60);
+      const got = await awaitWhileRendering(ctx, swarm.readHot(1, 4), 10000).catch(e => `rejected ${codeOf(e)}`);
+      out.moved = got instanceof Float32Array ? [0, 1, 2, 3].map(j => +(got[j * HOT_WORDS] - rec[(1 + j) * HOT_WORDS]).toFixed(2)) : String(got);
+      // Back to A (draw-only).
+      tryit('setSource A', () => swarm.setSource({ hot: E.extA, count: N }));
+      await settleLoop(4);
+      tryit('release sim', () => ext.release());
+      buf.destroy();
+      await settleLoop(4);
+      break;
+    }
+    case 'invalid': {
+      const small = device.createBuffer({ size: 400, usage: U.STORAGE | U.COPY_SRC });
+      const noStorage = device.createBuffer({ size: 4000, usage: U.COPY_DST | U.VERTEX });
+      const coldBuf = device.createBuffer({ size: 16 * 1000, usage: U.STORAGE | U.COPY_SRC });
+      const hot1k = device.createBuffer({ size: 40 * 1000, usage: U.STORAGE | U.COPY_SRC });
+      let coldExt = null;
+      let hotExt = null;
+      out.codes = {
+        tooSmall: codeOfCall(() => interop.registerInstanceBuffer(small, { layout: 'swarm-hot', capacity: 100 })),
+        noStorage: codeOfCall(() => interop.registerInstanceBuffer(noStorage, { layout: 'swarm-hot', capacity: 100 })),
+        spriteInstance: codeOfCall(() => interop.registerInstanceBuffer(hot1k, { layout: 'sprite-instance', capacity: 100 })),
+        notABuffer: codeOfCall(() => interop.registerInstanceBuffer({}, { layout: 'swarm-hot', capacity: 1 })),
+        badLayout: codeOfCall(() => interop.registerInstanceBuffer(hot1k, { layout: 'nope', capacity: 1 })),
+        coldRegister: codeOfCall(() => (coldExt = interop.registerInstanceBuffer(coldBuf, { layout: 'swarm-cold', capacity: 1000 }))),
+        hotRegister: codeOfCall(() => (hotExt = interop.registerInstanceBuffer(hot1k, { layout: 'swarm-hot', capacity: 1000 }))),
+      };
+      out.codes.coldAsHot = coldExt ? codeOfCall(() => swarm.setSource({ hot: coldExt, count: 10 })) : 'n/a';
+      out.codes.countOverRecords = hotExt ? codeOfCall(() => swarm.setSource({ hot: hotExt, count: 1001 })) : 'n/a';
+      out.codes.hotAsCold = hotExt ? codeOfCall(() => swarm.setSource({ hot: hotExt, cold: hotExt, count: 10 })) : 'n/a';
+      const other = new GPU.Swarm({ capacity: 10, behaviors: [GPU.behaviors.velocity()] });
+      out.codes.countWithoutSource = codeOfCall(() => other.setSourceCount(5));
+      other.destroy();
+      // Whatever was tried, the swarm must still draw from A.
+      tryit('setSource A again', () => swarm.setSource({ hot: E.extA, count: N }));
+      coldExt?.release();
+      hotExt?.release();
+      out.codes.releasedSource = hotExt ? codeOfCall(() => swarm.setSource({ hot: hotExt, count: 10 })) : 'n/a';
+      tryit('setSource A again', () => swarm.setSource({ hot: E.extA, count: N }));
+      await settleLoop(6);
+      small.destroy();
+      noStorage.destroy();
+      coldBuf.destroy();
+      hot1k.destroy();
+      break;
+    }
+    case 'nocopysrc': {
+      const M = 1000;
+      const rec = externalRecords(M);
+      const buf = extBuffer(device, rec, U.STORAGE | U.COPY_DST);
+      const ext = interop.registerInstanceBuffer(buf, { layout: 'swarm-hot', capacity: M });
+      tryit('setSource', () => swarm.setSource({ hot: ext, count: M }));
+      await settleLoop(4);
+      out.readHot = await codeOfAsync(awaitWhileRendering(ctx, swarm.readHot(0, 4), 8000));
+      tryit('setSource A', () => swarm.setSource({ hot: E.extA, count: N }));
+      await settleLoop(4);
+      ext.release();
+      buf.destroy();
+      break;
+    }
+    case 'release': {
+      tryit('release A', () => E.extA.release());
+      out.valid = E.extA.valid;
+      await settleLoop(8);
+      out.readHot = await codeOfAsync(awaitWhileRendering(ctx, swarm.readHot(0, 4), 8000));
+      // aliveCount while the source is gone waits until the swarm has buffers again.
+      E.pendingAlive = 'pending';
+      swarm.aliveCount().then(
+        v => (E.pendingAlive = v),
+        e => (E.pendingAlive = `rejected ${codeOf(e)}`),
+      );
+      await settleLoop(10);
+      out.pendingAlive = E.pendingAlive;
+      break;
+    }
+    case 'null': {
+      tryit('setSource(null)', () => swarm.setSource(null));
+      await settleLoop(10);
+      const until = performance.now() + 8000;
+      while (E.pendingAlive === 'pending' && performance.now() < until) await raf();
+      out.pendingAlive = E.pendingAlive;
+      out.spawn = codeOfCall(() => swarm.spawn(1, { x: 150, y: 240, size: 2, color: '#4488ff', user: 77 }));
+      out.countWithoutSource = codeOfCall(() => swarm.setSourceCount(5));
+      await settleLoop(4);
+      break;
+    }
+    case 'churn': {
+      // Register / use / release / destroy cycles (outside buffers come and go).
+      const cycles = o.cycles ?? 100;
+      const M = 1000;
+      const rec = externalRecords(M);
+      let done = 0;
+      for (let i = 0; i < cycles; i++) {
+        try {
+          const buf = extBuffer(device, rec, U.STORAGE | U.COPY_SRC | U.COPY_DST);
+          const ext = interop.registerInstanceBuffer(buf, { layout: 'swarm-hot', capacity: M });
+          swarm.setSource({ hot: ext, count: M });
+          await raf();
+          if (i % 2) {
+            // Release first (the swarm draws nothing), then drop the source.
+            ext.release();
+            await raf();
+            swarm.setSource(null);
+          } else {
+            swarm.setSource(null);
+            ext.release();
+          }
+          await raf();
+          buf.destroy();
+          done++;
+        } catch (e) {
+          if (out.throws.length < 5) out.throws.push(errText(e));
+        }
+      }
+      out.cycles = done;
+      await settleLoop(6);
+      break;
+    }
+    case 'loss': {
+      // A fresh source, then a device loss: the registration dies, the swarm
+      // draws nothing; after deviceRestored a new buffer on the new device works.
+      E.recA = externalRecords(N);
+      E.bufA = extBuffer(device, E.recA, U.STORAGE | U.COPY_SRC | U.COPY_DST);
+      E.extA = interop.registerInstanceBuffer(E.bufA, { layout: 'swarm-hot', capacity: N });
+      tryit('setSource', () => swarm.setSource({ hot: E.extA, count: N }));
+      await settleLoop(6);
+      const before = ctx.events.restored;
+      out.trigger = loseDevice(ctx);
+      const until = performance.now() + 15000;
+      while (ctx.events.restored <= before && performance.now() < until) await sleep(50);
+      out.restored = ctx.events.restored > before;
+      await settleLoop(10);
+      out.validAfter = E.extA.valid;
+      out.newDevice = interop.device !== device;
+      out.readHotAfter = await codeOfAsync(awaitWhileRendering(ctx, swarm.readHot(0, 4), 8000));
+      E.oldDevice = device;
+      break;
+    }
+    case 'reregister': {
+      const dev = interop.device;
+      E.recA = externalRecords(N);
+      E.bufA = extBuffer(dev, E.recA, U.STORAGE | U.COPY_SRC | U.COPY_DST);
+      tryit('register', () => (E.extA = interop.registerInstanceBuffer(E.bufA, { layout: 'swarm-hot', capacity: N })));
+      tryit('setSource', () => swarm.setSource({ hot: E.extA, count: N }));
+      await settleLoop(10);
+      out.valid = E.extA.valid;
+      const head = await awaitWhileRendering(ctx, swarm.readHot(0, 2), 10000).catch(e => `rejected ${codeOf(e)}`);
+      out.headOk = head instanceof Float32Array && Math.abs(head[0] - 650) < 1e-3 && Math.abs(head[1] - 540) < 1e-3;
+      break;
+    }
+    case 'restoreCold': {
+      // The swarm's own cold records (colors, user ids) were lost with the
+      // device too: refill them with one spawn() on the own buffers, then point
+      // the swarm at the external hot buffer again.
+      tryit('setSource(null)', () => swarm.setSource(null));
+      out.spawn = codeOfCall(() => swarm.spawn(N, { x: [EXT_L[0] + 2, EXT_L[0] + EXT_L[2] - 4], y: [EXT_L[1] + 2, EXT_L[1] + EXT_L[3] - 4], size: 2, color: '#4488ff', user: 77 }));
+      await settleLoop(2);
+      tryit('setSource', () => swarm.setSource({ hot: E.extA, count: N }));
+      await settleLoop(10);
+      const hit = await Promise.race([renderer.pick(650, 540), sleep(8000).then(() => 'timeout')]);
+      out.hit = hit === 'timeout' ? 'timeout' : hit ? { swarm: hit.node === swarm, instance: hit.instance, userId: hit.userId } : null;
+      break;
+    }
+  }
+  out.loopThrows = ctx.loop?.throws ?? [];
+  out.frameId = renderer.stats.frameId;
+  return out;
+}
+
 globalThis.stress = {
+  // M2.5
+  regionStats,
+  columnsChurn,
+  columnsSteadyStart,
+  columnsSteadyStop,
+  columnsProbes,
+  columnsPickProbes,
+  uidScene,
+  uidRound,
+  eventsInit,
+  eventsStep,
+  pickPumpStart,
+  pickPumpState,
+  pickPumpStop,
+  loopFrames,
+  extStep,
   pickDiag,
   assetsInit,
   assetsBundle,

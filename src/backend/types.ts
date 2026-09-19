@@ -1,7 +1,8 @@
 /**
- * cozygpu RHI (render hardware interface). SHARED + FROZEN during the M2
- * build (docs/ARCHITECTURE.md §7 and §13). Implementations:
- * src/backend/webgpu/** and src/backend/webgl2/** (owner "webgl2").
+ * cozygpu RHI (render hardware interface), docs/ARCHITECTURE.md §7, §13
+ * and §19. Implementations: src/backend/webgpu/** and src/backend/webgl2/**.
+ * M2.5 additions: `rgba32uint`, `Backend.native()`,
+ * `Backend.importBuffer()` and the readback ring (`createReadbackRing`).
  *
  * A thin, *internal* abstraction over WebGPU (M1) and WebGL2 (M2).
  * Rules:
@@ -57,7 +58,10 @@ export interface Capabilities {
   readonly baseInstance: boolean;
   /** M2. rgba16float / rgba32float are color-renderable (WebGL2: EXT_color_buffer_float). */
   readonly floatRenderTargets: boolean;
-  /** M2. r32uint / rg32uint render targets + `readTexture` (picking). Both backends: true. */
+  /**
+   * M2. r32uint / rg32uint / (M2.5) rgba32uint render targets + `readTexture`
+   * and the readback ring (picking). Both backends: true.
+   */
   readonly integerRenderTargets: boolean;
   /** M2. Sampled textures per shader stage (WebGL2: MAX_TEXTURE_IMAGE_UNITS, >= 16). */
   readonly maxSampledTextures: number;
@@ -125,6 +129,8 @@ export type TextureFormat =
   // M2: integer targets for picking (never filterable; sampleType 'uint')
   | 'r32uint'
   | 'rg32uint'
+  // M2.5: the pick target (objectId, instance + 1, userId, 0), §19.3
+  | 'rgba32uint'
   // M2: compressed (sampled only; upload each mip level with writeTexture)
   | 'bc1-rgba-unorm'
   | 'bc1-rgba-unorm-srgb'
@@ -443,6 +449,78 @@ export interface CommandList {
   submit(): void;
 }
 
+// ─── Readback ring (M2.5) ─────────────────────────────────────────────────────
+
+export interface ReadbackRingDesc {
+  label?: string;
+  /** Slots (reads in flight at once). Picking: 4. */
+  slots: number;
+  /** Bytes per slot (tight texel rows). Picking: PICK_RESULT_BYTES. */
+  slotBytes: number;
+}
+
+/** Slot states returned by `RhiReadbackRing.poll`. */
+export const ReadbackState = {
+  /** Not acquired. */
+  FREE: 0,
+  /** Copy recorded or mapping; poll again later. */
+  PENDING: 1,
+  /** `data(slot)` holds the bytes until `release(slot)`. */
+  READY: 2,
+  /** Device lost (or the copy failed); release the slot. */
+  FAILED: 3,
+} as const;
+
+/**
+ * M2.5. Fixed set of staging slots. Usage per read: `acquire()` → record
+ * `copyTexture` on the frame's CommandList before `submit()` → `poll(slot)`
+ * on later frames until READY or FAILED → read `data(slot)` → `release(slot)`.
+ * WebGPU: MAP_READ|COPY_DST buffers, `mapAsync` started by the list's
+ * `submit()`, READY once `mapState === 'mapped'` (the bytes are copied into a
+ * persistent view, then unmapped). WebGL2: PIXEL_PACK buffers + `fenceSync`,
+ * READY once the fence signalled, then `getBufferSubData` into the view.
+ * No method allocates JS objects apart from what the native API returns.
+ */
+export interface RhiReadbackRing extends RhiResource {
+  readonly slots: number;
+  readonly slotBytes: number;
+  /** A free slot index, or -1 when every slot is in use. */
+  acquire(): number;
+  /**
+   * Records a copy of texels [x, x+width) × [y, y+height) of mip 0 into
+   * `slot` (tight rows, top row first; must fit `slotBytes`). Must be
+   * called while `list` is recording and outside any pass.
+   */
+  copyTexture(
+    list: CommandList,
+    slot: number,
+    texture: RhiTexture,
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+  ): void;
+  /** Non-blocking state of `slot` (ReadbackState). */
+  poll(slot: number): number;
+  /** Reused view of the slot's bytes; valid while the slot is READY. */
+  data(slot: number): Uint32Array;
+  release(slot: number): void;
+}
+
+// ─── Interop (M2.5) ───────────────────────────────────────────────────────────
+
+export interface ImportBufferDesc {
+  label?: string;
+  /** Bytes of the native buffer cozygpu may bind (from offset 0). */
+  size: number;
+  /**
+   * How cozygpu will use it (BufferUsage bits). WebGPU: the native buffer
+   * must carry the matching GPUBufferUsage flags (STORAGE for swarm
+   * sources, COPY_SRC for readbacks).
+   */
+  usage: BufferUsageFlags;
+}
+
 // ─── Device lost ──────────────────────────────────────────────────────────────
 
 export interface DeviceLostInfo {
@@ -527,7 +605,11 @@ export interface Backend {
   ): void;
   generateMipmaps(texture: RhiTexture): void;
   /**
-   * M2. Async readback of a texel rectangle of mip 0 (picking: 1×1 rg32uint).
+   * M2. Async readback of a texel rectangle of mip 0 (picking: 1×1
+   * PICK_TARGET_FORMAT). Allocates per call; M2.5 picking uses
+   * `createReadbackRing` instead. Since M2.5 the implementation lives in the
+   * lazy readback-ring chunk: the first call loads it before recording the
+   * copy.
    * Bytes are tightly packed rows (no WebGPU 256-byte row padding), top row
    * first. Never on a hot path.
    */
@@ -550,6 +632,44 @@ export interface Backend {
   createFeedbackPipeline(
     desc: FeedbackPipelineDesc,
   ): Promise<RhiFeedbackPipeline>;
+
+  /**
+   * M2.5 (ARCHITECTURE §19.6). Persistent staging slots for texel readbacks
+   * that are polled instead of awaited: no staging buffer, promise or
+   * ArrayBuffer is created per read by cozygpu code. Picking uses one ring.
+   * The ring implementation is a lazy chunk (ARCHITECTURE §18.1): call
+   * `loadReadbackRing()` and wait for it first, otherwise this throws
+   * INTERNAL.
+   */
+  createReadbackRing(desc: ReadbackRingDesc): RhiReadbackRing;
+  /**
+   * M2.5. Loads the readback-ring chunk (idempotent). `createReadbackRing`
+   * needs it; the picking proxy awaits it together with pickingCoreImpl.
+   * Optional so test fakes whose ring needs no loading can omit it.
+   */
+  loadReadbackRing?(): Promise<void>;
+
+  /**
+   * M2.5 (ARCHITECTURE §19.4, main-thread interop). The native device:
+   * `GPUDevice` (WebGPU) or `WebGL2RenderingContext` (WebGL2), typed
+   * `unknown` so no GPU type leaks. It changes after `restore()`.
+   */
+  native(): unknown;
+  /**
+   * M2.5. Wraps a buffer created by outside code on this backend's device
+   * (`GPUBuffer` / `WebGLBuffer`) as an RhiBuffer without taking ownership:
+   * the wrapper's `destroy()` only forgets it. Throws INVALID_ARGUMENT when
+   * `native` is not a buffer of the current device/context or `desc.size`
+   * exceeds it (WebGPU checks `size` and `usage`; WebGL2 trusts `desc`).
+   * Invalid after a device loss.
+   */
+  importBuffer(native: unknown, desc: ImportBufferDesc): RhiBuffer;
+  /**
+   * M2.5. Outside code issued native calls on `native()`: forget cached
+   * native state before the next frame (WebGL2: bindings, program, VAO,
+   * blend, viewport, pixel-store; WebGPU: no-op).
+   */
+  resetState(): void;
 
   /** Begin recording a frame. Returns a reused object (no per-frame allocation). */
   beginCommands(): CommandList;

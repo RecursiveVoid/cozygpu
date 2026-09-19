@@ -163,23 +163,20 @@ export class TextureRegistry {
     data: Uint8Array,
     at: number,
   ): void {
-    const entry = this.entries.get(texId);
-    if (!entry) {
-      this.host.warn(`TEXTURE_UPLOAD_PIXELS: unknown texId ${texId}`);
-      return;
-    }
+    const entry = this.find('TEXTURE_UPLOAD_PIXELS', texId);
+    if (!entry) return;
     if (w === 0 || h === 0) return;
     if (x + w > entry.width || y + h > entry.height) {
-      this.host.warn(
-        `TEXTURE_UPLOAD_PIXELS ${texId}: region ${x},${y} ${w}×${h} exceeds ${entry.width}×${entry.height}`,
+      this.bad(
+        'TEXTURE_UPLOAD_PIXELS',
+        texId,
+        `${x},${y} ${w}×${h} out of bounds`,
       );
       return;
     }
     const bpp = bytesPerTexel(entry.format);
     if (bpp !== 4 && entry.format !== 'r8unorm') {
-      this.host.warn(
-        `TEXTURE_UPLOAD_PIXELS ${texId}: RGBA8 uploads into ${entry.format} are not supported`,
-      );
+      this.bad('TEXTURE_UPLOAD_PIXELS', texId, `no RGBA8 into ${entry.format}`);
       return;
     }
     const texels = w * h;
@@ -196,9 +193,7 @@ export class TextureRegistry {
     this.host.backend.writeTexture(entry.texture, view, x, y, w, h);
     if (entry.retained) {
       if (entry.retainedImage) {
-        this.host.warn(
-          `texture ${texId}: pixel updates after a bitmap upload are not retained for device-loss restore`,
-        );
+        this.bad('TEXTURE_UPLOAD_PIXELS', texId, 'not retained after a bitmap');
       } else {
         if (!entry.retainedPixels) {
           entry.retainedPixels = new Uint8Array(
@@ -213,13 +208,10 @@ export class TextureRegistry {
   }
 
   uploadImage(texId: number, image: ExternalImage, flipY: boolean): void {
-    const entry = this.entries.get(texId);
-    if (!entry) {
-      this.host.warn(`TEXTURE_UPLOAD_BITMAP: unknown texId ${texId}`);
-      return;
-    }
+    const entry = this.find('TEXTURE_UPLOAD_BITMAP', texId);
+    if (!entry) return;
     if (!image) {
-      this.host.warn(`TEXTURE_UPLOAD_BITMAP ${texId}: missing packet object`);
+      this.bad('TEXTURE_UPLOAD_BITMAP', texId, 'no image');
       return;
     }
     this.host.backend.copyExternalImage(image, entry.texture, flipY);
@@ -232,7 +224,7 @@ export class TextureRegistry {
       this.host.backend.generateMipmaps(entry.texture);
   }
 
-  // ─── M2 (owner "assets"; ARCHITECTURE §15.5) ──────────────────────────────
+  // ─── M2 (ARCHITECTURE §15.5) ──────────────────────────────
 
   /** TEXTURE_UPLOAD_BITMAP_REGION: copy `image` to (x, y) of mip 0; no mip regeneration. */
   uploadBitmapRegion(
@@ -242,26 +234,21 @@ export class TextureRegistry {
     y: number,
     flipY: boolean,
   ): void {
-    const entry = this.entries.get(texId);
-    if (!entry) {
-      this.host.warn(`TEXTURE_UPLOAD_BITMAP_REGION: unknown texId ${texId}`);
-      return;
-    }
+    const entry = this.find('TEXTURE_UPLOAD_BITMAP_REGION', texId);
+    if (!entry) return;
     if (!image) {
-      this.host.warn(
-        `TEXTURE_UPLOAD_BITMAP_REGION ${texId}: missing packet object`,
-      );
+      this.bad('TEXTURE_UPLOAD_BITMAP_REGION', texId, 'no image');
       return;
     }
     if (compressedBlockBytes(entry.format) > 0) {
-      this.host.warn(
-        `TEXTURE_UPLOAD_BITMAP_REGION ${texId}: cannot copy a bitmap into ${entry.format}`,
-      );
+      this.bad('TEXTURE_UPLOAD_BITMAP_REGION', texId, entry.format);
       return;
     }
     if (x + image.width > entry.width || y + image.height > entry.height) {
-      this.host.warn(
-        `TEXTURE_UPLOAD_BITMAP_REGION ${texId}: ${image.width}×${image.height} at ${x},${y} exceeds ${entry.width}×${entry.height}`,
+      this.bad(
+        'TEXTURE_UPLOAD_BITMAP_REGION',
+        texId,
+        `${x},${y} out of bounds`,
       );
       return;
     }
@@ -283,19 +270,14 @@ export class TextureRegistry {
     byteOffset: number,
     byteLength: number,
   ): void {
-    const entry = this.entries.get(texId);
-    if (!entry) {
-      this.host.warn(`TEXTURE_UPLOAD_COMPRESSED: unknown texId ${texId}`);
-      return;
-    }
+    const entry = this.find('TEXTURE_UPLOAD_COMPRESSED', texId);
+    if (!entry) return;
     if (
       !data ||
       typeof data.byteLength !== 'number' ||
       byteOffset + byteLength > data.byteLength
     ) {
-      this.host.warn(
-        `TEXTURE_UPLOAD_COMPRESSED ${texId}: missing or short level buffer`,
-      );
+      this.bad('TEXTURE_UPLOAD_COMPRESSED', texId, 'short data');
       return;
     }
     const tex = entry.texture;
@@ -306,16 +288,12 @@ export class TextureRegistry {
       width !== expectedW ||
       height !== expectedH
     ) {
-      this.host.warn(
-        `TEXTURE_UPLOAD_COMPRESSED ${texId}: level ${mipLevel} ${width}×${height} does not match ${entry.width}×${entry.height} with ${tex.mipLevelCount} level(s)`,
-      );
+      this.bad('TEXTURE_UPLOAD_COMPRESSED', texId, `bad level ${mipLevel}`);
       return;
     }
     const expected = textureByteLength(entry.format, width, height);
     if (byteLength !== expected) {
-      this.host.warn(
-        `TEXTURE_UPLOAD_COMPRESSED ${texId}: level ${mipLevel} has ${byteLength} B, ${entry.format} needs ${expected} B`,
-      );
+      this.bad('TEXTURE_UPLOAD_COMPRESSED', texId, `level ${mipLevel} size`);
       return;
     }
     let view: Uint8Array = new Uint8Array(data, byteOffset, byteLength);
@@ -332,19 +310,26 @@ export class TextureRegistry {
 
   /** TEXTURE_GENERATE_MIPMAPS (uncompressed textures with more than one level). */
   generateMipmaps(texId: number): void {
-    const entry = this.entries.get(texId);
-    if (!entry) {
-      this.host.warn(`TEXTURE_GENERATE_MIPMAPS: unknown texId ${texId}`);
-      return;
-    }
+    const entry = this.find('TEXTURE_GENERATE_MIPMAPS', texId);
+    if (!entry) return;
     if (entry.texture.mipLevelCount <= 1) return;
     if (compressedBlockBytes(entry.format) > 0) {
-      this.host.warn(
-        `TEXTURE_GENERATE_MIPMAPS ${texId}: ${entry.format} mips cannot be generated`,
-      );
+      this.bad('TEXTURE_GENERATE_MIPMAPS', texId, entry.format);
       return;
     }
     this.host.backend.generateMipmaps(entry.texture);
+  }
+
+  /** The entry, or undefined after warning `${op}: unknown texId`. */
+  private find(op: string, texId: number): TextureEntry | undefined {
+    const entry = this.entries.get(texId);
+    if (!entry) this.host.warn(`${op}: unknown texId ${texId}`);
+    return entry;
+  }
+
+  /** Warns `${op} ${texId}: ${detail}` (the command is skipped). */
+  private bad(op: string, texId: number, detail: string): void {
+    this.host.warn(`${op} ${texId}: ${detail}`);
   }
 
   destroy(texId: number): void {
@@ -404,9 +389,7 @@ export class TextureRegistry {
         this.host.backend.generateMipmaps(next.texture);
     }
     if (dropped > 0) {
-      this.host.warn(
-        `device restored: ${dropped} texture(s) without RETAIN_SOURCE fall back to white until re-uploaded`,
-      );
+      this.host.warn(`restore: ${dropped} texture(s) without RETAIN_SOURCE`);
     }
   }
 

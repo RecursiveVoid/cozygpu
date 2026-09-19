@@ -1,11 +1,14 @@
 /**
- * Public Renderer API. SHARED + FROZEN during build.
- * Implementation: src/renderer/Renderer.ts (frozen, integrator) and
- * src/renderer/createRenderer.ts (owner "worker+build" in M2).
+ * Public Renderer API.
+ * Implementation: src/renderer/Renderer.ts and src/renderer/createRenderer.ts.
+ * M2.5 additions: `events`,
+ * `PickHit.userId`, `interop()` (ARCHITECTURE §19).
  */
 import type { AssetsOptions, AssetsApi } from '../assets/types';
 import type { BackendPreference, Capabilities } from '../backend/types';
 import type { ContainerNode, SceneNode } from '../scene/types';
+import type { EventSink } from './events';
+import type { RendererInterop } from './interop';
 
 export interface RendererOptions {
   /**
@@ -54,6 +57,13 @@ export interface RendererOptions {
   onDeviceRestored?: () => void;
   /** M2. Options for `renderer.assets` (created lazily on first use). */
   assets?: AssetsOptions;
+  /**
+   * M2.5. Receives rare lifecycle events (`GPU.Events`: ready, fallback,
+   * deviceLost, deviceRestored, resize, assetProgress, assetError, error)
+   * as `emit(name, payload)`. Any object with an `emit` method works;
+   * nothing is emitted per frame (ARCHITECTURE §19.2).
+   */
+  events?: EventSink;
 }
 
 /** M2. Result of `renderer.pick()`. */
@@ -62,6 +72,12 @@ export interface PickHit {
   readonly node: SceneNode;
   /** Swarm instance index (slot), or -1 for sprites. */
   readonly instance: number;
+  /**
+   * M2.5. The caller's u32 id for what was hit: the instance's `cold.user`
+   * for a Swarm hit (SpawnOptions.user / write()), `node.userId` for a
+   * sprite. 0 when none was set (ARCHITECTURE §19.3).
+   */
+  readonly userId: number;
   /** The queried point (css px). */
   readonly x: number;
   readonly y: number;
@@ -129,6 +145,14 @@ export interface Renderer {
    * implementation chunk is imported on the first call that needs it.
    */
   readonly assets: AssetsApi;
+  /**
+   * M2.5, main-thread mode only. Device interop (ARCHITECTURE §19.4):
+   * resolves an opaque handle with the renderer's native device and a way to
+   * register external GPU buffers as instance sources. Async because its
+   * implementation is a lazily imported chunk. Rejects with UNSUPPORTED in
+   * worker mode and with DESTROYED after destroy().
+   */
+  interop(): Promise<RendererInterop>;
   destroy(): void;
   readonly destroyed: boolean;
 }

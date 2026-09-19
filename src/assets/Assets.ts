@@ -9,6 +9,10 @@
  * device-loss reloads. Pixels reach the core by transfer through a
  * `FrontFrameHook`; nothing is retained on the front unless asked for
  * (`keepPixels`, `hitMask`).
+ *
+ * M2.5 (ARCHITECTURE §19.2): `assetProgress` per finished asset or bundle
+ * entry and `assetError` per failed load go to the renderer's events sink
+ * through `RendererHost._emit`.
  */
 import type { Capabilities, TextureFormat } from '../backend/types';
 import { TEXTURE_MIP_LEVELS_SHIFT, TextureFlag } from '../commands/opcodes';
@@ -376,6 +380,15 @@ export class Assets implements AssetsApi, FrontFrameHook {
     source: AssetSource,
     options?: LoadOptions,
   ): Promise<AssetHandle<T>> {
+    return this.loadOne<T>(source, options, true);
+  }
+
+  /** `load()`; `emit` sends assetProgress (loadMany emits its own). */
+  private loadOne<T>(
+    source: AssetSource,
+    options: LoadOptions | undefined,
+    emit: boolean,
+  ): Promise<AssetHandle<T>> {
     if (this.isDestroyed) {
       return Promise.reject(
         new CozyGPUError('DESTROYED', 'Assets was destroyed'),
@@ -395,6 +408,7 @@ export class Assets implements AssetsApi, FrontFrameHook {
     if (entry.state === 'loaded') {
       const handle = this.acquire<T>(entry);
       onProgress?.(progress(1, 1));
+      if (emit) this.emitProgress(handle.key, null, 1, 1);
       return Promise.resolve(handle);
     }
     onProgress?.(progress(0, 1));
@@ -406,6 +420,7 @@ export class Assets implements AssetsApi, FrontFrameHook {
           throw new CozyGPUError('DESTROYED', 'Assets was destroyed');
         const handle = this.acquire<T>(entry);
         onProgress?.(progress(1, 1));
+        if (emit) this.emitProgress(handle.key, null, 1, 1);
         return handle;
       },
       error => {
@@ -420,7 +435,7 @@ export class Assets implements AssetsApi, FrontFrameHook {
     sources: readonly AssetSource[],
     options?: LoadOptions,
   ): Promise<AssetHandle[]> {
-    return this.loadMany(sources, options).then(r => r.handles);
+    return this.loadMany(sources, options, null).then(r => r.handles);
   }
 
   addBundle(
@@ -446,7 +461,7 @@ export class Assets implements AssetsApi, FrontFrameHook {
     const keys = Object.keys(entries);
     const sources: AssetSource[] = [];
     for (let i = 0; i < keys.length; i++) sources.push(entries[keys[i]]);
-    return this.loadMany(sources, options).then(({ handles }) => {
+    return this.loadMany(sources, options, name).then(({ handles }) => {
       const byKey = new Map<string, AssetHandle>();
       for (let i = 0; i < handles.length; i++) {
         byKey.set(handles[i].key, handles[i]);
@@ -745,6 +760,16 @@ export class Assets implements AssetsApi, FrontFrameHook {
         entry.state = 'failed';
         if (this.cache.get(key) === entry) this.cache.delete(key);
         this.releaseChildren(entry);
+        const code =
+          error instanceof CozyGPUError ? error.code : ('INTERNAL' as const);
+        if (code !== 'ABORTED') {
+          this.host._emit('assetError', {
+            key,
+            url,
+            code,
+            message: (error as Error)?.message ?? String(error),
+          });
+        }
         throw error;
       },
     );
@@ -760,9 +785,26 @@ export class Assets implements AssetsApi, FrontFrameHook {
     }
   }
 
+  /** assetProgress event (ARCHITECTURE §19.2). */
+  private emitProgress(
+    key: string,
+    bundle: string | null,
+    loaded: number,
+    total: number,
+  ): void {
+    this.host._emit('assetProgress', {
+      key,
+      bundle,
+      loaded,
+      total,
+      ratio: total > 0 ? loaded / total : 1,
+    });
+  }
+
   private loadMany(
     sources: readonly AssetSource[],
     options: LoadOptions | undefined,
+    bundle: string | null,
   ): Promise<{ handles: AssetHandle[] }> {
     const total = sources.length;
     const onProgress = options?.onProgress;
@@ -775,7 +817,7 @@ export class Assets implements AssetsApi, FrontFrameHook {
     const jobs: Promise<void>[] = [];
     for (let i = 0; i < total; i++) {
       jobs.push(
-        this.load(sources[i], { signal: controller.signal }).then(
+        this.loadOne(sources[i], { signal: controller.signal }, false).then(
           handle => {
             if (failed) {
               handle.release();
@@ -784,6 +826,7 @@ export class Assets implements AssetsApi, FrontFrameHook {
             handles[i] = handle;
             loaded++;
             onProgress?.(progress(loaded, total));
+            this.emitProgress(handle.key, bundle, loaded, total);
           },
           error => {
             if (failed) return;

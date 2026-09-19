@@ -118,7 +118,7 @@ export class CommandReaderImpl implements CommandReader {
   private overflow(bytes: number): never {
     throw new CozyGPUError(
       'INVALID_ARGUMENT',
-      `command 0x${this.opcode.toString(16)} read ${bytes} B past its payload (${this.payloadBytes} B)`,
+      `command 0x${this.opcode.toString(16)}: read past its payload`,
     );
   }
 }
@@ -162,9 +162,7 @@ export class CommandDecoderImpl implements CommandDecoder {
         (buffer.byteLength & 3) !== 0
       ) {
         this.invalidate();
-        corrupt(
-          `packet buffer has ${buffer.byteLength} B (detached, or not 4-byte aligned)`,
-        );
+        corrupt(`packet buffer detached or unaligned (${buffer.byteLength} B)`);
       }
       this.useViews(buffer);
     }
@@ -253,9 +251,7 @@ export class CommandDecoderImpl implements CommandDecoder {
       (payloadBytes & 3) !== 0 ||
       payloadBytes > byteLength - commandOffset - COMMAND_HEADER_BYTES
     ) {
-      corrupt(
-        `seek to ${commandOffset}: payloadBytes ${payloadBytes} runs past the packet`,
-      );
+      corrupt(`seek to ${commandOffset}: payload runs past the packet`);
     }
     this.load(commandOffset);
   }

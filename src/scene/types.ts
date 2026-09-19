@@ -1,7 +1,8 @@
 /**
- * Scene graph public API. SHARED + FROZEN during the M2 build; implemented by
- * owner "sprites" (src/scene/**). M2 additions: `pickable`, the bulk child
- * transform API and `TextureProvider` (the assets ↔ scene seam).
+ * Scene graph public API, implemented in src/scene/**. M2 additions: `pickable`, the bulk
+ * child transform API and `TextureProvider` (the assets ↔ scene seam). M2.5
+ * additions: `userId` and external columns (`bindColumns`, ARCHITECTURE
+ * §19.1, §19.3).
  *
  * Tier 1 of cozygpu: a CPU scene graph (Pixi-like). Nodes are small handles;
  * their numeric state lives in shared typed-array stores (SoA) and the
@@ -33,6 +34,8 @@ export interface NodeOptions {
   visible?: boolean;
   /** M2. See SceneNode.pickable. */
   pickable?: boolean;
+  /** M2.5. See SceneNode.userId. */
+  userId?: number;
 }
 
 export interface SceneNode {
@@ -63,6 +66,14 @@ export interface SceneNode {
    * their children. Changing it rewrites the sprite instance (no structure change).
    */
   pickable: boolean;
+  /**
+   * M2.5. A u32 the caller owns (an entity id, an index, a handle), default
+   * 0. cozygpu only stores it and returns it as `PickHit.userId` for sprite
+   * hits; it never changes drawing, so setting it marks nothing dirty.
+   * Values are coerced with `>>> 0`. For a Swarm node this is the node's own
+   * id; instance ids live in `cold.user` (SpawnOptions.user).
+   */
+  userId: number;
 
   setPosition(x: number, y: number): this;
   /** `y` defaults to `x`. */
@@ -113,6 +124,20 @@ export interface ContainerNode extends SceneNode {
   bulkChildren(fields: number): BulkChildren;
   /** M2. Bumped whenever this container's children list changes. */
   readonly childrenVersion: number;
+
+  /**
+   * M2.5 external columns (ARCHITECTURE §19.1). Binds caller-owned typed
+   * arrays (an ECS archetype's columns, or plain arrays) to this container's
+   * direct children: row i drives child i. Register once, then call
+   * `binding.commit(count)` once per frame. Bind again (same call, or
+   * `binding.rebind`) whenever an array object is replaced, e.g. after an
+   * archetype grows. Validates and stores references only; never copies at
+   * bind time. Returns this container's single reused binding.
+   */
+  bindColumns(
+    columns: SpriteColumns,
+    options?: BindColumnsOptions,
+  ): ColumnBinding;
 }
 
 /** M2. Bit set for `ContainerNode.bulkChildren` / `BulkChildren.commit`. */
@@ -127,7 +152,80 @@ export const BulkField = {
   ALPHA: 1 << 3,
   /** tint: 0xRRGGBB per child (sprites only; ignored for other kinds) */
   TINT: 1 << 4,
+  /**
+   * M2.5, columns only: `frame` index into BindColumnsOptions.frames
+   * (sprites only). `bulkChildren` ignores it.
+   */
+  FRAME: 1 << 5,
+  /** M2.5, columns only: `userId` per child. `bulkChildren` ignores it. */
+  USER_ID: 1 << 6,
 } as const;
+
+// ─── External columns (M2.5, ARCHITECTURE §19.1) ─────────────────────────────
+
+/**
+ * A column: a dense typed array (row i at index i), or a strided view into a
+ * shared array (row i at `offset + i × stride`), for interleaved storage such
+ * as `[x0, y0, x1, y1, …]` → `{ array, offset: 0, stride: 2 }` for x and
+ * `{ array, offset: 1, stride: 2 }` for y.
+ */
+export type ColumnSource<T extends Float32Array | Uint32Array> =
+  | T
+  | { readonly array: T; readonly offset?: number; readonly stride?: number };
+
+/**
+ * Columns for `bindColumns`. Units match the node setters: stage px, radians,
+ * 0..1 alpha, 0xRRGGBB tint. Omitted columns are not touched by `commit`.
+ */
+export interface SpriteColumns {
+  readonly x: ColumnSource<Float32Array>;
+  readonly y: ColumnSource<Float32Array>;
+  readonly rotation?: ColumnSource<Float32Array>;
+  readonly scaleX?: ColumnSource<Float32Array>;
+  readonly scaleY?: ColumnSource<Float32Array>;
+  readonly alpha?: ColumnSource<Float32Array>;
+  /** 0xRRGGBB; sprite children only. */
+  readonly tint?: ColumnSource<Uint32Array>;
+  /** Index into `BindColumnsOptions.frames`; sprite children only. */
+  readonly frame?: ColumnSource<Uint32Array>;
+  /** u32 per child, stored as `SceneNode.userId` (picking). */
+  readonly userId?: ColumnSource<Uint32Array>;
+}
+
+export interface BindColumnsOptions {
+  /**
+   * Default element stride for columns given as plain typed arrays
+   * (default 1). A `{ array, offset, stride }` column overrides it.
+   */
+  stride?: number;
+  /**
+   * Textures addressed by the `frame` column (required when it is bound).
+   * Frames of one source keep batches intact (a frame change is an instance
+   * rewrite); frames of different sources work but a change moves a batch
+   * boundary and costs a structure update.
+   */
+  frames?: readonly TextureHandle[];
+}
+
+/** M2.5. A container's reused column binding. */
+export interface ColumnBinding {
+  /** BulkField bits of the bound columns. */
+  readonly fields: number;
+  /**
+   * Copies rows [first, first + count) of the bound columns (all bound, or
+   * only `fields` when given) into children [first, first + count) in one
+   * tight loop, with the same store writes, dirty bits and single `touch`
+   * bump as `BulkChildren.commit`, so the next render() uploads one dirty
+   * range. Throws INVALID_ARGUMENT when first + count exceeds the child
+   * count or a column is too short, DESTROYED after the container is
+   * destroyed. Zero allocations.
+   */
+  commit(count: number, first?: number, fields?: number): void;
+  /** Same as `container.bindColumns(columns, options)` on the same object. */
+  rebind(columns: SpriteColumns, options?: BindColumnsOptions): void;
+  /** Drops the array references (the arrays can be collected). */
+  unbind(): void;
+}
 
 /**
  * M2. Dense, typed-array view of a container's direct children. Arrays not

@@ -8,6 +8,7 @@ import type { CommandReader } from '../commands/types';
 import type { CoreContext, CoreSystem } from '../types/core';
 import { CozyGPUError } from '../types/errors';
 import type { CoreMessage } from '../types/transport';
+import { createCoreInterop } from './coreInterop';
 import { RenderCoreImpl } from './RenderCore';
 import { FakeBackend, FakeTexture } from './testing/fakeBackend';
 import { TestDecoder, TestEncoder } from './testing/fakeCommands';
@@ -136,9 +137,7 @@ describe('RenderCore', () => {
     await core.init();
     let behind = true;
     let caughtUp: (() => void) | null = null;
-    let paced = 0;
     Object.assign(backend, {
-      paceReadbacks: () => paced++,
       backlogged: () => behind,
       whenCaughtUp: (cb: () => void) => (caughtUp = cb),
     });
@@ -152,15 +151,110 @@ describe('RenderCore', () => {
     expect(messages.filter(m => m.type === 'frameDone')).toEqual([
       { type: 'frameDone', frameId: 9, buffer: packet.buffer },
     ]);
-    // A PICK turns readback pacing on.
+  });
+
+  it('answers a pick from the readback ring at the start of a later packet', async () => {
+    const { core, backend, messages } = setup();
+    await core.init();
+    const pickPacket = (frameId: number): ReturnType<TestEncoder['finish']> => {
+      const enc = new TestEncoder();
+      enc.begin(Op.PICK, 12);
+      enc.u32(41);
+      enc.f32(0);
+      enc.f32(0);
+      enc.end();
+      return enc.finish(frameId);
+    };
+    const empty = (frameId: number): ReturnType<TestEncoder['finish']> =>
+      new TestEncoder().finish(frameId);
+    backend.ringReady = false;
+    core.execute(pickPacket(1));
+    // The implementation chunk loads asynchronously; render once it landed.
+    for (
+      let i = 0;
+      i < 20 && !backend.calls.includes('ring.copy cozygpu.pick#0');
+      i++
+    ) {
+      await new Promise(resolve => setTimeout(resolve, 0));
+      core.execute(empty(2 + i));
+    }
+    expect(backend.calls).toContain('ring.copy cozygpu.pick#0');
+    const picks = (): CoreMessage[] => messages.filter(m => m.type === 'pick');
+    core.execute(empty(50));
+    expect(picks()).toEqual([]);
+    backend.ringReady = true;
+    backend.nextTextureRead = new Uint8Array(
+      new Uint32Array([9, 3, 1234, 0]).buffer,
+    );
+    core.execute(empty(51));
+    expect(picks()).toEqual([
+      {
+        type: 'pick',
+        requestId: 41,
+        objectId: 9,
+        instance: 2,
+        userId: 1234,
+      },
+    ]);
+  });
+
+  it('answers finished picks when it releases a held frame', async () => {
+    const { core, backend, messages } = setup();
+    await core.init();
+    let behind = false;
+    let release: (() => void) | null = null;
+    Object.assign(backend, {
+      backlogged: () => behind,
+      whenCaughtUp: (cb: () => void) => (release = cb),
+    });
+    backend.ringReady = false;
     const pick = new TestEncoder();
     pick.begin(Op.PICK, 12);
-    pick.u32(1);
+    pick.u32(5);
     pick.f32(0);
     pick.f32(0);
     pick.end();
-    core.execute(pick.finish(10));
-    expect(paced).toBe(1);
+    core.execute(pick.finish(1));
+    for (
+      let i = 0;
+      i < 20 && !backend.calls.includes('ring.copy cozygpu.pick#0');
+      i++
+    ) {
+      await new Promise(resolve => setTimeout(resolve, 0));
+      core.execute(new TestEncoder().finish(2 + i));
+    }
+    behind = true;
+    core.execute(new TestEncoder().finish(40));
+    expect(release).not.toBeNull();
+    expect(messages.filter(m => m.type === 'pick')).toEqual([]);
+    backend.ringReady = true;
+    release!();
+    const types = messages.slice(-2).map(m => m.type);
+    expect(types).toEqual(['pick', 'frameDone']);
+  });
+
+  it('interop: registers imported buffers and drops them on device loss', async () => {
+    const { core, backend } = setup();
+    await core.init();
+    const interop = createCoreInterop(core);
+    expect(interop.backend).toBe('webgpu');
+    expect(interop.device()).toBe(backend.nativeDevice);
+    const epoch = interop.lossEpoch;
+    interop.registerBuffer(7, { native: true }, { size: 64, usage: 8 });
+    expect(backend.calls).toContain('importBuffer ');
+    expect(core.context.getExternalBuffer!(7)?.size).toBe(64);
+    interop.invalidateState();
+    expect(backend.calls).toContain('resetState');
+    interop.releaseBuffer(7);
+    expect(core.context.getExternalBuffer!(7)).toBeUndefined();
+    interop.registerBuffer(8, {}, { size: 16, usage: 8 });
+    backend.lostCallback!({ reason: 'unknown', message: 'x' });
+    expect(interop.lossEpoch).toBe(epoch + 1);
+    expect(core.context.getExternalBuffer!(8)).toBeUndefined();
+    expect(() => interop.registerBuffer(9, {}, { size: 16, usage: 8 })).toThrow(
+      expect.objectContaining({ code: 'DEVICE_LOST' }),
+    );
+    await core.restorePromise;
   });
 
   it('posts exactly one frameDone when systems throw in every phase', async () => {

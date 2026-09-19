@@ -1,4 +1,4 @@
-/** Color packing helpers — owner: "sprites". Packed = r | g<<8 | b<<16 | a<<24. */
+/** Color packing helpers. Packed = r | g<<8 | b<<16 | a<<24. */
 import { CozyGPUError } from '../types/errors';
 import type { ColorSource, PackedColor } from './types';
 

@@ -48,6 +48,13 @@ export class GLBuffer implements RhiBuffer {
   }
 }
 
+/** M2.5 `importBuffer`: an outside WebGLBuffer; cozygpu never deletes it. */
+export class GLImportedBuffer extends GLBuffer {
+  destroy(): void {
+    this.destroyed = true;
+  }
+}
+
 export class GLTexture implements RhiTexture {
   /** Lazily created framebuffer with this texture (or renderbuffer) as color 0. */
   fbo: WebGLFramebuffer | null = null;

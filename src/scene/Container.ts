@@ -1,14 +1,17 @@
-/** Container — owner: "sprites". Groups nodes; children draw in array order. */
+/** Container. Groups nodes; children draw in array order. */
 import { CozyGPUError } from '../types/errors';
-import { ChildBulk } from './bulk';
+import { ChildBulk, ColumnBindingImpl } from './bulk';
 import { NodeBase, computeLocalAffine, computeWorld } from './Node';
 import { Dirty, bumpChildren, markDirty, materializeWorld } from './store';
 import type {
+  BindColumnsOptions,
   BulkChildren,
+  ColumnBinding,
   ContainerNode,
   DestroyOptions,
   NodeOptions,
   SceneNode,
+  SpriteColumns,
 } from './types';
 
 export interface ContainerOptions extends NodeOptions {
@@ -39,6 +42,8 @@ export class Container extends NodeBase implements ContainerNode {
   _childrenVersion = 0;
   /** @internal Lazily created bulk writer. */
   _bulk: ChildBulk | null = null;
+  /** @internal Lazily created column binding (M2.5). */
+  _cols: ColumnBindingImpl | null = null;
 
   constructor(options?: ContainerOptions) {
     super(options);
@@ -72,6 +77,21 @@ export class Container extends NodeBase implements ContainerNode {
     if (!bulk) bulk = this._bulk = new ChildBulk(this);
     bulk._acquire(fields);
     return bulk;
+  }
+
+  /**
+   * M2.5 (ARCHITECTURE §19.1). Binds caller-owned typed arrays to the direct
+   * children; returns this container's single reused binding. Shares the
+   * bulk writer's copy path (src/scene/bulk.ts).
+   */
+  bindColumns(
+    columns: SpriteColumns,
+    options?: BindColumnsOptions,
+  ): ColumnBinding {
+    let cols = this._cols;
+    if (!cols) cols = this._cols = new ColumnBindingImpl(this);
+    cols.rebind(columns, options);
+    return cols;
   }
 
   /** @internal Children list changed at index >= `index`. */
@@ -191,6 +211,7 @@ export class Container extends NodeBase implements ContainerNode {
       this.removeChildren();
     }
     this._bulk = null;
+    this._cols?.unbind();
     super.destroy(options);
   }
 }

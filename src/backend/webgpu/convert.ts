@@ -64,6 +64,7 @@ const COLOR_RENDERABLE: Record<TextureFormat, boolean> = {
   rgba32float: true,
   r32uint: true,
   rg32uint: true,
+  rgba32uint: true,
   'bc1-rgba-unorm': false,
   'bc1-rgba-unorm-srgb': false,
   'bc3-rgba-unorm': false,

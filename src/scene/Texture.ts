@@ -1,5 +1,5 @@
 /**
- * Texture — owner: "sprites". A (source, frame) pair. Frames of one source
+ * Texture. A (source, frame) pair. Frames of one source
  * share a texId, so sprites using frames of one atlas batch together.
  * Uploads happen lazily through the command stream (ensureTextureUploaded).
  */

@@ -8,7 +8,7 @@
  * Options
  *   --label <name>        results/<name>.json (default: ISO timestamp)
  *   --filter <regex>      only cases whose id matches, e.g. "pixi|three"
- *   --scenarios <list>    s1,s2,s3,a1,a2,a3 (default all; S4 is derived from S3;
+ *   --scenarios <list>    s1,s1b,s2,s3,a1,a2,a3 (default all; S4 is derived from S3;
  *                         a1 = a1png + a1ktx2)
  *   --counts <list>       override object counts, e.g. 1000,50000 (debugging)
  *   --duration <sec>      measured seconds per case (default 5)
@@ -50,7 +50,7 @@ const quick = flag('quick');
 const cfg = {
   label: opt('label', new Date().toISOString().replace(/[:.]/g, '-')),
   filter: opt('filter', null),
-  scenarios: opt('scenarios', 's1,s2,s3,a1,a2,a3')
+  scenarios: opt('scenarios', 's1,s1b,s2,s3,a1,a2,a3')
     .split(',')
     .flatMap(k =>
       k === 'a1' ? ['a1png', 'a1ktx2'] : k === 'a2' ? ['a2', 'a2u'] : [k],
@@ -133,6 +133,18 @@ const SCENARIOS = {
     title: 'S1 — moving sprites (CPU-updated, bouncing)',
     counts: [10_000, 100_000, 1_000_000],
     engines: SPRITE_ENGINES,
+  },
+  s1b: {
+    id: 'sprites-moving',
+    idSuffix: '-columns',
+    title:
+      'S1b — moving sprites via bindColumns (M2.5: sim x/y bound once, one commit per frame)',
+    counts: [100_000, 1_000_000],
+    engines: [
+      E('cozygpu', 'webgpu', 'columns'),
+      E('cozygpu', 'webgl2', 'columns'),
+      E('cozygpu', 'worker', 'columns'),
+    ],
   },
   s2: {
     id: 'swarm',
@@ -430,7 +442,7 @@ const median = xs => {
   return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
 };
 /** Metric groups whose numeric leaves are replaced by the median over ok runs. */
-const MEDIAN_GROUPS = ['frame', 'cpu', 'init', 'heap', 'info'];
+const MEDIAN_GROUPS = ['frame', 'cpu', 'swapWait', 'init', 'heap', 'info'];
 
 /**
  * Folds n runs of one case into a single result: status is `ok` if at least
@@ -504,7 +516,15 @@ function statusCell(r) {
     const notes = [];
     if (r.reps && r.reps.ok < r.reps.n)
       notes.push(`${r.reps.ok}/${r.reps.n} runs ok`);
-    if (r.info?.skippedFrames) notes.push(`${r.info.skippedFrames} skipped`);
+    if (r.info?.skippedFrames) {
+      // measuredSkippedFrames: inside the measured window only (A3, §19.5).
+      const m = r.info.measuredSkippedFrames;
+      notes.push(
+        typeof m === 'number'
+          ? `${r.info.skippedFrames} skipped, ${m} while measuring`
+          : `${r.info.skippedFrames} skipped`,
+      );
+    }
     return notes.length ? `ok (${notes.join(', ')})` : 'ok';
   }
   const msg = String(r.error ?? '')
@@ -549,13 +569,13 @@ function markdown(report) {
     if (!rows.length) continue;
     out.push(`## ${s.title}`, '');
     out.push(
-      '| count | engine | tool | fps | avg ms | p99 ms | CPU avg ms | CPU p99 ms | heap growth B/frame | avg range | status |',
+      '| count | engine | tool | fps | avg ms | p99 ms | CPU avg ms | CPU p99 ms | swap wait ms | heap growth B/frame | avg range | status |',
     );
-    out.push('|---:|---|---|---:|---:|---:|---:|---:|---:|---|---|');
+    out.push('|---:|---|---|---:|---:|---:|---:|---:|---:|---:|---|---|');
     for (const r of rows) {
       const rg = r.reps?.range?.avgMs;
       out.push(
-        `| ${cnt(r.params.count)} | ${engineLabel(r)} | ${r.tool ?? r.params.variant} | ${f1(r.frame?.fps)} | ${f2(r.frame?.avgMs)} | ${f2(r.frame?.p99Ms)} | ${f2(r.cpu?.avgMs)} | ${f2(r.cpu?.p99Ms)} | ${f1(r.heap?.growthPerFrameBytes)} | ${rg ? `${f2(rg[0])}–${f2(rg[1])}` : '—'} | ${statusCell(r)} |`,
+        `| ${cnt(r.params.count)} | ${engineLabel(r)} | ${r.tool ?? r.params.variant} | ${f1(r.frame?.fps)} | ${f2(r.frame?.avgMs)} | ${f2(r.frame?.p99Ms)} | ${f2(r.cpu?.avgMs)} | ${f2(r.cpu?.p99Ms)} | ${f2(r.swapWait?.avgMs)} | ${f1(r.heap?.growthPerFrameBytes)} | ${rg ? `${f2(rg[0])}–${f2(rg[1])}` : '—'} | ${statusCell(r)} |`,
       );
     }
     out.push('');

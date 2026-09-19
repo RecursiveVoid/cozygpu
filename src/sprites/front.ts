@@ -1,5 +1,5 @@
 /**
- * ScenePacker — owner: "sprites" (ARCHITECTURE §5.2). One per renderer.
+ * ScenePacker (ARCHITECTURE §5.2). One per renderer.
  *
  * pack(stage, frame):
  *   1. Structure pass (only when nodeStore.structureVersion or the stage

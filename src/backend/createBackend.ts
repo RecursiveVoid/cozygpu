@@ -4,7 +4,6 @@ import type { Backend, BackendKind, BackendOptions } from './types';
 
 /**
  * Picks and initialises a backend for `canvas` (ARCHITECTURE §13.5).
- * SHARED + FROZEN during the M2 build.
  *
  *  - 'webgpu' / 'webgl2': that backend only; its error propagates.
  *  - 'auto': WebGPU first, then WebGL2 when `navigator.gpu` is missing, no

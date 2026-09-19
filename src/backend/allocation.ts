@@ -1,5 +1,5 @@
 /**
- * Optional RhiBuffer extension — owner: "backend".
+ * Optional RhiBuffer extension.
  *
  * GPU memory allocation failures (out-of-memory) are reported asynchronously
  * by WebGPU: `createBuffer` returns an invalid buffer at once, and every

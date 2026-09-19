@@ -47,8 +47,17 @@ import {
   type ShaderSource,
   type TextureDesc,
   type VertexBufferLayout,
+  type ImportBufferDesc,
+  type ReadbackRingDesc,
+  type RhiReadbackRing,
+  ReadbackState,
 } from '../types';
-import { align4, isDebugEnabled, textureByteLength } from '../utils';
+import {
+  align4,
+  bytesPerTexel,
+  isDebugEnabled,
+  textureByteLength,
+} from '../utils';
 import { detectGLCapabilities } from './caps';
 import { GLCommandList, type GLCommandHost } from './commands';
 import {
@@ -65,10 +74,15 @@ import {
 } from './formats';
 import * as G from './glconst';
 import { FEEDBACK_FRAGMENT, linkProgram } from './program';
+import type { GLReadbackRing } from './readbackRing';
+
+/** The readback ring chunk once loaded (see loadReadbackRing). */
+let ringModule: typeof import('./readbackRing') | null = null;
 import {
   GLBindGroup,
   GLBindGroupLayout,
   GLBuffer,
+  GLImportedBuffer,
   GLRenderPipeline,
   GLSampler,
   GLShaderModule,
@@ -79,13 +93,16 @@ import {
 import { GLState } from './state';
 
 /**
- * Frames that may run while a readback waits for its fence; later ones are
- * held (see backlogged). In an uncapped loop with a pick every frame (100k
- * sprites): 1 → 7 ms pick latency at 155 fps, 4 → ~11 ms at ~320 fps,
- * no pacing → 90 ms with 60+ ms main-thread stalls in getBufferSubData. A
- * vsync-paced loop never holds: the fence signals long before the next frame.
+ * Readback pacing (see backlogged). Chrome's getBufferSubData waits for
+ * every command issued before it, so frames issued while a readback waits
+ * for its fence stall it; M2 (readTexture per pick, uncapped, 100k sprites)
+ * measured 90 ms latency with 60+ ms main-thread stalls without pacing.
+ * Frames are held once PACE_FRAMES frames ran while a readback waits (M2.5:
+ * a ring slot only while its fence is unsignalled). A vsync-paced loop never
+ * holds: the fence signals long before the next frame. A held frame costs a
+ * display tick, so RenderCore answers picks when it releases a held frame.
  */
-const PACE_FRAMES = 4;
+const PACE_FRAMES = 3;
 const RESTORE_DELAYS_MS = [0, 500, 2000] as const;
 /** ImageBitmap scratch canvases up to this size stay allocated between uploads. */
 const SCRATCH_KEEP_TEXELS = 1024 * 1024;
@@ -114,19 +131,27 @@ export class WebGL2Backend implements Backend, GLCommandHost {
   /** Readbacks between their fence and getBufferSubData (see backlogged). */
   private readsInFlight = 0;
   private caughtUp: (() => void) | null = null;
-  /** beginCommands() count, and its value when the oldest readback began. */
-  private frameSerial = 0;
+  /** @internal beginCommands() count, and its value when the oldest readback began. */
+  frameSerial = 0;
   private readFrame = 0;
+  /** @internal Live readback rings (pacing looks at their fences). */
+  readonly rings: GLReadbackRing[] = [];
+  /**
+   * @internal Set by RenderCore: answers landed picks. Ring fences are
+   * watched on a 1 ms timer while a slot is in flight (ARCHITECTURE §19.6).
+   */
+  onReadbackLanded: (() => void) | null = null;
 
-  private readonly list: GLCommandList;
+  /** @internal The backend's command list (readTexture records into it). */
+  readonly list: GLCommandList;
   private readonly debug: boolean;
   private parallelCompile = false;
   private loseExt: LoseContext | null = null;
   private lostCallback: ((info: DeviceLostInfo) => void) | null = null;
   private destroyed = false;
   private simulated = false;
-  /** Bumped per context loss: readbacks started before it reject DEVICE_LOST. */
-  private epoch = 0;
+  /** @internal Bumped per context loss: readbacks started before it fail DEVICE_LOST. */
+  epoch = 0;
   private restoredWaiters: (() => void)[] = [];
   private readonly programs = new Map<string, Promise<GLProgram>>();
   private readonly vertexArrays = new Map<string, GLVertexArray>();
@@ -170,7 +195,7 @@ export class WebGL2Backend implements Backend, GLCommandHost {
     if (!gl) {
       throw new CozyGPUError(
         'UNSUPPORTED',
-        'canvas.getContext("webgl2") returned null (WebGL2 unavailable, or the canvas already has another context).',
+        'canvas.getContext("webgl2") returned null (no WebGL2, or the canvas has another context)',
       );
     }
     if (gl.isContextLost()) {
@@ -224,7 +249,7 @@ export class WebGL2Backend implements Backend, GLCommandHost {
     if (desc.usage & (BufferUsage.STORAGE | BufferUsage.INDIRECT)) {
       throw new CozyGPUError(
         'UNSUPPORTED',
-        `buffer "${desc.label ?? ''}": STORAGE / INDIRECT buffers are not available on WebGL2`,
+        `buffer "${desc.label ?? ''}": no STORAGE / INDIRECT on WebGL2`,
       );
     }
     if (size > this.caps.maxBufferSize) {
@@ -290,83 +315,23 @@ export class WebGL2Backend implements Backend, GLCommandHost {
     }
   }
 
-  async readBuffer(
+  /**
+   * Waits for a fence, then getBufferSubData. The implementation lives in
+   * the readback ring chunk (rare; kept off the minimal program); pacing
+   * counts the read from this call on.
+   */
+  readBuffer(
     buffer: RhiBuffer,
     offset: number,
     byteLength: number,
   ): Promise<ArrayBuffer> {
-    const src = buffer as GLBuffer;
-    if (offset < 0 || byteLength < 0 || offset + byteLength > src.size) {
-      throw new CozyGPUError(
-        'INVALID_ARGUMENT',
-        `readBuffer range [${offset}, ${offset + byteLength}) is outside buffer "${src.label ?? ''}" (${src.size} B)`,
-      );
-    }
-    if (byteLength === 0) return new ArrayBuffer(0);
     const epoch = this.epoch;
-    if (this.readsInFlight++ === 0) this.readFrame = this.frameSerial;
-    try {
-      return await this.readBufferNow(src, offset, byteLength, epoch);
-    } finally {
-      this.endRead();
-    }
-  }
-
-  private async readBufferNow(
-    src: GLBuffer,
-    offset: number,
-    byteLength: number,
-    epoch: number,
-  ): Promise<ArrayBuffer> {
-    await this.waitForGpu('readBuffer');
-    if (epoch !== this.epoch || this.lost) throw lostError('readBuffer');
-    if (src.destroyed) {
-      throw new CozyGPUError(
-        'INVALID_ARGUMENT',
-        `readBuffer: buffer "${src.label ?? ''}" was destroyed`,
-      );
-    }
-    const gl = this.gl;
-    const out = new Uint8Array(byteLength);
-    const target =
-      src.target === G.ELEMENT_ARRAY_BUFFER
-        ? G.ELEMENT_ARRAY_BUFFER
-        : G.COPY_READ_BUFFER;
-    if (target === G.ELEMENT_ARRAY_BUFFER) this.state.bindVertexArray(null);
-    gl.bindBuffer(target, src.raw);
-    gl.getBufferSubData(target, offset, out);
-    gl.bindBuffer(target, null);
-    return out.buffer;
-  }
-
-  /** Resolves once the GPU finished everything submitted so far (fence sync). */
-  private waitForGpu(what: string): Promise<void> {
-    const gl = this.gl;
-    const sync = gl.fenceSync(G.SYNC_GPU_COMMANDS_COMPLETE, 0);
-    if (!sync) return this.lost ? Promise.reject(lostError(what)) : delay(0);
-    gl.flush();
-    return new Promise<void>((resolve, reject) => {
-      const poll = (): void => {
-        if (gl.isContextLost()) {
-          this.noticeLoss();
-          reject(lostError(what));
-          return;
-        }
-        const status = gl.clientWaitSync(sync, 0, 0);
-        if (status === G.ALREADY_SIGNALED || status === G.CONDITION_SATISFIED) {
-          gl.deleteSync(sync);
-          resolve();
-        } else if (status === G.WAIT_FAILED) {
-          gl.deleteSync(sync);
-          reject(
-            new CozyGPUError('INTERNAL', `${what}: clientWaitSync failed`),
-          );
-        } else {
-          setTimeout(poll, 1);
-        }
-      };
-      setTimeout(poll, 0);
-    });
+    this.startRead();
+    return (ringModule ? Promise.resolve() : this.loadReadbackRing())
+      .then(() =>
+        ringModule!.readBuffer(this, buffer, offset, byteLength, epoch),
+      )
+      .finally(() => this.endRead());
   }
 
   // ─── Textures & samplers ───────────────────────────────────────────────────
@@ -385,7 +350,7 @@ export class WebGL2Backend implements Backend, GLCommandHost {
     if (!format || (format.ext && !this.extensions.has(format.ext))) {
       throw new CozyGPUError(
         'UNSUPPORTED',
-        `texture "${desc.label ?? ''}": format ${desc.format} is not available on this WebGL2 context`,
+        `texture "${desc.label ?? ''}": format ${desc.format} unavailable`,
       );
     }
     const gl = this.gl;
@@ -586,6 +551,78 @@ export class WebGL2Backend implements Backend, GLCommandHost {
     this.gl.generateMipmap(G.TEXTURE_2D);
   }
 
+  // ─── M2.5: readback ring and interop (ARCHITECTURE §19.4, §19.6) ───────────
+
+  /**
+   * RHI (M2.5): loads the readback ring implementation, a lazy chunk kept
+   * off the minimal program. `createReadbackRing` needs it; picking awaits
+   * it first, and `readTexture` loads it on its first call.
+   */
+  loadReadbackRing(): Promise<void> {
+    return import('./readbackRing').then(m => {
+      ringModule = m;
+    });
+  }
+
+  createReadbackRing(desc: ReadbackRingDesc): RhiReadbackRing {
+    if (!ringModule) {
+      throw new CozyGPUError('INTERNAL', 'call loadReadbackRing() first');
+    }
+    return new ringModule.GLReadbackRing(
+      this,
+      desc.slots,
+      desc.slotBytes,
+      desc.label,
+    );
+  }
+
+  native(): unknown {
+    return this.gl;
+  }
+
+  /**
+   * Wraps an outside WebGLBuffer of this context (`gl.isBuffer` must accept
+   * it, so it must have been bound once). `desc` is trusted; `destroy()`
+   * just forgets it.
+   */
+  importBuffer(native: unknown, desc: ImportBufferDesc): RhiBuffer {
+    const raw = native as WebGLBuffer;
+    if (this.lost || !this.gl.isBuffer(raw)) {
+      throw new CozyGPUError(
+        'INVALID_ARGUMENT',
+        `importBuffer "${desc.label ?? ''}": not a buffer of this WebGL2 context`,
+      );
+    }
+    return new GLImportedBuffer(
+      this,
+      raw,
+      G.COPY_WRITE_BUFFER,
+      desc.size,
+      desc.usage,
+      desc.label,
+    );
+  }
+
+  /**
+   * Outside code made GL calls: forget cached bindings and restore the
+   * defaults the backend relies on.
+   */
+  resetState(): void {
+    const gl = this.gl;
+    if (this.lost) return;
+    this.state.reset(gl);
+    gl.bindBuffer(G.PIXEL_PACK_BUFFER, null);
+    gl.bindBuffer(G.PIXEL_UNPACK_BUFFER, null);
+    gl.bindTransformFeedback(G.TRANSFORM_FEEDBACK, null);
+    gl.disable(G.CULL_FACE);
+    gl.disable(G.STENCIL_TEST);
+    gl.colorMask(true, true, true, true);
+  }
+
+  /**
+   * A one-slot readback ring polled on a timer (allocates per call). Rare,
+   * so it lives in the ring chunk; the first call loads it.
+   */
   async readTexture(
     texture: RhiTexture,
     x: number,
@@ -593,81 +630,8 @@ export class WebGL2Backend implements Backend, GLCommandHost {
     width: number,
     height: number,
   ): Promise<ArrayBuffer> {
-    const tex = texture as GLTexture;
-    const format = tex.gl;
-    if (
-      x < 0 ||
-      y < 0 ||
-      width < 0 ||
-      height < 0 ||
-      x + width > tex.width ||
-      y + height > tex.height
-    ) {
-      throw new CozyGPUError(
-        'INVALID_ARGUMENT',
-        `readTexture rect ${x},${y} ${width}×${height} is outside texture "${tex.label ?? ''}" (${tex.width}×${tex.height})`,
-      );
-    }
-    if (
-      !tex.raw ||
-      format.format === 0 ||
-      format.kind === FormatKind.DEPTH ||
-      tex.format === 'rgba16float'
-    ) {
-      throw new CozyGPUError(
-        'UNSUPPORTED',
-        `readTexture: ${tex.sampleCount > 1 ? 'multisampled' : tex.format} textures cannot be read back on WebGL2`,
-      );
-    }
-    if (width === 0 || height === 0) return new ArrayBuffer(0);
-    const gl = this.gl;
-    const uint = format.kind === FormatKind.UINT;
-    const float = format.kind === FormatKind.FLOAT;
-    // Always-supported read pairs: 4 components per texel.
-    const readFormat = uint ? G.RGBA_INTEGER : G.RGBA;
-    const readType = uint ? G.UNSIGNED_INT : float ? G.FLOAT : G.UNSIGNED_BYTE;
-    const componentBytes = uint || float ? 4 : 1;
-    const components =
-      format.format === G.RED || format.format === G.RED_INTEGER
-        ? 1
-        : format.format === G.RG_INTEGER
-          ? 2
-          : 4;
-    const readBytes = width * height * 4 * componentBytes;
-    const epoch = this.epoch;
-
-    this.bindTargetFramebuffer(tex, tex.fboDepth);
-    const pbo = gl.createBuffer();
-    gl.bindBuffer(G.PIXEL_PACK_BUFFER, pbo);
-    gl.bufferData(G.PIXEL_PACK_BUFFER, readBytes, G.STREAM_READ);
-    const glY = tex.renderTarget ? tex.height - y - height : y;
-    gl.readPixels(x, glY, width, height, readFormat, readType, 0);
-    gl.bindBuffer(G.PIXEL_PACK_BUFFER, null);
-    if (this.readsInFlight++ === 0) this.readFrame = this.frameSerial;
-    try {
-      await this.waitForGpu('readTexture');
-      if (epoch !== this.epoch || this.lost) throw lostError('readTexture');
-      const raw = new Uint8Array(readBytes);
-      gl.bindBuffer(G.COPY_READ_BUFFER, pbo);
-      gl.getBufferSubData(G.COPY_READ_BUFFER, 0, raw);
-      gl.bindBuffer(G.COPY_READ_BUFFER, null);
-      // Tight rows, top row first (GL render targets are stored bottom-up).
-      const texelIn = 4 * componentBytes;
-      const texelOut = components * componentBytes;
-      const out = new Uint8Array(width * height * texelOut);
-      for (let row = 0; row < height; row++) {
-        const srcRow = tex.renderTarget ? height - 1 - row : row;
-        for (let col = 0; col < width; col++) {
-          const s = (srcRow * width + col) * texelIn;
-          const d = (row * width + col) * texelOut;
-          for (let b = 0; b < texelOut; b++) out[d + b] = raw[s + b];
-        }
-      }
-      return out.buffer;
-    } finally {
-      if (epoch === this.epoch) gl.deleteBuffer(pbo);
-      this.endRead();
-    }
+    if (!ringModule) await this.loadReadbackRing();
+    return ringModule!.readTexture(this, texture, x, y, width, height);
   }
 
   /**
@@ -679,24 +643,44 @@ export class WebGL2Backend implements Backend, GLCommandHost {
    * during a readback, frameDone waits and the front skips frames instead.
    */
   backlogged(): boolean {
-    return (
-      this.readsInFlight > 0 && this.frameSerial - this.readFrame >= PACE_FRAMES
-    );
-  }
-
-  /** @internal Calls `callback` once no readback is in flight (or now). */
-  whenCaughtUp(callback: () => void): void {
-    if (this.readsInFlight > 0 && !this.lost) this.caughtUp = callback;
-    else callback();
-  }
-
-  private endRead(): void {
-    if (--this.readsInFlight > 0) return;
-    const callback = this.caughtUp;
-    if (callback !== null) {
-      this.caughtUp = null;
-      callback();
+    const serial = this.frameSerial - PACE_FRAMES;
+    if (this.readsInFlight > 0 && this.readFrame <= serial) return true;
+    const rings = this.rings;
+    for (let i = 0; i < rings.length; i++) {
+      if (rings[i].lagging(serial)) return true;
     }
+    return false;
+  }
+
+  /**
+   * @internal Calls `callback` once the backlog is gone (or now). Ring
+   * fences are re-checked on a 1 ms timer while a frame is held (no packet
+   * runs meanwhile, so nothing else would poll them).
+   */
+  whenCaughtUp(callback: () => void): void {
+    this.caughtUp = callback;
+    this.checkCaughtUp();
+  }
+
+  private readonly checkCaughtUp = (): void => {
+    const callback = this.caughtUp;
+    if (callback === null) return;
+    if (!this.lost && this.backlogged()) {
+      setTimeout(this.checkCaughtUp, 1);
+      return;
+    }
+    this.caughtUp = null;
+    callback();
+  };
+
+  /** @internal A readback starts (readBuffer, readTexture): pacing counts it. */
+  startRead(): void {
+    if (this.readsInFlight++ === 0) this.readFrame = this.frameSerial;
+  }
+
+  /** @internal The readback finished or failed. */
+  endRead(): void {
+    if (--this.readsInFlight === 0) this.checkCaughtUp();
   }
 
   /** @internal GLCommandHost: binds (creating on first use) the texture's framebuffer. */
@@ -910,10 +894,7 @@ export class WebGL2Backend implements Backend, GLCommandHost {
     const name = label ?? source.label ?? '';
     if (!glsl || !glsl.vertex || (!glsl.fragment && !varyings)) {
       return Promise.reject(
-        new CozyGPUError(
-          'UNSUPPORTED',
-          `shader "${name}" has no GLSL ES 3.0 source, which the WebGL2 backend needs`,
-        ),
+        new CozyGPUError('UNSUPPORTED', `shader "${name}" has no GLSL source`),
       );
     }
     if (this.lost) return Promise.reject(lostError(`pipeline "${name}"`));
@@ -1011,7 +992,8 @@ export class WebGL2Backend implements Backend, GLCommandHost {
    * the core sees it before the failing call's DEVICE_LOST rejection instead
    * of treating that rejection as fatal. The late event only preventDefaults.
    */
-  private noticeLoss(): void {
+  /** @internal */
+  noticeLoss(): void {
     if (!this.lost && this.gl.isContextLost()) this.markLost();
   }
 
@@ -1061,6 +1043,7 @@ export class WebGL2Backend implements Backend, GLCommandHost {
       if (this.destroyed) break;
       if (!gl.isContextLost()) {
         this.simulated = false;
+        this.rings.length = 0;
         this.programIds.clear();
         this.caps = this.initContext();
         this.list.abandon();

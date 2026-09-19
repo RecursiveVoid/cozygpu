@@ -1,12 +1,12 @@
 /**
- * Transport contracts between front and core. SHARED + FROZEN during build.
- * Implementations — owner: "worker+build" (src/worker/LocalTransport.ts,
+ * Transport contracts between front and core.
+ * Implementations (src/worker/LocalTransport.ts,
  * src/worker/WorkerTransport.ts, src/worker/entry.ts, src/worker/host.ts).
  * Spec: docs/ARCHITECTURE.md §3.5, §8 and §17 (M2 command ring).
  */
 import type { Capabilities } from '../backend/types';
 import type { FramePacket } from '../commands/types';
-import type { CoreInitOptions } from './core';
+import type { CoreInitOptions, CoreInterop, RenderCore } from './core';
 import type { CozyGPUErrorCode } from './errors';
 
 /** Core → front. */
@@ -43,13 +43,15 @@ export type CoreMessage =
    * M2 (ARCHITECTURE §16.3). Answer to a PICK command. `objectId` is the node
    * id written by the pick pass (0 = nothing hit); `instance` is the Swarm
    * instance index, or -1 for sprites. On failure `code`/`message` are set
-   * and objectId is 0.
+   * and objectId is 0. M2.5: `userId` is the texel's PICK_TEXEL_USER value
+   * (a Swarm instance's cold.user; 0 for sprites); absent means 0.
    */
   | {
       type: 'pick';
       requestId: number;
       objectId: number;
       instance: number;
+      userId?: number;
       code?: CozyGPUErrorCode;
       message?: string;
     }
@@ -153,5 +155,14 @@ export interface Transport {
    * transports; a core without `debug: true` ignores it.
    */
   debug?(action: 'loseDevice'): void;
+  /**
+   * M2.5 (ARCHITECTURE §19.4). The core's interop half. Only the local
+   * transport has it (the core shares the heap); worker transports omit it
+   * and `renderer.interop()` rejects with UNSUPPORTED. `create` builds the
+   * core half over the local core (`createCoreInterop` from
+   * src/renderer/coreInterop.ts, passed in by the lazy interop chunk so the
+   * minimal program does not carry it).
+   */
+  interop?(create: (core: RenderCore) => CoreInterop): CoreInterop;
   destroy(): void;
 }

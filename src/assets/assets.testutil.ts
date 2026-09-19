@@ -1,5 +1,5 @@
 /**
- * Test helpers — owner: "assets". Node only; never imported by library code.
+ * Test helpers. Node only; never imported by library code.
  * A KTX2 writer (tiny test files), a fake renderer host, fake fetch /
  * ImageBitmap, and a command recorder over the real encoder + decoder.
  */
@@ -262,6 +262,12 @@ export class FakeHost implements RendererHost {
       const i = this.hooks.indexOf(hook);
       if (i >= 0) this.hooks.splice(i, 1);
     };
+  }
+
+  /** M2.5 events recorded as [name, payload] (RendererHost._emit). */
+  events: [string, unknown][] = [];
+  _emit(name: string, payload: unknown): void {
+    this.events.push([name, payload]);
   }
 
   /** A FrontFrame over a fresh packet; `draw` providers are uploaded like the packer would. */

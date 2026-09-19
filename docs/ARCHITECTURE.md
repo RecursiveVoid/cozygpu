@@ -1,11 +1,11 @@
 # cozygpu architecture
 
-Status: **M2 contract** (M1 is built; M2 contracts are frozen, features are
-stubs). Sections marked _normative_ are binding for every developer; code
-in `src/types/**`, `src/backend/types.ts`, `src/scene/types.ts`,
-`src/swarm/types.ts`, `src/assets/types.ts`, `src/commands/opcodes.ts`,
-and `src/commands/types.ts` mirrors them. If the code and this document
-disagree, stop and report it. Do not guess.
+Status: **M2.5** (M1, M2 and the M2.5 integration hooks are built;
+§13–§19 describe them as built). Sections marked _normative_ are binding;
+code in `src/types/**`, `src/backend/types.ts`,
+`src/scene/types.ts`, `src/swarm/types.ts`, `src/assets/types.ts`,
+`src/commands/opcodes.ts`, and `src/commands/types.ts` mirrors them. If the
+code and this document disagree, the document is the reference; fix one of them.
 
 - [1. Goals and non-goals](#1-goals-and-non-goals)
 - [2. Layers and threads](#2-layers-and-threads)
@@ -17,7 +17,7 @@ disagree, stop and report it. Do not guess.
 - [8. Worker mode](#8-worker-mode)
 - [9. Device loss, resize, DPR](#9-device-loss-resize-dpr)
 - [10. Performance budgets](#10-performance-budgets)
-- [11. Source layout and ownership (M2)](#11-source-layout-and-ownership-m2)
+- [11. Source layout](#11-source-layout)
 - [12. M2 overview](#12-m2-overview)
 - [13. WebGL2 backend (M2)](#13-webgl2-backend-m2)
 - [14. Swarm in M2: WebGL2 and GPU free lists](#14-swarm-in-m2-webgl2-and-gpu-free-lists)
@@ -25,7 +25,8 @@ disagree, stop and report it. Do not guess.
 - [16. Sprites in M2: bulk API, incremental structure, picking](#16-sprites-in-m2-bulk-api-incremental-structure-picking)
 - [17. Worker command ring (M2)](#17-worker-command-ring-m2)
 - [18. Bundle and build (M2)](#18-bundle-and-build-m2)
-- [19. Later milestones (design notes only)](#19-later-milestones-design-notes-only)
+- [19. Integration hooks (M2.5)](#19-integration-hooks-m25)
+- [20. Later milestones (design notes only)](#20-later-milestones-design-notes-only)
 
 ---
 
@@ -52,7 +53,10 @@ WebGL2 fallback (M2) whose ceiling may be lower. Import it with
 **Non-goals:** ECS, game loop policy, input and event dispatch, audio,
 physics. These belong to the future cozyJS suite. The `ticker` is an
 optional convenience; `renderer.pick()` answers "what is at this pixel",
-it does not dispatch events.
+it does not dispatch events. cozygpu stays a pure graphics wrapper with zero
+runtime dependencies: an ECS or an event bus plugs in only through the
+library-neutral M2.5 hooks (§19), which are "register once, commit per
+frame", allocate nothing per frame and expose no GPU types.
 
 ## 2. Layers and threads
 
@@ -110,6 +114,8 @@ Front, inside `renderer.render()`:
 
 Core, per packet:
 
+0. M2.5: `CorePicking.poll()` answers picks whose readback slot is ready
+   (§19.6). Allocation-free; a no-op without picks in flight.
 1. Decode sequentially. Commands flagged `DRAW` are not executed now;
    their offsets go into a reused `Uint32Array`. Every other command goes
    to its system's `execute()` (0x00 and 0x01 are handled by RenderCore).
@@ -126,7 +132,9 @@ Core, per packet:
 5. `list.submit()`, picking `afterSubmit()` (starts readbacks), then
    `system.endFrame()`, then acknowledge: `frameDone` (local and transfer
    path; the worker host first stores the frameId in the shared frame
-   signal) or the ring control block (§17).
+   signal) or the ring control block (§17). While readbacks are paced
+   (§7.1) and the GPU is behind, the acknowledgement waits for the GPU, so
+   the transport stays busy and the front skips frames.
 
 All `writeBuffer` calls made during step 1 land before the submitted
 command buffer, so uploads are visible to compute and draw in the same
@@ -142,8 +150,9 @@ dropped, but its READBACK and PICK commands are still answered with
 ## 3. Command stream (normative)
 
 Code: `src/commands/opcodes.ts` (constants) and `src/commands/types.ts`
-(encoder, decoder, reader). `PROTOCOL_VERSION` is **2** in M2; the front
-and the worker bundle must be built from the same version.
+(encoder, decoder, reader). `PROTOCOL_VERSION` is **3** since M2.5
+(SWARM_SET_SOURCE, the rgba32uint pick texel); it was 2 in M2. The front and
+the worker bundle must be built from the same version.
 
 ### 3.1 Encoding rules
 
@@ -234,6 +243,7 @@ opcodes are skipped using `payloadBytes`, with one warning per opcode.
 | 0x030A | SWARM_DRAW                   | DRAW    | u32 swarmId, f32 a, b, c, d, tx, ty, f32 alpha, u32 drawCount                                                                 |
 | 0x030B | SWARM_SET_FRAMES             |         | u32 swarmId, count, f32[count·4] (u0, v0, u1, v1)                                                                             |
 | 0x030C | SWARM_SET_PICK               |         | M2. u32 swarmId, pickId (Swarm node id; 0 = not pickable)                                                                     |
+| 0x030D | SWARM_SET_SOURCE             |         | M2.5. u32 swarmId, hotExternalId (0 = own buffers), coldExternalId (0 = own), flags (SIMULATE=1)                              |
 
 Format ids: `rgba8unorm`=0, `rgba8unorm-srgb`=1, `r8unorm`=2,
 `rgba16float`=3. M2 compressed format ids (names equal the RHI
@@ -259,12 +269,16 @@ M2 payload rules:
   ArrayBuffer is transferred (worker) and not retained by the core.
 - `PICK` coordinates are canvas css px, the same space as pointer events'
   `offsetX/offsetY` (before `SET_VIEW`).
+- M2.5 `SWARM_SET_SOURCE` is only emitted in main-thread mode (external ids
+  exist only there, §19.4). The draw count keeps travelling in
+  `SWARM_DRAW.drawCount` (and `SWARM_STEP.activeCount` when simulating).
 
 ### 3.5 Core to front messages
 
 These are defined in `src/types/transport.ts`: `ready{caps}`,
 `frameDone{frameId, buffer}`, `readback{requestId, data, code?, message?}`,
-`pick{requestId, objectId, instance, code?, message?}` (M2),
+`pick{requestId, objectId, instance, userId?, code?, message?}` (M2;
+`userId` M2.5, absent = 0),
 `deviceLost{message}`, `deviceRestored`, and `error{code, message}`. The
 transfer path transfers the ArrayBuffers.
 
@@ -373,7 +387,7 @@ struct SwarmCold {  // size 16
   color: u32,       // 0  packed RGBA8
   frame: u32,       // 4  index into frames: array<vec4f> (u0,v0,u1,v1)
   flags: u32,       // 8  bits 8-15 behavior groups (M2); rest reserved
-  user:  u32,       // 12 free for custom behaviors
+  user:  u32,       // 12 M2.5: instance user id (PickHit.userId); custom behaviors may read it
 }
 ```
 
@@ -429,11 +443,14 @@ group layout at index 1 so group numbers stay stable. WebGL2 maps
 
 ### 4.7 Picking (M2)
 
-Pick target `PICK_TARGET_FORMAT` = `rg32uint`, one texel. A pick fragment
-writes `vec2u(objectId, instance + 1)`; sprites write `(pickId, 0)`, so
-instance decodes to -1. `(0, 0)` is a miss. Texels whose premultiplied
+Pick target `PICK_TARGET_FORMAT` = `rgba32uint` (M2.5; `rg32uint` in M2),
+one texel. A pick fragment writes `vec4u(objectId, instance + 1, userId,
+0)` (u32 indices `PICK_TEXEL_OBJECT` = 0, `PICK_TEXEL_INSTANCE` = 1,
+`PICK_TEXEL_USER` = 2). Sprites write `(pickId, 0, 0, 0)`, so instance
+decodes to -1 and the front supplies `SceneNode.userId`; a Swarm writes its
+`cold.user` as userId. objectId 0 is a miss. Texels whose premultiplied
 alpha is below `PICK_ALPHA_THRESHOLD` (0.5) are discarded. Readback is
-`PICK_RESULT_BYTES` = 8.
+`PICK_RESULT_BYTES` = 16.
 
 ## 5. Sprites: scene graph to GPU
 
@@ -530,7 +547,9 @@ keeps a view across node creation.
 
 `SpriteCoreSystem` keeps a GPU vertex buffer per bufferId
 (`VERTEX|COPY_DST`) and one pipeline per blend mode (created async in
-`init`). It caches a `Uint8Array` view per sharedId (created at register
+`init`). M2: `init` loads the sprite shaders for `caps.shaderLanguage` with a
+dynamic import (`src/sprites/shadersWGSL.ts` or `shadersGLSL.ts`), so a page
+carries only one language (§18.1). It caches a `Uint8Array` view per sharedId (created at register
 time, never per frame) and calls
 `backend.writeBuffer(buf, first·40, view, byteOffset + first·40, count·40)`.
 
@@ -781,7 +800,43 @@ loaded by dynamic import from `src/backend/createBackend.ts`.
   1×1 white texture, the texture registry (`TextureRegistry.ts`; keeps
   ImageBitmap or pixel sources when `RETAIN_SOURCE` is set), the
   shared-memory table, the MSAA target, readback routing, the picking
-  module, and opcode routing.
+  module, opcode routing and (M2.5) the external-buffer table (§19.4).
+- **M2.5 RHI additions**: the `rgba32uint`
+  format (pick texel), `createReadbackRing` (§19.6), `native()`,
+  `importBuffer()` and `resetState()` (§19.4).
+
+### 7.1 Readback pacing (M2.5, as built)
+
+Not part of the RHI: RenderCore duck-types optional backend members
+(`FramePacer` in `RenderCore.ts`): `backlogged()`, `whenCaughtUp(callback)`
+and the `onReadbackLanded` callback slot (§19.6).
+
+- Pacing is on **only while a readback is in flight** (a ring slot
+  mapping, `readBuffer` or `readTexture`). Once `PACE_FRAMES` = 3 frames were
+  submitted since it started, `backlogged()` is true (WebGL2: only while its
+  fence is still unsignalled).
+- In `ack()` (the frame acknowledgement), if `backlogged()` is true the core
+  does not post `frameDone` yet; it passes it to `whenCaughtUp`, so
+  `transport.busy` stays true and the front skips frames (`skippedFrames`)
+  instead of queueing more GPU work in front of the readback.
+- A held frame costs a display tick in uncapped Chrome, so RenderCore
+  answers finished picks when it releases a held frame
+  (`RenderCoreImpl.releaseHeld`), not only at the start of a packet.
+- WebGPU releases a held frame when the last in-flight map lands
+  (`landed()`); WebGL2 re-checks ring fences on a 1 ms timer while a frame
+  is held (no packet runs meanwhile, so nothing else would poll them).
+- There are no queue fences any more: `PACE_FAST_MS`, `PACE_MAX_LAG_MS`,
+  `PACE_WINDOW_MS` and `paceReadbacks()` are gone from both backends and
+  RenderCore. A vsync-paced loop or a page without readbacks never holds a
+  frame.
+- A device loss releases a held acknowledgement at once.
+- **Known limit:** without a readback in flight, uncapped submits can
+  outrun the GPU without bound (measured: a 2.2 s queue on WebGPU and 4.5 s
+  on WebGL2 in the A3 churn bench). The first readback after such a run
+  waits behind that queue (the A3 finish-phase `aliveCount()`, or the first
+  WebGL2 pick in A2u: one 3 s outlier in two of three runs). Always-on
+  frame limiting would fix it but holds frames with nothing read back; not
+  done.
 
 ## 8. Worker mode
 
@@ -887,9 +942,16 @@ first, count)` in order; the first one that returns a promise owns the
      reloads GPU-only textures from their URLs (§15.7).
    - Swarms re-emit SWARM_CREATE (empty) and call `onRestore(swarm)`.
    - The front calls `onDeviceRestored()`.
-6. If restore fails (or the device is lost again during every retry), the
-   core posts `error{DEVICE_LOST}`, the renderer becomes `destroyed`, and
-   the front calls `onDeviceLost({ willRestore: false })`.
+6. A loss noticed while restoring (a DEVICE_LOST thrown by a re-created
+   resource, or a new loss notification) restarts the restore from step 3,
+   at most `MAX_LOSS_RETRIES` = 3 times for thrown DEVICE_LOST errors
+   (`RenderCore.recover()`; WebGL2 program creation can see the lost context
+   before `webglcontextlost` fires). If restore fails for good, the core
+   posts `error{DEVICE_LOST}`, the renderer becomes `destroyed`, and the
+   front calls `onDeviceLost({ willRestore: false })`.
+7. M2.5: the front also emits the `deviceLost` / `deviceRestored` events
+   (§19.2) right after the callbacks, and the core drops every external
+   buffer registration on loss (§19.4).
 
 ### 9.2 Resize and DPR
 
@@ -924,30 +986,33 @@ Reference machine: Apple M1/M2/M4 integrated GPU, Chrome stable. Bench
 harness: `benchmarks/**`. The budgets are enforced as regression
 thresholds.
 
-| scenario                                                                                                     | budget                                                                                                            |
-| ------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------- |
-| Steady-state JS allocations per frame (all examples, both modes)                                             | **0** (heap-sampling bench asserts < 1 KB per 600 frames)                                                         |
-| `render()` front CPU, 100k static sprites, nothing dirty                                                     | < 0.5 ms                                                                                                          |
-| `render()` front CPU, 100k sprites all moving                                                                | < 6 ms (pack + transforms); M2 bulk API < 3 ms                                                                    |
-| Sprite upload, 100k all moving                                                                               | ≤ 4 MB/frame, ≤ 8 writeBuffer calls                                                                               |
-| Draw calls, sprites                                                                                          | one per contiguous (texture, blend) run                                                                           |
-| Swarm 1M objects, velocity + acceleration + bounds (WebGPU)                                                  | ≥ 60 fps; front CPU < 0.3 ms/frame; packet < 1 KB/frame                                                           |
-| Swarm 4M objects (discrete GPU, `limits: 'max'`)                                                             | ≥ 60 fps                                                                                                          |
-| Swarm 250k objects on WebGL2 (integrated GPU)                                                                | ≥ 60 fps; front CPU < 0.3 ms/frame                                                                                |
-| 100k moving sprites on WebGL2                                                                                | < 6 ms front CPU; ≥ 60 fps                                                                                        |
-| Swarm spawn of 1M objects                                                                                    | one command, < 1 ms front CPU                                                                                     |
-| `renderer.pick()`                                                                                            | ≤ 2 frames latency; 0 cost in frames without picks                                                                |
-| Asset load of a 2048² PNG                                                                                    | no main-thread stall > 4 ms (decode off-thread, upload by transfer)                                               |
-| Command overhead                                                                                             | 8 B header; typical command ≤ 64 B                                                                                |
-| Worker mode                                                                                                  | ≤ 1 frame latency; main-thread busy loop of 8 ms must not drop core frames; 0 allocations per frame with the ring |
-| `createRenderer` (excluding first pipeline compile)                                                          | < 150 ms                                                                                                          |
-| Bundle (min+gzip), minimal program: createRenderer + Texture + Sprite, WebGPU, including the chunks it loads | ≤ 30 KB                                                                                                           |
-| Bundle, same minimal program on WebGL2                                                                       | ≤ 30 KB                                                                                                           |
-| Bundle, all exports (sum of every chunk)                                                                     | ≤ 45 KB                                                                                                           |
-| Worker bundle: `dist/cozygpu.worker.js` + the backend chunk it loads                                         | ≤ 25 KB                                                                                                           |
+| scenario                                                                                                     | budget                                                                                                               |
+| ------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
+| Steady-state JS allocations per frame (all examples, both modes)                                             | **0** (heap-sampling bench asserts < 1 KB per 600 frames)                                                            |
+| `render()` front CPU, 100k static sprites, nothing dirty                                                     | < 0.5 ms                                                                                                             |
+| `render()` front CPU, 100k sprites all moving                                                                | < 6 ms (pack + transforms); M2 bulk API < 3 ms                                                                       |
+| Sprite upload, 100k all moving                                                                               | ≤ 4 MB/frame, ≤ 8 writeBuffer calls                                                                                  |
+| Draw calls, sprites                                                                                          | one per contiguous (texture, blend) run                                                                              |
+| Swarm 1M objects, velocity + acceleration + bounds (WebGPU)                                                  | ≥ 60 fps; front CPU < 0.3 ms/frame; packet < 1 KB/frame                                                              |
+| Swarm 4M objects (discrete GPU, `limits: 'max'`)                                                             | ≥ 60 fps                                                                                                             |
+| Swarm 250k objects on WebGL2 (integrated GPU)                                                                | ≥ 60 fps; front CPU < 0.3 ms/frame                                                                                   |
+| 100k moving sprites on WebGL2                                                                                | < 6 ms front CPU; ≥ 60 fps                                                                                           |
+| Swarm spawn of 1M objects                                                                                    | one command, < 1 ms front CPU                                                                                        |
+| `renderer.pick()`                                                                                            | ≤ 2 frames latency; 0 cost in frames without picks; M2.5: no library allocation per pick beyond the returned promise |
+| Asset load of a 2048² PNG                                                                                    | no main-thread stall > 4 ms (decode off-thread, upload by transfer)                                                  |
+| Command overhead                                                                                             | 8 B header; typical command ≤ 64 B                                                                                   |
+| Worker mode                                                                                                  | ≤ 1 frame latency; main-thread busy loop of 8 ms must not drop core frames; 0 allocations per frame with the ring    |
+| `createRenderer` (excluding first pipeline compile)                                                          | < 150 ms                                                                                                             |
+| Bundle (min+gzip), minimal program: createRenderer + Texture + Sprite, WebGPU, including the chunks it loads | ≤ 40 KB (M2.5)                                                                                                       |
+| Bundle, same minimal program on WebGL2                                                                       | ≤ 42 KB (M2.5)                                                                                                       |
+| Bundle, each lazily loaded feature chunk                                                                     | its own budget (§18.3): size at the M2.5 freeze + 0.5 KB                                                             |
+| Bundle, no growth: every fixture and feature chunk                                                           | ≤ `scripts/size-baseline.json` + 0.5 KB                                                                              |
+| Bundle, all exports (sum of every chunk)                                                                     | reported only (no absolute budget since M2.5); no-growth checked                                                     |
+| Worker bundle: `dist/cozygpu.worker.js` + the backend chunk it loads                                         | ≤ 25 KB                                                                                                              |
+| M2.5 hooks (§19): `commit()`, events, interop, pick polling                                                  | 0 allocations per frame; no events per frame                                                                         |
 
 M1 measurements (Apple M4, Chrome 152 headless; see
-`docs/reports/M1.md` and `benchmarks/results/m1-final.md`): Swarm 1M
+`benchmarks/results/m1-final.md`): Swarm 1M
 144 fps / 0.23 ms front CPU / 108 B packet; Swarm 2M beats Three TSL
 compute by 16%; 100k static sprites 0.54 ms frame (0.03 ms CPU); 100k
 moving sprites 1.46 ms frame (1.33 ms CPU, 8–16% behind the best
@@ -955,34 +1020,64 @@ competitor); minimal program 28.4 KB, all exports 46.0 KB, worker bundle
 20.0 KB; worker mode allocates 18–25 KB per frame (ring fixes it, §17);
 Swarm 400–750 B per frame.
 
-**M2 measurements (`node scripts/size.mjs`, Apple M4, Chrome 152).** The
-four bundle budgets are **not met** and cannot be met at M2's code volume;
-they are kept as written rather than quietly raised, and the size script
-exits non-zero so the gap stays visible:
+**Bundle budgets (decided 2026-09-18, in force from M2.5).** M2 measured
+the minimal program at 39.6 KB (WebGPU) and 41.6 KB (WebGL2) and the M1
+budgets (30 / 30 / 45 KB) could not be met without making parts of the sync
+API async (M2 report §5). The user chose to keep the API and change the
+budgets:
+
+- Minimal program ≤ **40 KB** on WebGPU and ≤ **42 KB** on WebGL2.
+- **No growth:** `scripts/size.mjs` fails when any fixture or feature chunk
+  grows more than 0.5 KB over its value in `scripts/size-baseline.json`.
+  Refresh the baseline (`--update-baseline`) only after the growth was
+  reviewed and accepted.
+- The single all-exports budget is replaced by **one budget per lazily
+  loaded feature chunk** (§18.3), each set to its size at the M2.5 freeze
+  plus 0.5 KB. all-exports is still measured and reported.
+- Worker bundle (entry + one backend) ≤ **25 KB**.
+
+Measured at the M2.5 freeze (2026-09-19, with the M2.5 stubs in place):
 
 | fixture        | min+gzip | budget |
 | -------------- | -------- | ------ |
-| minimal-webgpu | 41.3 KB  | 30 KB  |
-| minimal-webgl2 | 43.2 KB  | 30 KB  |
-| all-exports    | 93.3 KB  | 45 KB  |
-| worker-webgpu  | 31.7 KB  | 25 KB  |
-| worker-webgl2  | 33.6 KB  | 25 KB  |
+| minimal-webgpu | 39.9 KB  | 40 KB  |
+| minimal-webgl2 | 41.8 KB  | 42 KB  |
+| all-exports    | 97.2 KB  | —      |
+| worker-webgpu  | 21.9 KB  | 25 KB  |
+| worker-webgl2  | 23.9 KB  | 25 KB  |
 
-The integrator's M2 pass took minimal-webgpu from 52.0 KB to 41.3 KB and
-the worker from 39.0 KB to 31.7 KB by making three things lazy: the assets
-implementation (dropped from the `src/index.ts` barrel — `renderer.assets`
-is the public path), the swarm core (`registerCoreSystemLoader`, so
-`src/renderer/systems.ts` no longer statically imports it), and the worker
-bundle (code-split, so it loads one backend instead of both). What remains
-is the library's own front code, not packaging: in minimal-webgpu the entry
-chunk is 28.4 KB gz, whose largest inputs are `sprites/front.ts` 16.5 KB,
-`renderer/RenderCore.ts` 11.5 KB, `renderer/Renderer.ts` 8.7 KB,
-`renderer/TextureRegistry.ts` 6.7 KB and `scene/bulk.ts` 4.4 KB (minified
-bytes). Picking (`picking.ts` 1.5 KB + `pickingCore.ts` 3.2 KB minified,
-~1.6 KB gz) could be made lazy too, but `pick()` would then miss the frame
-it was called in, which is a worse trade than the bytes. Closing the rest
-needs either a smaller front (M3) or budgets set to ~45 KB minimal and
-~95 KB all exports.
+Measured at the end of M2.5 (2026-09-19, every hook built; the baseline
+was refreshed after review):
+
+| fixture        | min+gzip | budget |
+| -------------- | -------- | ------ |
+| minimal-webgpu | 39.9 KB  | 40 KB  |
+| minimal-webgl2 | 41.7 KB  | 42 KB  |
+| all-exports    | 104.3 KB | —      |
+| worker-webgpu  | 21.6 KB  | 25 KB  |
+| worker-webgl2  | 23.4 KB  | 25 KB  |
+
+M2.5 added about 1.3 KB to the minimal path (events, userId, columns,
+picking poll, interop stub). It was recovered without API
+changes: the pick client (`picking.ts`) and the core half of interop
+(`coreInterop.ts`) became lazy chunks, `readTexture` (both backends),
+WebGL2 `readBuffer` and the texel-rect check moved into the readback-ring
+chunks, WGSL compilation-message formatting became a lazy chunk, and
+diagnostics text on the minimal path was shortened (TextureRegistry,
+encoder, decoder, backend errors). Headroom is now about 0.1 KB (WebGPU)
+and 0.3 KB (WebGL2): the next feature on the minimal path needs a budget
+decision or more savings first.
+
+At the freeze the minimal program had **0.1 KB (WebGPU) and 0.2 KB (WebGL2)
+of headroom**.
+M2.5 code on the minimal path (Renderer, Container, NodeBase, the store)
+must therefore pay for itself: keep it tiny, move anything optional behind
+a dynamic import (as `interop()` does, §19.4), or recover bytes elsewhere on
+the path first (the M2 report lists about 1.2 KB of error-message text and
+1.5–2 KB of tiny shared esbuild chunks). Where the M2 bytes are, in
+minified bytes: `sprites/front.ts` about 13 KB, `RenderCore.ts` 12 KB,
+`Renderer.ts` 8.7 KB, `TextureRegistry.ts` 6.7 KB, `bulk.ts` 4.4 KB, the
+encoder and decoder 7 KB.
 
 Hot-path rules:
 
@@ -994,42 +1089,32 @@ Hot-path rules:
 - No string building per frame.
 - Pipelines and bind groups are created on change, not per frame.
 
-## 11. Source layout and ownership (M2)
+## 11. Source layout
 
-The build phase runs in parallel. Each developer edits only their own
-paths. **Shared files are frozen**; request changes via openIssues, and
-the integrator applies them.
+Modules talk to each other only through the entry points below.
 
-| owner                                        | paths                                                                                                                                                                                                                                                                                                                                                                                                                | delivers                                                                                                                                                                                               |
-| -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| webgl2                                       | `src/backend/webgl2/**`, GLSL counterparts for sprites `src/shaders/sprite/*.glsl`, `examples/basic/**`; RHI parity additions in `src/backend/webgpu/**` and `src/backend/utils.ts`                                                                                                                                                                                                                                  | WebGL2 backend (§13), sprite GLSL, WebGPU `readTexture` + compressed `writeTexture` + `copyExternalImage` origin, `auto` fallback verified in the browser                                              |
-| assets                                       | `src/assets/**` except `types.ts`, `examples/assets/**`, core texture ops in `src/renderer/TextureRegistry.ts`                                                                                                                                                                                                                                                                                                       | `Assets`, `renderer.assets` proxy, format detection, KTX2, transcoder hook, atlas packer, LRU budget, device-loss reload, TEXTURE_UPLOAD_BITMAP_REGION / COMPRESSED / GENERATE_MIPMAPS in the registry |
-| sprites                                      | `src/scene/**` except `types.ts`, `src/sprites/**`, `src/math/**`, `src/ticker/**`, `src/shaders/sprite/*.wgsl`, `examples/sprites/**`, `src/renderer/picking*`                                                                                                                                                                                                                                                      | bulk child API, incremental structure pass, `pickable` + pick ids, sprite pick pipelines, `createPickClient`, `createCorePicking`, `Texture.fromProvider`                                              |
-| swarm                                        | `src/swarm/**` except `types.ts`, `src/shaders/swarm/**` (WGSL + GLSL), `examples/swarm/**`                                                                                                                                                                                                                                                                                                                          | WebGL2 transform-feedback swarms, GLSL composer and built-in behavior GLSL, behavior groups, allocation 'gpu', `aliveCount`, swarm `drawPick`, SWARM_SET_PICK                                          |
-| worker+build                                 | `src/commands/**` (implementation; `opcodes.ts` and `types.ts` are frozen), `src/worker/**`, `src/renderer/createRenderer.ts`, `src/renderer/lazySystems.ts`, `src/renderer/systems.ts`, `rollup.config.cjs`, `scripts/**`, `examples/worker/**`                                                                                                                                                                     | SAB command ring (§17), dynamic imports and async core-system loaders (§18.1), shader minification (§18.2), size script (§18.3)                                                                        |
-| integrator / architect (FROZEN during build) | `src/types/**`, `src/backend/types.ts`, `src/backend/createBackend.ts`, `src/scene/types.ts`, `src/swarm/types.ts`, `src/assets/types.ts`, `src/commands/opcodes.ts`, `src/commands/types.ts`, `src/renderer/RenderCore.ts`, `src/renderer/Renderer.ts`, `src/index.ts`, `docs/**`, `ROADMAP.md`, `README.md`, `package.json`, `tsconfig*.json`, `jest.config.cjs`, `jest.wgsl-transform.cjs`, `examples/index.html` | contracts, wiring, final integration                                                                                                                                                                   |
-
-`benchmarks/**` and `tests/browser/**` have no M2 build owner; the
-integrator runs them at the end of M2.
-
-Cross-owner call graph (import only these entry points across owners):
+Cross-module call graph:
 
 ```
-renderer (frozen) → assets/proxy.ts:createAssetsProxy, renderer/picking.ts:createPickClient,
-                    renderer/pickingCore.ts:createCorePicking, renderer/lazySystems.ts:isCoreSystemReady,
-                    backend/createBackend.ts → import('./webgpu/WebGPUBackend') | import('./webgl2/WebGL2Backend')
-assets   → scene/Texture.ts:Texture.fromProvider, types/core.ts:RendererHost/FrontFrameHook, commands (encoder)
-sprites  → commands (encoder types), types/core.ts (FrontFrame, CustomDrawable, CorePicking, PickClient)
-swarm    → scene/Texture.ts:ensureTextureUploaded, math/color.ts, commands, renderer/lazySystems.ts
+renderer → assets/proxy.ts:createAssetsProxy, renderer/lazySystems.ts:isCoreSystemReady,
+           backend/createBackend.ts → import('./webgpu/WebGPUBackend') | import('./webgl2/WebGL2Backend'),
+           worker/LocalTransport.ts:createLocalTransport (Transport.interop)
+scene    → commands (encoder types), types/core.ts (FrontFrame, CustomDrawable)
+swarm    → scene/Texture.ts:ensureTextureUploaded, math/color.ts, commands, renderer/lazySystems.ts,
+           types/interop.ts (ExternalInstanceBuffer), CoreContext.getExternalBuffer (core side)
+assets   → scene/Texture.ts:Texture.fromProvider, types/core.ts:RendererHost (_addFrameHook, _emit)
 worker   → renderer/RenderCore.ts:createRenderCore, renderer/systems.ts, commands
 ```
 
 ## 12. M2 overview
 
+_Historical (M2 contract freeze). The M2.5 contract additions are listed in
+§19.9._
+
 M2 widens reach (WebGL2), adds the asset loader and picking, closes the
 M1 budget gaps (worker allocations, bundle size, moving-sprite CPU), and
-adds GPU free lists to Swarm. The contracts for all of it are frozen now;
-the implementation files are stubs that throw
+adds GPU free lists to Swarm. The contracts were designed first; during
+the build the implementation files were stubs that threw
 `CozyGPUError('NOT_IMPLEMENTED')` (or answer requests with that code), so
 `tsc` and `jest` pass while developers work in parallel.
 
@@ -1050,8 +1135,8 @@ Frozen M2 contract additions, by file:
 | `src/swarm/types.ts`           | `SpawnOptions.group`; `BehaviorDefinition.glsl`, `.groups`; `allocation: 'gpu'`; `SwarmNode.aliveCount()`; `SWARM_GL_MAX_CAPACITY`, `SWARM_GL_WARN_CAPACITY`; `ComposedSwarmShaders.language`; composer `language` argument                                                                                                                                                                                                                                                                                                                  |
 | `src/assets/types.ts`          | the whole asset API (§15)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 
-Stub seams already wired into frozen files (developers only fill in their
-own module): `src/renderer/picking.ts`, `src/renderer/pickingCore.ts`,
+Seams wired into the shared files (each module fills in its own
+implementation): `src/renderer/picking.ts`, `src/renderer/pickingCore.ts`,
 `src/assets/proxy.ts`, `src/assets/Assets.ts`,
 `src/backend/webgl2/WebGL2Backend.ts`, the three `TextureRegistry` M2
 methods, `isCoreSystemReady` in `lazySystems.ts`, `Container.bulkChildren`,
@@ -1060,7 +1145,8 @@ WebGPU `readTexture`.
 
 ## 13. WebGL2 backend (M2)
 
-Owner: webgl2. Files: `src/backend/webgl2/**`. It implements the same RHI
+Owner in M2: webgl2 (M2.5: renderer-hooks). Files: `src/backend/webgl2/**`.
+This section describes the backend as built. It implements the same RHI
 (`Backend`) so RenderCore and systems do not change; systems branch only
 on capability flags.
 
@@ -1079,6 +1165,11 @@ false, powerPreference })`. Works with HTMLCanvasElement and
   size-dependent renderbuffers.
 - Blend presets map to `blendFunc` exactly as in §4. Clear color is
   premultiplied by the backend (straight RGBA in `clearColor`).
+- **`FLUSH_EVERY_DRAWS` = 4096** (`commands.ts`): a render pass calls
+  `gl.flush()` after every 4096 draws. ANGLE over Metal records a whole
+  frame into one command buffer; about 200k unbatched draws in one frame
+  exhausted its host memory (`GL_OUT_OF_MEMORY`) and lost the context.
+  Normal frames (a few hundred draws) never reach the threshold.
 
 ### 13.2 RHI method mapping
 
@@ -1086,12 +1177,12 @@ false, powerPreference })`. Works with HTMLCanvasElement and
 | --------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `createBuffer`                                      | `createBuffer`; target chosen from usage (VERTEX/INDEX/UNIFORM; STORAGE and INDIRECT throw UNSUPPORTED); `bufferData(size, DYNAMIC_DRAW)`                                                                                                                                                                         |
 | `writeBuffer`                                       | `bufferSubData(target, offset, view, srcOffset, length)` (no copies; works with SAB views)                                                                                                                                                                                                                        |
-| `readBuffer`                                        | `fenceSync` + `clientWaitSync` polled via `setTimeout`, then `getBufferSubData` into a new ArrayBuffer                                                                                                                                                                                                            |
-| `createTexture`                                     | `texStorage2D` (immutable) with mip count; multisampled targets become renderbuffers; `r32uint`/`rg32uint` for picking                                                                                                                                                                                            |
+| `readBuffer`                                        | `fenceSync` + `clientWaitSync` polled via `setTimeout`, then `getBufferSubData` into a new ArrayBuffer; counts as a readback in flight for pacing (§7.1)                                                                                                                                                          |
+| `createTexture`                                     | `texStorage2D` (immutable) with mip count; multisampled targets become renderbuffers; `r32uint`/`rg32uint`/`rgba32uint` (M2.5) integer targets for picking                                                                                                                                                        |
 | `writeTexture`                                      | `texSubImage2D` (UNPACK_ALIGNMENT 1) or `compressedTexSubImage2D` per level                                                                                                                                                                                                                                       |
 | `copyExternalImage`                                 | `texSubImage2D(…, destX, destY, RGBA, UNSIGNED_BYTE, source)` with `UNPACK_PREMULTIPLY_ALPHA_WEBGL = true`, `UNPACK_FLIP_Y_WEBGL = flipY`, `UNPACK_COLORSPACE_CONVERSION_WEBGL = NONE`                                                                                                                            |
 | `generateMipmaps`                                   | `generateMipmap`                                                                                                                                                                                                                                                                                                  |
-| `readTexture`                                       | FBO + `readPixels(RGBA_INTEGER, UNSIGNED_INT)` for integer formats, packed to the RHI's tight layout                                                                                                                                                                                                              |
+| `readTexture`                                       | FBO + `readPixels` into a PIXEL_PACK buffer (`RGBA_INTEGER, UNSIGNED_INT` for integer formats), fence, then `getBufferSubData`, packed to the RHI's tight layout; paced like `readBuffer` (§7.1). M2.5: the readback ring replaces it for picking (§19.6)                                                         |
 | `createSampler`                                     | sampler objects (`bindSampler`)                                                                                                                                                                                                                                                                                   |
 | `createShaderModule`                                | keeps `glsl` sources; rejects at pipeline creation when `glsl` is missing (UNSUPPORTED)                                                                                                                                                                                                                           |
 | `createBindGroupLayout` / `createBindGroup`         | plain records; groups resolve to UBO bindings and texture units at pipeline link                                                                                                                                                                                                                                  |
@@ -1112,10 +1203,11 @@ false, powerPreference })`. Works with HTMLCanvasElement and
   load `.glsl` like `.wgsl`).
 - A system passes **both** sources in one `ShaderSource`
   (`{ wgsl, glsl: { vertex, fragment } }`); the backend uses the one for
-  `caps.shaderLanguage`. Sprite GLSL is small enough to ship statically.
-  Large GLSL (the swarm templates) is loaded with a dynamic import only
-  when `caps.shaderLanguage === 'glsl300es'`, so WebGPU pages don't carry
-  it.
+  `caps.shaderLanguage`. As built, every shader set loads per language with
+  a dynamic import: the sprite core imports `src/sprites/shadersWGSL.ts` or
+  `shadersGLSL.ts` in `init`, and the swarm front imports the GLSL
+  templates (`src/swarm/glsl.ts`) only when `caps.shaderLanguage ===
+'glsl300es'`, so a page carries one language (§18.1).
 - Binding names: uniform block `G{group}_B{binding}` (std140), texture
   `G{group}_B{binding}` (`sampler2D` / `usampler2D`); a `sampler` entry at
   binding b + 1 applies to the texture at b. Attributes use
@@ -1164,9 +1256,30 @@ attempts, 0/500/2000 ms, also trying `WEBGL_lose_context.restoreContext()`
 in debug), then recreates the GL program cache. The §9.1 flow is
 unchanged.
 
+- **Early loss report.** `webglcontextlost` is dispatched as a task, so a
+  GL call can see `gl.isContextLost()` first. The backend then reports the
+  loss at once (`noticeLoss()` → `markLost()`) before rejecting the failing
+  call with DEVICE_LOST, so the core treats that rejection as part of a
+  loss it already knows about instead of as fatal. The late event only
+  calls `preventDefault()`. A loss also releases a frame held by pacing.
+- A second loss during a restore is retried by RenderCore
+  (`MAX_LOSS_RETRIES`, §9.1).
+
+### 13.7 Transform feedback and framebuffers (as built)
+
+ANGLE over Metal: after a transform-feedback draw, a framebuffer created
+earlier silently stops taking clears and draws (its cached render target
+goes stale). Picking after a Swarm draw therefore kept answering its first
+value. The backend counts feedback passes in `feedbackSerial` (bumped when a
+`FeedbackPass` ends); each render-target texture remembers the serial at
+which its color attachment was last bound (`fboFeedbackSerial`), and
+binding it as a target after newer feedback re-attaches color 0 (detach,
+then attach). The cost is two GL calls per render-target pass after
+feedback; the canvas framebuffer is unaffected.
+
 ## 14. Swarm in M2: WebGL2 and GPU free lists
 
-Owner: swarm.
+Owner in M2: swarm (M2.5: swarm-hooks). As built.
 
 ### 14.1 Front selection
 
@@ -1273,7 +1386,7 @@ SDF coverage). The instance index is the slot (`alive[instance]` for
 
 ## 15. Asset loader (M2)
 
-Owner: assets. Contract: `src/assets/types.ts`. Public entry:
+Asset events are described in §19.2. Contract: `src/assets/types.ts`. Public entry:
 `renderer.assets` and `new GPU.Assets(renderer, options)`.
 
 ### 15.1 Where loading happens (decision)
@@ -1367,7 +1480,7 @@ signal })`; progress counts entries (textures count when uploaded).
 
 ### 15.5 Core side
 
-`src/renderer/TextureRegistry.ts` (owner assets in M2) implements
+`src/renderer/TextureRegistry.ts` implements
 `uploadBitmapRegion`, `uploadCompressed`, `generateMipmaps`, compressed
 `textureFormatFromId` entries and explicit mip counts. RenderCore routes
 the opcodes (already wired). Compressed uploads use the RHI's
@@ -1404,7 +1517,8 @@ page provider, so sprites batch. Destroying the last handle calls
 
 ## 16. Sprites in M2: bulk API, incremental structure, picking
 
-Owner: sprites.
+Owner in M2: sprites (M2.5: scene-hooks for §16.1–§16.2, renderer-hooks for
+the picking modules in §16.3).
 
 ### 16.1 Bulk child transforms
 
@@ -1439,8 +1553,14 @@ rebuilds only the affected flat span: it shifts the tail of the flat
 arrays and instance bytes with `copyWithin` when the instance count
 changes, re-marks instances from the first changed index as dirty, and
 patches the batch list around the span. Anything else falls back to a full
-rebuild. Invariant tests (`dirty.property.test.ts`) must compare the
-incremental result with a full rebuild byte for byte.
+rebuild. Invariant tests (`dirty.property.test.ts`,
+`structure.property.test.ts`) compare the incremental result with a full
+rebuild byte for byte.
+
+As built, the patcher lives in `src/sprites/frontPatch.ts` and loads with a
+dynamic import on the first structure change; until it has loaded, every
+structure change takes the full rebuild, which is always correct. Programs
+whose tree never changes after the first frame never fetch it.
 
 ### 16.3 Picking
 
@@ -1459,9 +1579,13 @@ Sprite packing: `SI_FLAGS` bits 8–31 get `node.id` when `pickable` (§4.1);
 toggling `pickable` sets `Dirty.SPRITE`.
 
 Core (`src/renderer/pickingCore.ts`, `createCorePicking`), created on the
-first PICK:
+first PICK. As built, `pickingCore.ts` is a small proxy
+(`LazyCorePicking`): it imports `pickingCoreImpl.ts` (targets, pick pass,
+readback) on the first PICK and queues requests until it lands, so they
+render one packet later than a warm pick. Pick pipelines are shared state
+in `pickingPipelines.ts` (`pickPipelinesPending`). Behavior:
 
-- Owns one 1×1 `rg32uint` texture (RENDER_TARGET | COPY_SRC), up to 4
+- Owns 1×1 `PICK_TARGET_FORMAT` textures (RENDER_TARGET | COPY_SRC), up to 4
   pick View uniform buffers + bind groups (distinct buffers, because
   writes to one range collapse), and requests FIFO (≤ 4 per packet; the
   rest wait for the next packet).
@@ -1476,9 +1600,12 @@ first PICK:
   Sprites' pick fragment: `textureSample(...).a * color.a >= 0.5` else
   discard, output `vec2u(pickId, 0u)`.
 - `afterSubmit()`: `backend.readTexture(tex, 0, 0, 1, 1)` per rendered
-  request; post `pick{requestId, objectId, instance: second - 1}`. A
-  second request in the same frame must use its own texture (or wait for
-  the previous readback), because the texture is overwritten.
+  request; post `pick{requestId, objectId, instance: second - 1}`. As
+  built, each of the up to 4 request slots per packet has its own texture
+  and View uniform, so picks in one frame never overwrite each other. This
+  allocates a staging buffer, a copy and promises per pick (about 30 KB
+  per frame while picking); M2.5 replaces it with the polled readback ring
+  (§19.6).
 - Pick pipelines are created lazily on the first request (async); requests
   that arrive earlier wait (answered at most 2 frames later).
 - `failAll(code)` answers everything with objectId 0 and the code.
@@ -1513,6 +1640,15 @@ Owner: worker+build. Goal: **zero allocations per frame** in worker mode
 - Packets with `objects` (ImageBitmaps, level buffers, shared-store
   registrations) always use the transfer path.
 - Without isolation nothing changes (transfer path, `ring: false`).
+- **Lazy swarm core in the worker (as built).** The worker bundle is
+  code-split too: `src/worker/entry.ts` registers the swarm core loader
+  (`import('../swarm/core')`, about 10 KB gz) instead of importing it. The
+  front never waits on `isSystemReady` in worker mode, so the host checks
+  each packet (`pendingLoad`, a header walk that stops once the core is
+  loaded): the first packet with SWARM commands is held, unacknowledged,
+  until the chunk has loaded, then executed. The front sees a busy
+  transport and skips frames meanwhile; no command is dropped. A
+  sprite-only worker never fetches the chunk.
 - **Core rule:** anything that turns packet bytes into a string must go
   through `reader.utf8(n)`, which copies out of the slot first. A
   `TextDecoder` over a view into a SharedArrayBuffer throws in Blink ("must
@@ -1529,20 +1665,26 @@ Owner: worker+build. Goal: **zero allocations per frame** in worker mode
 
 ## 18. Bundle and build (M2)
 
-Owner: worker+build (`rollup.config.cjs`, `scripts/**`,
-`src/renderer/createRenderer.ts`, `src/renderer/lazySystems.ts`).
+Build configuration lives in `rollup.config.cjs` and `scripts/**`;
+§18.1 lists the chunks as built.
 
 ### 18.1 Dynamic imports
 
-| module                                     | loaded by            | when                               |
-| ------------------------------------------ | -------------------- | ---------------------------------- |
-| `backend/webgpu/WebGPUBackend`             | `createBackend`      | WebGPU selected (done)             |
-| `backend/webgl2/WebGL2Backend`             | `createBackend`      | WebGL2 selected or fallback (done) |
-| `worker/WorkerTransport`                   | `createRenderer`     | `worker: true`                     |
-| `swarm/core`                               | `lazySystems` loader | first swarm command in local mode  |
-| swarm GLSL templates                       | swarm front          | first swarm on a GLSL renderer     |
-| `assets/Assets`                            | `assets/proxy`       | first async `renderer.assets` call |
-| `renderer/pickingCore` pipelines / shaders | picking              | first pick (optional)              |
+| module (chunk)                                    | loaded by            | when                                                                |
+| ------------------------------------------------- | -------------------- | ------------------------------------------------------------------- |
+| `backend/webgpu/WebGPUBackend`                    | `createBackend`      | WebGPU selected                                                     |
+| `backend/webgl2/WebGL2Backend`                    | `createBackend`      | WebGL2 selected or fallback                                         |
+| `sprites/shadersWGSL` / `sprites/shadersGLSL`     | sprite core `init`   | per `caps.shaderLanguage` (one language per page)                   |
+| `sprites/frontPatch` (incremental structure pass) | scene packer         | first structure change (full rebuilds until loaded, §16.2)          |
+| `renderer/pickingCoreImpl`                        | `pickingCore` proxy  | first PICK (requests queue until loaded, §16.3)                     |
+| `worker/WorkerTransport`                          | `createRenderer`     | `worker: true`                                                      |
+| `swarm/core`                                      | `lazySystems` loader | first swarm command (local mode; worker: first SWARM packet, §17)   |
+| `swarm/glsl` (GLSL templates + composer)          | swarm front          | first swarm on a GLSL renderer                                      |
+| `assets/Assets`                                   | `assets/proxy`       | first async `renderer.assets` call                                  |
+| `renderer/interopImpl` + `coreInterop` (M2.5)     | `renderer.interop()` | first `interop()` call (§19.4)                                      |
+| `renderer/picking` (pick client, M2.5)            | `renderer.pick()`    | first `pick()` (it encodes in a render after the chunk loaded)      |
+| `backend/*/readbackRing` (M2.5)                   | backend              | first pick (`loadReadbackRing`), `readTexture`, WebGL2 `readBuffer` |
+| `backend/webgpu/compileMessages` (M2.5)           | WebGPU backend       | a shader reports compilation messages                               |
 
 - ESM output (`dist/`) uses code splitting (`output.dir`, chunk names
   `chunks/[name]-[hash].js`). The CJS build and the example builds use
@@ -1585,24 +1727,416 @@ composer still works.
 
 ### 18.3 Size check
 
-`scripts/size.mjs` builds fixtures with Rollup + esbuild minify, gzips
-each chunk and reports JSON plus a table:
+`scripts/size.mjs` (`npm run size`) builds fixtures with esbuild (bundle,
+code splitting, minify; shaders minified like the Rollup build), gzips each
+chunk (level 9) and runs three checks. It exits non-zero when any fails.
+`benchmarks/build.mjs --sizes` stays as the cross-library comparison.
+
+**1. Fixtures** (what a program actually loads):
 
 | fixture                                            | counts                                        | budget  |
 | -------------------------------------------------- | --------------------------------------------- | ------- |
-| minimal-webgpu (createRenderer + Texture + Sprite) | entry + chunks loaded when WebGPU is selected | ≤ 30 KB |
-| minimal-webgl2                                     | entry + chunks loaded when WebGL2 is selected | ≤ 30 KB |
-| all-exports (`import * as GPU` using every export) | every chunk                                   | ≤ 45 KB |
+| minimal-webgpu (createRenderer + Texture + Sprite) | entry + chunks loaded when WebGPU is selected | ≤ 40 KB |
+| minimal-webgl2                                     | entry + chunks loaded when WebGL2 is selected | ≤ 42 KB |
+| all-exports (`import * as GPU` using every export) | every chunk                                   | none    |
 | worker-webgpu                                      | worker entry + the WebGPU backend chunk       | ≤ 25 KB |
 | worker-webgl2                                      | worker entry + the WebGL2 backend chunk       | ≤ 25 KB |
 
-It exits non-zero when a budget is exceeded (all five are over today —
-§10 has the numbers and the reason). `npm run size` is the same thing. `benchmarks/build.mjs
---sizes` stays as the cross-library comparison.
+**2. Feature chunks** (each lazily loaded chunk of the all-exports build,
+found by the source module it contains; budget = size at the M2.5 freeze +
+0.5 KB, rounded up to 0.1 KB; the chunks added during M2.5 are budgeted at
+their size at the end of M2.5 + 0.5 KB):
 
-## 19. Later milestones (design notes only)
+| chunk            | module                                  | freeze (gz) | budget  |
+| ---------------- | --------------------------------------- | ----------- | ------- |
+| backend-webgpu   | `src/backend/webgpu/WebGPUBackend.ts`   | 8.4 KB      | 8.8 KB  |
+| backend-webgl2   | `src/backend/webgl2/WebGL2Backend.ts`   | 10.4 KB     | 10.8 KB |
+| sprite-wgsl      | `src/sprites/shadersWGSL.ts`            | 0.8 KB      | 1.3 KB  |
+| sprite-glsl      | `src/sprites/shadersGLSL.ts`            | 0.7 KB      | 1.2 KB  |
+| structure-patch  | `src/sprites/frontPatch.ts`             | 2.0 KB      | 2.5 KB  |
+| picking-core     | `src/renderer/pickingCoreImpl.ts`       | 1.6 KB      | 2.1 KB  |
+| assets           | `src/assets/Assets.ts`                  | 10.9 KB     | 11.4 KB |
+| swarm-core       | `src/swarm/core.ts`                     | 10.6 KB     | 11.1 KB |
+| swarm-glsl       | `src/swarm/glsl.ts`                     | 3.3 KB      | 3.8 KB  |
+| worker-transport | `src/worker/WorkerTransport.ts`         | 2.5 KB      | 3.0 KB  |
+| interop (M2.5)   | `src/renderer/interopImpl.ts`           | 0.9 KB      | 1.5 KB  |
+| pick-client      | `src/renderer/picking.ts`               | 0.9 KB      | 1.4 KB  |
+| readback-webgpu  | `src/backend/webgpu/readbackRing.ts`    | 1.5 KB      | 2.1 KB  |
+| readback-webgl2  | `src/backend/webgl2/readbackRing.ts`    | 2.1 KB      | 2.7 KB  |
+| wgsl-diagnostics | `src/backend/webgpu/compileMessages.ts` | 0.4 KB      | 1.0 KB  |
 
-The following are **not** part of M2.
+**3. No growth:** every fixture and feature chunk against
+`scripts/size-baseline.json` (min+gzip bytes). More than 0.5 KB over the
+recorded value fails, even under the absolute budget. A new chunk without a
+baseline entry is reported as new. Run
+`node scripts/size.mjs --update-baseline` only after the growth was reviewed.
+
+## 19. Integration hooks (M2.5)
+
+Decided 2026-09-18: cozygpu stays a pure graphics wrapper with zero runtime
+dependencies. ECS and event libraries (cozyECS, cozyEvent or any other) are
+wired together in the separate cozyJS suite. cozygpu only offers
+**library-neutral hooks**, and every hook follows the same rules
+(normative):
+
+- **Register once, commit per frame.** Setup calls (bind, register, create)
+  may allocate and validate; the per-frame call is a plain method with
+  numbers only and allocates nothing.
+- **No per-frame events.** The events sink sees rare lifecycle events only.
+- **No WebGPU or WebGL types** in any public `.d.ts`: native objects are
+  `unknown`.
+- **Minimal-path bytes are scarce** (§10: 0.1 KB headroom on WebGPU). Hook
+  code that the minimal program does not need goes behind a dynamic import.
+
+Contracts live in `src/scene/types.ts` (§19.1, §19.3),
+`src/types/events.ts` (§19.2), `src/types/interop.ts`,
+`src/swarm/types.ts` (§19.4), `src/types/renderer.ts`,
+`src/types/core.ts`, `src/types/transport.ts`, `src/types/layouts.ts`,
+`src/backend/types.ts` and `src/commands/opcodes.ts`. §19.9 lists them.
+
+### 19.1 External columns for sprites
+
+```ts
+// columns owned by the caller (an ECS archetype, or plain typed arrays)
+const binding = layer.bindColumns({
+  x: px,
+  y: py,
+  rotation: rot,
+  tint,
+  userId: entity,
+});
+// every frame, after the ECS systems ran:
+binding.commit(count); // rows [0, count) → children [0, count)
+// after the ECS replaced its arrays (an archetype grew):
+binding.rebind({
+  x: px2,
+  y: py2,
+  rotation: rot2,
+  tint: tint2,
+  userId: entity2,
+});
+// interleaved [x0, y0, x1, y1, …] storage:
+layer.bindColumns({
+  x: { array: xy, offset: 0, stride: 2 },
+  y: { array: xy, offset: 1, stride: 2 },
+});
+```
+
+- `container.bindColumns(columns, options?)` binds caller-owned typed
+  arrays to the container's **direct children**: row i drives child i, the
+  same indexing as `bulkChildren`. It returns the container's single reused
+  `ColumnBinding` and never copies at bind time.
+- Columns (`SpriteColumns`): `x`, `y` (required, `Float32Array`),
+  `rotation`, `scaleX`, `scaleY`, `alpha` (`Float32Array`), `tint`,
+  `frame`, `userId` (`Uint32Array`). Each is a dense array (row i at index
+  `i × stride`, `options.stride` default 1) or `{ array, offset?, stride? }`
+  for interleaved storage (row i at `offset + i × stride`). Units match the
+  setters.
+- `frame` indexes `options.frames` (TextureHandles). Frames of one source
+  are an instance rewrite (`Dirty.SPRITE`); a change to another source moves
+  a batch boundary (structure bump).
+- `userId` writes `SceneNode.userId` (§19.3) and marks nothing dirty.
+- **Semantics = `BulkChildren.commit`.** `commit(count, first = 0, fields =
+binding.fields)` copies rows [first, first + count) of the bound columns
+  into the node store in one tight loop per column, sets the same dirty bits
+  as the bulk path (x, y only → `Dirty.POSITION`, so the packer keeps the
+  §5.2 translation fast path) and bumps `touch` once. The next render()
+  therefore emits one dirty range and one bulk upload, exactly as for
+  `bulkChildren`. `fields` takes `BulkField` bits (M2.5 adds `FRAME` and
+  `USER_ID`, which `bulkChildren` ignores).
+- Implementation rule: **one copy path.** Generalize the `ChildBulk`
+  (`src/scene/bulk.ts`) loops to strided sources, so a dense writer is the
+  stride-1, offset-0 case; do not add a second set of loops (bytes, §10).
+- Validation at bind time: array types, `stride ≥ 1`, `frames` present when
+  `frame` is bound. At commit: `first + count ≤ children.length` and every
+  bound column long enough for row `first + count - 1`; otherwise
+  INVALID_ARGUMENT. DESTROYED after the container is destroyed.
+- Re-bind whenever an array **object** is replaced (the binding keeps
+  references, it cannot detect a swap). Growing the children list needs no
+  re-bind; rows beyond `children.length` are rejected by `commit`.
+- `unbind()` drops the references so the arrays can be collected.
+- Budget: 100k moving sprites committed from columns < 3 ms front CPU (the
+  bulk budget), 0 allocations per frame.
+
+### 19.2 Events sink
+
+```ts
+const renderer = await GPU.createRenderer({ canvas, events: bus }); // any { emit(name, payload) }
+// a typed bus: declare it as Bus<GPU.Events>
+```
+
+- `RendererOptions.events` accepts any object with
+  `emit(name: string, payload: unknown): void`. cozygpu calls nothing else
+  on it.
+- `GPU.Events` (type-only export, `src/types/events.ts`) maps names to
+  payloads: `ready`, `fallback`, `deviceLost` (WebGL context loss is folded
+  in; there is no separate contextLost), `deviceRestored`, `resize`,
+  `assetProgress`, `assetError`, `error`.
+- Emission order: `fallback` (if any), then `ready`, both before
+  `createRenderer()` resolves. `deviceLost` / `deviceRestored` right after
+  the `onDeviceLost` / `onDeviceRestored` callbacks. `resize` when
+  `renderer.resize()` accepts a new size (autoResize included), not per
+  frame. `error` for the core's non-fatal `error` messages (they are still
+  logged). `assetProgress` per finished asset or bundle entry and
+  `assetError` per failed load, emitted by the asset manager through
+  `RendererHost._emit`.
+- Each emit gets a fresh plain payload; a throwing sink is caught and
+  logged once per event name. Main thread only, both renderer modes.
+- **Nothing per frame.** Frame-rate data stays in `renderer.stats`.
+
+### 19.3 User ids and the pick texel
+
+- `SceneNode.userId` (u32, default 0, `NodeOptions.userId`, coerced with
+  `>>> 0`) is stored per node slot (a `Uint32Array` column in the node
+  store, grown with it). It never affects drawing, so writes set no dirty
+  bit. Columns write it in bulk (§19.1).
+- Swarm instances use `cold.user` (`SC_USER`), written by
+  `SpawnOptions.user` or `write()`. Custom behaviors may still read it.
+- The pick target is `rgba32uint` (§4.7): texel `(objectId, instance + 1,
+userId, 0)`. The swarm pick fragment writes `cold.user` (a flat varying
+  from the vertex stage; WGSL and GLSL); sprites write 0.
+- `pick{…, userId?}` carries `texel[PICK_TEXEL_USER]`. The front resolves
+  `PickHit.userId`: the message value for a Swarm hit, `node.userId` for a
+  sprite hit (read when the answer arrives).
+- Instance user ids only need `write()` or `spawn()`; there is no
+  per-instance setter in M2.5 (it would need a new opcode).
+
+### 19.4 Device interop and external instance sources
+
+Main-thread mode only: the device must live in the caller's thread.
+
+```ts
+const interop = await renderer.interop(); // rejects UNSUPPORTED in worker mode
+const device = interop.device as GPUDevice; // or WebGL2RenderingContext
+const hot = device.createBuffer({
+  size: n * 40,
+  usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
+});
+const ext = interop.registerInstanceBuffer(hot, {
+  layout: 'swarm-hot',
+  capacity: n,
+});
+swarm.setSource({ hot: ext, count: n }); // draw-only; the caller's compute moves them
+// per frame: submit the caller's compute on device.queue, then:
+swarm.setSourceCount(liveCount);
+renderer.render();
+```
+
+- `renderer.interop(): Promise<RendererInterop>` resolves an opaque handle:
+  `backend`, `device: unknown` (GPUDevice or WebGL2RenderingContext),
+  `registerInstanceBuffer(buffer, { layout, capacity })` and
+  `invalidateState()`. Async because the implementation is its own lazy
+  chunk (`src/renderer/interopImpl.ts`, §18.1); the minimal program pays
+  only for the method stub. It rejects with UNSUPPORTED in worker mode and
+  DESTROYED after destroy.
+- Plumbing (as built): `Renderer` → lazy `interopImpl` chunk →
+  `Transport.interop?(createCoreInterop)` (local transport only; it calls
+  `create` with its core, so the core half, `src/renderer/coreInterop.ts`,
+  ships in the interop chunk and neither the minimal program nor the worker
+  bundle carries it; `RenderCore.interop?` stays optional and unused) →
+  `CoreInterop` (`device()`,
+  `registerBuffer(externalId, native, desc)`, `releaseBuffer`,
+  `invalidateState`, `lossEpoch`) → RHI `Backend.native()`,
+  `importBuffer(native, { size, usage })` (wraps without ownership),
+  `resetState()`. Registration is synchronous (same thread); the core keeps
+  a table read by `CoreContext.getExternalBuffer(externalId)`. Ids come
+  from `ids.external`.
+- Layouts (`ExternalLayout`): `'swarm-hot'` (40 B, §4.2; WebGL2 the
+  interleaved form), `'swarm-cold'` (16 B, §4.3). `'sprite-instance'`
+  (§4.1) is reserved: no consumer in M2.5, rejected with UNSUPPORTED.
+- **Swarm sources:** `swarm.setSource({ hot, cold?, count, simulate? })`
+  emits `SWARM_SET_SOURCE(swarmId, hotId, coldId, flags)`. The core draws
+  from the external hot buffer (and cold, when given; else the swarm's own
+  cold). `simulate: true` also runs the swarm's behaviors on it (WebGPU
+  only: STORAGE read_write). **WebGL2 has no external sources in M2.5:**
+  `setSource` throws UNSUPPORTED once the swarm has run there; a source set
+  before the first WebGL2 frame disables the swarm with one UNSUPPORTED
+  console error, and its readbacks reject (a draw-only path is a later
+  addition). `setSource(null)` returns to the own
+  buffers, whose contents were kept. While a source is set, `spawn`,
+  `kill`, `killList`, `write` and `clear` throw INVALID_ARGUMENT and
+  allocation `'gpu'` is refused. `setSourceCount(n)` sets the draw (and
+  step) range; it travels in the existing `SWARM_DRAW.drawCount` /
+  `SWARM_STEP.activeCount`, so it costs nothing extra per frame. Picking
+  works as for own buffers.
+- **Ordering:** external work must be submitted on the same queue before
+  `renderer.render()`; cozygpu submits inside render(), so queue order
+  makes it visible. WebGL2 callers must call `interop.invalidateState()`
+  after their own GL calls and before the next render().
+- **Device loss:** the core drops every registration (`lossEpoch` bumps,
+  `ExternalInstanceBuffer.valid` turns false) and swarms with an external
+  source draw nothing. After the `deviceRestored` event the caller reads
+  `interop.device` again, recreates its buffers, registers them and calls
+  `setSource` again.
+- cozygpu never writes, resizes or destroys an external buffer. Releasing
+  a registered buffer that a swarm still uses makes that swarm draw
+  nothing until a new source is set.
+- Readbacks (`readHot`, `readCold`, `aliveCount`) of an external source
+  need COPY_SRC (WebGPU); otherwise they reject with UNSUPPORTED. A
+  released or lost source rejects with UNSUPPORTED ('source unreadable'); an
+  `aliveCount` asked while the source is gone waits until the swarm has
+  buffers again. The range is clamped to min(capacity, hot records, cold
+  records).
+- **Switch ordering (as built):** a source switch never lands after a
+  dispatch in the same frame. Spawns and writes queued before `setSource()`
+  go to the own buffers and the switch takes effect the next frame; a step
+  queued in that frame is dropped (the deferred-write rule). `activeCount`
+  keeps meaning the own buffers' active range.
+- WebGL2 `importBuffer` accepts a buffer only if `gl.isBuffer()` does (it
+  must have been bound once). An imported buffer's usage is STORAGE
+  (WebGPU) or VERTEX (WebGL2), plus COPY_SRC when the native GPUBuffer has
+  it.
+
+### 19.5 Readback pacing tuning
+
+The M2 pacing (§7.1) fixed uncapped pick latency but skips 11–24% of frames
+in the A3 churn bench, and on WebGL2 it seems to trigger when the queue is
+not really behind. With the readback ring (§19.6) a pick no longer waits on
+a promise chain, so pacing can be narrowed:
+
+- Pace only while a pick or readback is **in flight** (not for a fixed
+  1000 ms window after the last request).
+- Re-measure `PACE_FAST_MS` / `PACE_MAX_LAG_MS` (WebGPU) and `PACE_FRAMES`
+  (WebGL2) against A2u (uncapped pick latency) and A3 (churn skipped
+  frames). Target: A3 skips < 2% of frames, A2u not worse than M2
+  (26.7 ms WebGPU, 10.8 ms WebGL2).
+- A vsync-paced loop must still never hold a frame.
+
+**As built (§7.1):** pacing only while a readback is in flight,
+`PACE_FRAMES` = 3 on both backends, no queue fences. Measured (Apple M4,
+Chrome headless, `benchmarks/results/m25-a3s2.md`, `m25-pick.md`): A3 skips
+**0 frames inside the measured window** on every backend (the harness now
+reports `measuredSkippedFrames`); every whole-run skip falls in the finish
+phase, where the final `aliveCount()` waits behind the queue built up by
+uncapped submits. A2u (uncapped pick latency, avg / p50): WebGPU 4.2 /
+3.9 ms, WebGL2 p50 7.7 ms (avg 8.0 ms in the clean run; see §7.1 for the
+first-pick outlier), worker 3.7 ms, all better than M2 (26.7 / 10.8 ms).
+
+### 19.6 Picking staging ring
+
+M2 picking allocates a staging buffer, a copy and promises per pick (about
+30 KB per frame while picking, M2 report §6). M2.5 replaces
+`readTexture` in picking with a persistent ring:
+
+- RHI: `backend.createReadbackRing({ slots, slotBytes })` →
+  `RhiReadbackRing` with `acquire()`, `copyTexture(list, slot, texture, x,
+y, w, h)`, `poll(slot)` → `ReadbackState` (FREE, PENDING, READY,
+  FAILED), `data(slot)` (a reused `Uint32Array`), `release(slot)`.
+  WebGPU: MAP_READ|COPY_DST buffers; the list's `submit()` starts
+  `mapAsync` for the slots copied in that list, and `poll` checks
+  `mapState === 'mapped'`, copies the bytes into the persistent view and
+  unmaps. WebGL2: PIXEL_PACK buffers plus `fenceSync`; `poll` checks the
+  fence without blocking, then `getBufferSubData` into the view.
+- Core picking: `render()` renders the pick pass per request and records
+  `copyTexture` into an acquired slot (4 slots, `PICK_RESULT_BYTES` each;
+  requests wait when every slot is busy). `CorePicking.poll()` runs at the
+  start of every packet (§2, step 0), posts `pick` for READY slots (a
+  reused message object in local mode) and fails FAILED slots with
+  DEVICE_LOST.
+- Result: no library allocation per pick beyond the promise that
+  `renderer.pick()` returns (and what the native API itself returns:
+  WebGPU's `mapAsync` promise, WebGL2's sync object).
+- **Answered when the readback lands (as built):** besides the poll at the
+  start of every packet, RenderCore sets the backend's `onReadbackLanded`
+  once picking exists; WebGPU calls it from the ring slot's existing
+  `mapAsync` handler, WebGL2 from a 1 ms fence watch that runs only while a
+  ring slot is in flight (one pre-bound callback, nothing allocated per
+  tick). The pick is answered then instead of in a later render(). A2
+  (vsync) latency: WebGPU 4.0 ms, WebGL2 4.8 ms, worker 3.5 ms (M2: 6.4 /
+  8.1 / 6.2 ms; answering only in the next render() measured about 18 ms).
+- The ring (and `readTexture`, and WebGL2 `readBuffer`) is a lazy chunk:
+  `Backend.loadReadbackRing()` must resolve before `createReadbackRing`; the
+  picking proxy awaits it with `pickingCoreImpl`. The front pick client is
+  lazy too (§18.1): the first `pick()` is encoded in a render() after its
+  chunk loaded.
+- `CorePicking.afterSubmit` is unused since M2.5 (the ring maps inside the
+  command list's submit).
+- `Backend.readTexture` stays for other callers and tests.
+
+### 19.7 Swarm CPU measurement check
+
+M2 report §4: on the WebGPU Swarm bench, "CPU" rose from 0.19 to 4.84 ms at
+1M while frame time did not change and front CPU is 0; the likely cause is
+the wait for the next swap texture (`getCurrentTexture`) falling inside the
+timed callback. Verify it: time `render()` with the swap-texture
+acquisition excluded (or moved before the timer), confirm front and core
+CPU at 1M are back near 0.2–0.3 ms, and report the numbers.
+
+**Answered (M2.5):** it was the swap-texture wait, not work. WebGPU S2,
+vsync off, Apple M4, Chrome headless:
+
+| objects | harness CPU | inside `getCurrentTexture` | real core + front CPU |
+| ------: | ----------: | -------------------------: | --------------------: |
+|    100k |    0.025 ms |                   0.016 ms |              ≈0.01 ms |
+|      1M |     6.59 ms |       6.55 ms (max 243 ms) |              ≈0.05 ms |
+|      2M |    16.08 ms |                   16.06 ms |              ≈0.02 ms |
+
+At 1M, `queue.submit` is 0.043 ms per frame and `writeBuffer` 0.002 ms;
+front CPU is 0.005 ms. The harness now wraps
+`GPUCanvasContext.prototype.getCurrentTexture` for every WebGPU library,
+reports that time as **swap wait** and subtracts it from CPU
+(`benchmarks/src/harness.ts`; S2 1M after the change: CPU 0.07 ms, swap
+wait 6.0 ms).
+
+### 19.8 Recipe: using cozygpu with an ECS
+
+`docs/recipes/ecs.md` and `examples/ecs-columns/` (built automatically:
+any `examples/<name>/main.ts`, linked from `examples/index.html`). The
+example uses **plain typed arrays** as its "ECS" (no dependency); the prose
+names cozyECS as one option and shows where its columns plug in. It must
+show:
+
+- Entities as rows of `Float32Array` / `Uint32Array` columns; one container
+  whose children are interchangeable sprite slots; `bindColumns` once,
+  `commit(count)` per frame.
+- Removal by swap-remove: the ECS moves the last row into the hole, the
+  example removes the last child, and the next commit rewrites the moved
+  row. Growth: new arrays, `binding.rebind(...)`, add children.
+- `userId` = entity id, so `await renderer.pick(x, y)` answers with
+  `hit.userId` directly (and a Swarm instance's `cold.user`).
+- An events sink that is a tiny object with `emit(name, payload)`
+  forwarding to the app's own bus; `GPU.Events` for typing.
+- Zero allocations per frame in the loop (a note on how to check it).
+- `?backend=` and `?worker=1` like every example (`bindColumns` and events
+  work in worker mode; interop does not).
+
+### 19.9 Frozen M2.5 contract additions
+
+| file                         | additions                                                                                                                                                                                                           |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/scene/types.ts`         | `NodeOptions.userId`, `SceneNode.userId`; `ContainerNode.bindColumns`; `BulkField.FRAME`, `USER_ID`; `ColumnSource`, `SpriteColumns`, `BindColumnsOptions`, `ColumnBinding`                                         |
+| `src/types/events.ts` (new)  | `EventSink`, `Events`, `EventName`                                                                                                                                                                                  |
+| `src/types/interop.ts` (new) | `ExternalLayout`, `ExternalInstanceBufferDesc`, `ExternalInstanceBuffer`, `RendererInterop`                                                                                                                         |
+| `src/types/renderer.ts`      | `RendererOptions.events`, `PickHit.userId`, `Renderer.interop()`                                                                                                                                                    |
+| `src/types/core.ts`          | `RendererHost._emit`, `CoreContext.getExternalBuffer?`, `CorePicking.poll?`, `RenderCore.interop?`, `CoreInterop`; pick texel doc on `CoreSystem.drawPick`                                                          |
+| `src/types/transport.ts`     | `pick.userId?`, `Transport.interop?` (as built: `interop?(create)`, §19.4)                                                                                                                                          |
+| `src/types/layouts.ts`       | `PICK_TARGET_FORMAT` = `'rgba32uint'`, `PICK_RESULT_BYTES` = 16, `PICK_TEXEL_OBJECT/INSTANCE/USER`; `SC_USER` doc                                                                                                   |
+| `src/types/ids.ts`           | `ids.external`                                                                                                                                                                                                      |
+| `src/swarm/types.ts`         | `SpawnOptions.user` doc (instance user id), `SwarmNode.setSource`, `setSourceCount`, `SwarmExternalSource`                                                                                                          |
+| `src/backend/types.ts`       | format `rgba32uint`; `ReadbackRingDesc`, `ReadbackState`, `RhiReadbackRing`, `Backend.createReadbackRing` (+ `loadReadbackRing?`, as built); `ImportBufferDesc`, `Backend.native`, `importBuffer`, `resetState`     |
+| `src/commands/opcodes.ts`    | `PROTOCOL_VERSION` 3; `SWARM_SET_SOURCE` (0x030D); `SwarmSourceFlag`                                                                                                                                                |
+| `src/index.ts`               | type exports `Events`, `EventName`, `EventSink`, `RendererInterop`, `ExternalInstanceBuffer(Desc)`, `ExternalLayout`, `SpriteColumns`, `ColumnSource`, `BindColumnsOptions`, `ColumnBinding`, `SwarmExternalSource` |
+
+**All implemented by the end of M2.5** (see §19.1–§19.7 "as built"). As
+frozen, the stubs that threw `CozyGPUError('NOT_IMPLEMENTED')` (or rejected
+with it) so `tsc` and `jest` passed were: `NodeBase.userId` (get and set),
+`Container.bindColumns`, `Swarm.setSource`, `Swarm.setSourceCount`,
+`RendererImpl.interop`, `createReadbackRing` / `native` / `importBuffer` /
+`resetState` in both backends. `RendererImpl._emit` is a no-op stub (so
+callers may use it already), `PickHit.userId` is 0 in `picking.ts` until
+renderer-hooks resolves it, and the recording `FakeBackend` implements
+`native` / `importBuffer` / `resetState` (its ring throws).
+
+Conformance edits made with the freeze so the tree keeps working: the
+`rgba32uint` format in both backends (`convert.ts`, `commands.ts`,
+`formats.ts`, `glconst.ts`, `utils.ts`) and `vec4u` pick outputs in
+`sprite.wgsl` and `render.wgsl` (the GLSL pick shaders already wrote
+`uvec4`). The Swarm pick texel's user id is still 0 until swarm-hooks
+fills it.
+
+## 20. Later milestones (design notes only)
+
+The following are **not** part of M2 or M2.5.
 
 - **Masking (M3).** Stencil masks, plus scissor for axis-aligned rects.
 - **Filters and effects (M3).** Render-to-texture passes (blur, color
@@ -1614,6 +2148,9 @@ The following are **not** part of M2.
   1D textures sampled by age/life.
 - **Per-renderer dirty tracking.** Dirty bits are process-wide, so one
   node tree drawn by two renderers can miss updates.
+- **External sprite instances.** A consumer for the reserved
+  `'sprite-instance'` external layout (an instanced sprite drawable fed by
+  outside GPU code, §19.4).
 - **Bounds readback, camera API** (`SET_VIEW` from a public camera),
   custom blend factors, render-to-texture API, WebGPU compatibility-mode
   swarm fallback via transform-style ping-pong textures.

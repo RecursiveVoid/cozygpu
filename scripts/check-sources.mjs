@@ -1,5 +1,5 @@
 /**
- * Owner: integrator. Guards against raw control characters in sources.
+ * Guards against raw control characters in sources.
  *
  *   node scripts/check-sources.mjs      → exit 1 and list offenders
  *

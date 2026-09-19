@@ -1,4 +1,4 @@
-/** Sprite pipeline descriptors — owner: "sprites". Mirrors layouts.ts §4.1. */
+/** Sprite pipeline descriptors. Mirrors layouts.ts §4.1. */
 import type { BlendMode, VertexBufferLayout } from '../backend/types';
 import {
   SI_A,

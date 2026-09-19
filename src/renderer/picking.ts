@@ -1,6 +1,7 @@
 /**
- * Owner: "sprites". Front half of GPU picking (ARCHITECTURE §16.3).
- * Renderer.ts (frozen) creates one client per renderer and calls:
+ * Owner: "renderer-hooks" (M2.5; was "sprites"). Front half of GPU picking
+ * (ARCHITECTURE §16.3, §19.3). Renderer.ts creates one client per renderer
+ * and calls:
  *   - `pick(x, y)` from renderer.pick()
  *   - `encode(frame)` inside render(), after control commands
  *   - `handleMessage(msg)` for CoreMessage 'pick'
@@ -38,7 +39,7 @@ class PickClientImpl implements PickClient {
   private readonly waiters = new Map<number, Waiter | null>();
   /** Requests not yet encoded (FIFO). */
   private readonly queued: number[] = [];
-  private readonly stack: SceneNode[] = [];
+  private readonly stack: (SceneNode | null)[] = [];
 
   constructor(private readonly host: PickClientHost) {}
 
@@ -95,6 +96,9 @@ class PickClientImpl implements PickClient {
         ? {
             node,
             instance: node.kind === 'sprite' ? -1 : message.instance,
+            // A Swarm instance's cold.user comes in the texel; a sprite's
+            // id is read from the node now (ARCHITECTURE §19.3).
+            userId: node.kind === 'swarm' ? (message.userId ?? 0) : node.userId,
             x: waiter.x,
             y: waiter.y,
           }
@@ -122,23 +126,34 @@ class PickClientImpl implements PickClient {
     if (destroyed) this.waiters.clear();
   }
 
-  /** Live node with `id` in the stage (visible or not). */
+  /**
+   * Live node with `id` in the stage (visible or not). Walks with an integer
+   * stack pointer: truncating the array (`length = 0`) would release its
+   * backing store and make every pick reallocate it in proportion to the
+   * scene size. Popped slots are cleared so the stack never keeps a removed
+   * node alive; writing null keeps the capacity.
+   */
   private findNode(id: number): SceneNode | null {
     const stack = this.stack;
-    stack.length = 0;
-    stack.push(this.host.stage);
-    while (stack.length > 0) {
-      const node = stack.pop() as SceneNode;
+    let sp = 0;
+    stack[sp++] = this.host.stage;
+    let found: SceneNode | null = null;
+    while (sp > 0) {
+      const node = stack[--sp] as SceneNode;
+      stack[sp] = null;
       if (node.id === id) {
-        stack.length = 0;
-        return node.destroyed ? null : node;
+        found = node.destroyed ? null : node;
+        break;
       }
       const children = (node as ContainerNode).children;
       if (children) {
-        for (let i = children.length - 1; i >= 0; i--) stack.push(children[i]);
+        for (let i = children.length - 1; i >= 0; i--) {
+          stack[sp++] = children[i];
+        }
       }
     }
-    return null;
+    while (sp > 0) stack[--sp] = null;
+    return found;
   }
 }
 

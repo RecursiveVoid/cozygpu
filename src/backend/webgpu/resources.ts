@@ -32,6 +32,11 @@ export class WebGPUBuffer implements RhiBuffer {
   }
 }
 
+/** M2.5 `importBuffer`: an outside GPUBuffer; cozygpu never destroys it. */
+export class WebGPUImportedBuffer extends WebGPUBuffer {
+  destroy(): void {}
+}
+
 export class WebGPUTexture implements RhiTexture {
   /** Default full view, created once (bind groups and attachments reuse it). */
   readonly view: GPUTextureView;

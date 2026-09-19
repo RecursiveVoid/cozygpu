@@ -1,51 +1,8 @@
 /**
- * Owner: "backend". Readable WGSL / validation diagnostics.
- * Pure string formatting lives here so it can be unit-tested in Node.
+ * Owner: "backend". Validation diagnostics: a deduplicating console logger.
+ * WGSL compilation-message formatting is in ./compileMessages (a lazy
+ * chunk: it only runs when a shader reports messages).
  */
-
-/** Structural subset of GPUCompilationMessage (keeps this Node-testable). */
-export interface CompilationMessageLike {
-  readonly message: string;
-  readonly type: 'error' | 'warning' | 'info' | string;
-  readonly lineNum: number;
-  readonly linePos: number;
-  readonly length?: number;
-}
-
-/**
- * Formats compilation messages with the offending source line and a caret:
- *
- *   sprite.wgsl:12:7 error: unresolved identifier 'colr'
- *      12 |   out.color = colr * tex;
- *         |               ^^^^
- */
-export function formatCompilationMessages(
-  label: string | undefined,
-  source: string | undefined,
-  messages: readonly CompilationMessageLike[],
-  minType: 'error' | 'warning' = 'error',
-): string {
-  const name = label ?? 'shader';
-  const lines = source ? source.split('\n') : [];
-  const out: string[] = [];
-  for (let i = 0; i < messages.length; i++) {
-    const m = messages[i];
-    if (minType === 'error' && m.type !== 'error') continue;
-    if (m.type === 'info') continue;
-    const loc = m.lineNum > 0 ? `:${m.lineNum}:${m.linePos}` : '';
-    out.push(`${name}${loc} ${m.type}: ${m.message}`);
-    if (m.lineNum > 0 && m.lineNum <= lines.length) {
-      const gutter = String(m.lineNum).padStart(5);
-      const text = lines[m.lineNum - 1].replace(/\t/g, ' ');
-      out.push(`${gutter} | ${text}`);
-      const caretLen = Math.max(1, Math.min(m.length ?? 1, 120));
-      out.push(
-        `${' '.repeat(gutter.length)} | ${' '.repeat(Math.max(0, m.linePos - 1))}${'^'.repeat(caretLen)}`,
-      );
-    }
-  }
-  return out.join('\n');
-}
 
 /** Logs each distinct message once, capped, so a per-frame error cannot flood the console. */
 export class DedupLogger {

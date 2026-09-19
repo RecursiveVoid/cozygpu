@@ -139,6 +139,11 @@ interface GlSwarm {
   arenaEntries: number;
   pickBuffer: RhiBuffer | null;
   pickId: number;
+  /**
+   * M2.5: an external source was set. WebGL2 has none (the front refuses
+   * `setSource` there): the swarm draws nothing until it is cleared.
+   */
+  external: boolean;
   resourceVersion: number;
   active: GlProgram | null;
   pending: GlProgram | null;
@@ -587,6 +592,7 @@ export function createGlSwarmCore(): SwarmCoreSystem {
       arenaEntries: 4,
       pickBuffer: null,
       pickId: 0,
+      external: false,
       resourceVersion: 0,
       active: null,
       pending: null,
@@ -943,6 +949,10 @@ export function createGlSwarmCore(): SwarmCoreSystem {
         case Op.SWARM_SET_PICK:
           setPick(s, reader.u32());
           break;
+        case Op.SWARM_SET_SOURCE:
+          // The front refuses setSource on WebGL2 (UNSUPPORTED).
+          s.external = reader.u32() !== 0;
+          break;
         default:
           break;
       }
@@ -962,6 +972,7 @@ export function createGlSwarmCore(): SwarmCoreSystem {
       if (!s) return;
       const prog = s.active;
       if (!prog || !prog.ready || !prog.render || s.drawCount === 0) return;
+      if (s.external) return;
       drawU32[7] = prog.renderFlags;
       backend.writeBuffer(s.draw, 0, drawU8, 0, SWARM_DRAW_BYTES);
       ensureGroups(s, prog);
@@ -981,7 +992,7 @@ export function createGlSwarmCore(): SwarmCoreSystem {
     ): void {
       if (!backend || reader.opcode !== Op.SWARM_DRAW) return;
       const s = readDraw(reader);
-      if (!s || s.pickId === 0 || s.drawCount === 0) return;
+      if (!s || s.pickId === 0 || s.drawCount === 0 || s.external) return;
       const prog = s.active;
       if (!prog || !prog.ready) return;
       if (!prog.pick) {

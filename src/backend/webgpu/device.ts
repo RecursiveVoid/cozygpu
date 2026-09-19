@@ -33,7 +33,7 @@ export async function acquireDevice(
   if (!gpu) {
     throw new CozyGPUError(
       'UNSUPPORTED',
-      'WebGPU is not available (navigator.gpu is undefined). Use a browser with WebGPU enabled, or a secure context (https / localhost).',
+      'WebGPU is not available (navigator.gpu is undefined; needs a secure context)',
     );
   }
   const adapter = await gpu.requestAdapter({
