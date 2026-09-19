@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="data:," />
+    <title>cozygpu · worker mode</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #0d0d14;
+        color: #c8d4f0;
+        font: 13px monospace;
+      }
+      canvas {
+        display: block;
+        width: 100vw;
+        height: 100vh;
+      }
+      #bar {
+        position: fixed;
+        top: 8px;
+        left: 8px;
+        right: 8px;
+        display: flex;
+        gap: 16px;
+      }
+      #hud {
+        pointer-events: none;
+      }
+      #toggle,
+      #ring {
+        color: #8af;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="view"></canvas>
+    <div id="bar">
+      <a id="toggle" href="?worker=1">switch to worker</a>
+      <a id="ring" href="?worker=1&amp;ring=0">ring off</a>
+      <span id="hud">starting…</span>
+    </div>
+    <script type="module" src="/build/examples/worker/main.js"></script>
+  </body>
+</html>

@@ -13,7 +13,7 @@ jspm_packages/
 # Output directories (commonly used by Rollup)
 dist/
 build/
-public/
+
 
 # Temporary build files
 *.tmp
@@ -50,3 +50,9 @@ pnpm-lock.yaml
 
 # Coverage files
 coverage/
+
+# Example screenshots from headless checks
+examples/_screenshots/
+
+# scripts/size.mjs scratch outdir (esbuild write:false, but the path is named)
+.size-out/

@@ -1,0 +1,60 @@
+{
+  "frames": {
+    "spin-0": {
+      "frame": {
+        "x": 0,
+        "y": 0,
+        "w": 64,
+        "h": 64
+      },
+      "rotated": false,
+      "trimmed": false
+    },
+    "spin-1": {
+      "frame": {
+        "x": 64,
+        "y": 0,
+        "w": 64,
+        "h": 64
+      },
+      "rotated": false,
+      "trimmed": false
+    },
+    "spin-2": {
+      "frame": {
+        "x": 128,
+        "y": 0,
+        "w": 64,
+        "h": 64
+      },
+      "rotated": false,
+      "trimmed": false
+    },
+    "spin-3": {
+      "frame": {
+        "x": 192,
+        "y": 0,
+        "w": 64,
+        "h": 64
+      },
+      "rotated": false,
+      "trimmed": false
+    }
+  },
+  "animations": {
+    "spin": [
+      "spin-0",
+      "spin-1",
+      "spin-2",
+      "spin-3"
+    ]
+  },
+  "meta": {
+    "image": "spinner.png",
+    "size": {
+      "w": 256,
+      "h": 64
+    },
+    "scale": "1"
+  }
+}

@@ -1,21 +1,23 @@
 {
   "compilerOptions": {
-    "target": "ESNext",
+    "target": "ES2022",
     "module": "ESNext",
-    "moduleResolution": "node",
+    "moduleResolution": "bundler",
     "strict": true,
-    "declaration": true,
-    "outDir": "./dist",
+    "noEmit": true,
     "sourceMap": true,
-    "lib": ["ESNext", "dom"],
-    "types": ["@webgpu/types"],
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "types": ["@webgpu/types", "jest"],
     "importHelpers": true,
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
     "resolveJsonModule": true,
-    "declarationDir": "./dist",
-    "skipLibCheck": true
+    "isolatedModules": true,
+    "skipLibCheck": true,
+    "paths": {
+      "cozygpu": ["./src/index.ts"]
+    }
   },
-  "include": ["src/**/*"],
-  "exclude": ["node_modules"]
+  "include": ["src/**/*", "examples/**/*", "benchmarks/**/*"],
+  "exclude": ["node_modules", "dist", "build"]
 }

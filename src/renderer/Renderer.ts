@@ -1,210 +1,668 @@
-import { mat4 } from 'gl-matrix';
+/**
+ * Owner: "backend". Public Renderer (front side, always on the main thread).
+ *
+ * render() follows ARCHITECTURE §2 "Frame lifecycle": skip when the transport
+ * is busy, otherwise encode FRAME_BEGIN, queued control commands, the scene
+ * (ScenePacker) and FRAME_END into one packet and submit it. Steady state
+ * allocates nothing: the FrontFrame object, stats and encoder are reused.
+ */
+import { createCommandEncoder } from '../commands';
+import {
+  COMMAND_HEADER_BYTES,
+  CH_FLAGS,
+  CH_PAYLOAD_BYTES,
+  CommandFlag,
+  Op,
+  PACKET_HEADER_BYTES,
+} from '../commands/opcodes';
+import type { CommandEncoder } from '../commands/types';
+import { createAssetsProxy } from '../assets/proxy';
+import type { AssetsApi } from '../assets/types';
+import type { Capabilities } from '../backend/types';
+import { Container } from '../scene/Container';
+import type { ContainerNode } from '../scene/types';
+import { dropTextureUploads } from '../scene/Texture';
+import { createScenePacker } from '../sprites/front';
+import { dropSwarmDestroys, flushSwarmDestroys } from '../swarm/destroyQueue';
+import type {
+  FrontFrame,
+  FrontFrameHook,
+  PickClient,
+  RendererHost,
+  ScenePacker,
+} from '../types/core';
+import { CozyGPUError } from '../types/errors';
+import { ids } from '../types/ids';
+import type {
+  PickHit,
+  Renderer,
+  RendererInfo,
+  RendererOptions,
+  RendererStats,
+} from '../types/renderer';
+import type { CoreMessage, Transport } from '../types/transport';
+import { isCoreSystemReady } from './lazySystems';
+import { createPickClient } from './picking';
 
-import shader from '../shaders/shaders.wgsl';
+let nextRendererId = 1;
 
-import { IRendererOptions } from '../types/IRendererOptions';
-import { IRenderable } from '../types/IRenderable';
-import { Canvas } from '../types/types';
-import { TriangleMesh } from '../meshes/TriangleMesh';
+/** Resolved, validated options the Renderer needs after transport creation. */
+export interface RendererConfig {
+  canvas: HTMLCanvasElement | OffscreenCanvas;
+  worker: boolean;
+  cssWidth: number;
+  cssHeight: number;
+  /** 'device' tracks devicePixelRatio. */
+  resolution: number | 'device';
+  autoResize: boolean;
+  background: number;
+  backgroundAlpha: number;
+  onDeviceLost?: RendererOptions['onDeviceLost'];
+  onDeviceRestored?: RendererOptions['onDeviceRestored'];
+  /** M2. Options for the lazily created `renderer.assets`. */
+  assets?: RendererOptions['assets'];
+}
 
-class Renderer {
-  private _canvas: Canvas;
-  private _device: GPUDevice;
-  private _context: GPUCanvasContext;
-  private _format: GPUTextureFormat;
+interface PendingReadback {
+  requestId: number;
+  srcKind: number;
+  srcId: number;
+  first: number;
+  count: number;
+}
 
-  // Legacy triangle demo
-  private _pipeline: GPURenderPipeline;
-  private _uniformBuffer: GPUBuffer;
-  private _bindGroup!: GPUBindGroup;
-  private _triangleMesh: TriangleMesh;
-  private _rotation: number = 0;
+interface ReadbackWaiter {
+  resolve(data: ArrayBuffer): void;
+  reject(error: unknown): void;
+}
 
-  // Depth buffer
-  private _depthTexture!: GPUTexture;
+class Stats implements RendererStats {
+  frameId = 0;
+  drawCalls = 0;
+  packetBytes = 0;
+  cpuMs = 0;
+  skippedFrames = 0;
+}
 
-  // Pluggable renderables (SpriteBatch etc.)
-  private _renderables: IRenderable[] = [];
+/** The reused per-frame context handed to the ScenePacker and CustomDrawables. */
+class Frame implements FrontFrame {
+  encoder!: CommandEncoder;
+  frameId = 0;
+  time = 0;
+  dt = 0;
+  cssWidth = 0;
+  cssHeight = 0;
+  resolution = 1;
+  generation = 0;
 
-  constructor(options: IRendererOptions) {
-    const { initDeviceType } = options;
-    this._canvas = initDeviceType.canvas;
-    this._device = initDeviceType.device;
-    this._context = initDeviceType.context;
-    this._format = navigator.gpu.getPreferredCanvasFormat();
+  constructor(
+    readonly rendererId: number,
+    readonly sharedMemory: boolean,
+    readonly useSharedArrayBuffer: boolean,
+    private readonly owner: RendererImpl,
+  ) {}
 
-    this._triangleMesh = new TriangleMesh(this._device);
+  get caps(): Capabilities {
+    return this.owner._caps;
+  }
 
-    this._uniformBuffer = this._device.createBuffer({
-      size: 64 * 3, // model + view + projection
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
+  isSystemReady(range: number): boolean {
+    return this.owner._isSystemReady(range);
+  }
 
-    this._createDepthTexture();
-    this._pipeline = this._preparePipeline();
+  registerShared(buffer: ArrayBuffer | SharedArrayBuffer): number {
+    return this.owner._registerShared(buffer);
+  }
+
+  readback(
+    srcKind: number,
+    srcId: number,
+    first: number,
+    count: number,
+  ): Promise<ArrayBuffer> {
+    return this.owner._readback(srcKind, srcId, first, count);
+  }
+}
+
+export class RendererImpl implements Renderer, RendererHost {
+  readonly stage: ContainerNode;
+  readonly canvas: HTMLCanvasElement | OffscreenCanvas;
+  readonly info: RendererInfo;
+  readonly stats = new Stats();
+
+  private readonly transport: Transport;
+  private readonly encoder: CommandEncoder;
+  private readonly packer: ScenePacker;
+  private readonly frame: Frame;
+  /** M2: per-frame hooks (assets); iterated by index, mutated only on add/remove. */
+  private readonly frameHooks: FrontFrameHook[] = [];
+  private readonly pickClient: PickClient;
+  private assetsApi: AssetsApi | null = null;
+
+  private cssWidth: number;
+  private cssHeight: number;
+  private currentResolution: number;
+  private readonly trackDevicePixelRatio: boolean;
+  private backgroundColor: number;
+  private backgroundOpacity: number;
+
+  private resizePending = true;
+  private clearColorPending = true;
+  private viewPending = true;
+  private encoding = false;
+  private isDestroyed = false;
+  private coreDead = false;
+
+  private readonly startTime: number;
+  private lastRenderTime: number;
+
+  private readonly sharedIds = new WeakMap<object, number>();
+  private readonly sharedGenerations = new WeakMap<object, number>();
+  private readonly pendingReadbacks: PendingReadback[] = [];
+  /**
+   * requestId → waiter. `null` marks a request already rejected by a device
+   * loss whose id stays allocated until the core answers it (so a late answer
+   * can never settle a newer request that reused the id).
+   */
+  private readonly readbackWaiters = new Map<number, ReadbackWaiter | null>();
+
+  private resizeObserver: ResizeObserver | null = null;
+  private observesDevicePixels = false;
+  private dprQuery: MediaQueryList | null = null;
+  private readonly onDprChange = (): void => this.watchDevicePixelRatio();
+
+  constructor(
+    transport: Transport,
+    private readonly config: RendererConfig,
+  ) {
+    this.transport = transport;
+    this.canvas = config.canvas;
+    this.cssWidth = config.cssWidth;
+    this.cssHeight = config.cssHeight;
+    this.trackDevicePixelRatio = config.resolution === 'device';
+    this.currentResolution =
+      config.resolution === 'device' ? devicePixelRatio() : config.resolution;
+    this.backgroundColor = config.background;
+    this.backgroundOpacity = config.backgroundAlpha;
+
+    this.info = {
+      backend: transport.caps.backend,
+      fallbackReason: transport.fallbackReason,
+      worker: transport.kind === 'worker',
+      sharedMemory: transport.sharedMemory,
+      get capabilities() {
+        return transport.caps;
+      },
+    };
+
+    this.encoder = createCommandEncoder();
+    this.frame = new Frame(
+      nextRendererId++,
+      transport.sharedMemory,
+      transport.useSharedArrayBuffer,
+      this,
+    );
+    this.frame.encoder = this.encoder;
+    this.packer = createScenePacker();
+    this.stage = new Container({ label: 'stage' });
+    this.pickClient = createPickClient(this);
+
+    this.startTime = now();
+    this.lastRenderTime = this.startTime;
+
+    transport.setListener(message => this.onCoreMessage(message));
+
+    if (config.autoResize) this.observeCanvasSize();
+    if (this.trackDevicePixelRatio) this.watchDevicePixelRatio();
   }
 
   // ─── Public API ────────────────────────────────────────────────────────────
 
-  public addRenderable(renderable: IRenderable): void {
-    this._renderables.push(renderable);
+  get width(): number {
+    return this.cssWidth;
   }
 
-  public render(): void {
-    // Advance rotation for the demo triangle
-    this._rotation += 0.01;
-    if (this._rotation > 2.0 * Math.PI) {
-      this._rotation -= 2.0 * Math.PI;
+  get height(): number {
+    return this.cssHeight;
+  }
+
+  get resolution(): number {
+    return this.currentResolution;
+  }
+
+  get background(): number {
+    return this.backgroundColor;
+  }
+
+  set background(value: number) {
+    if (value === this.backgroundColor) return;
+    this.backgroundColor = value;
+    this.clearColorPending = true;
+  }
+
+  get backgroundAlpha(): number {
+    return this.backgroundOpacity;
+  }
+
+  set backgroundAlpha(value: number) {
+    const clamped = value < 0 ? 0 : value > 1 ? 1 : value;
+    if (clamped === this.backgroundOpacity) return;
+    this.backgroundOpacity = clamped;
+    this.clearColorPending = true;
+  }
+
+  get destroyed(): boolean {
+    return this.isDestroyed;
+  }
+
+  /** M2. Lazily created facade; the implementation chunk loads on first use. */
+  get assets(): AssetsApi {
+    if (!this.assetsApi) {
+      this.assetsApi = createAssetsProxy(this, this.config.assets);
+    }
+    return this.assetsApi;
+  }
+
+  render(): void {
+    if (this.isDestroyed) return;
+    const start = now();
+    const transport = this.transport;
+    if (transport.busy) {
+      // dt keeps accumulating: lastRenderTime is not advanced.
+      this.stats.skippedFrames++;
+      return;
     }
 
-    const projection = mat4.create();
-    mat4.perspective(projection, Math.PI / 4, 800 / 600, 0.1, 10);
+    let dt = (start - this.lastRenderTime) / 1000;
+    if (dt < 0) dt = 0;
+    else if (dt > 0.1) dt = 0.1;
+    this.lastRenderTime = start;
 
-    const view = mat4.create();
-    mat4.lookAt(view, [-2, 0, 2], [0, 0, 0], [0, 0, 1]);
+    const encoder = this.encoder;
+    const frame = this.frame;
+    encoder.reset(transport.takeRecycledBuffer());
+    frame.frameId = ++this.stats.frameId;
+    frame.time = (start - this.startTime) / 1000;
+    frame.dt = dt;
+    frame.cssWidth = this.cssWidth;
+    frame.cssHeight = this.cssHeight;
+    frame.resolution = this.currentResolution;
 
-    const model = mat4.create();
-    mat4.rotate(model, model, this._rotation, [0, 0, 1]);
-
-    this._device.queue.writeBuffer(
-      this._uniformBuffer,
-      0,
-      model as unknown as ArrayBuffer,
-    );
-    this._device.queue.writeBuffer(
-      this._uniformBuffer,
-      64,
-      view as unknown as ArrayBuffer,
-    );
-    this._device.queue.writeBuffer(
-      this._uniformBuffer,
-      128,
-      projection as unknown as ArrayBuffer,
-    );
-
-    const { passEncoder, commandEncoder } = this._beginRenderPass();
-
-    // Draw demo triangle
-    passEncoder.setPipeline(this._pipeline);
-    passEncoder.setBindGroup(0, this._bindGroup);
-    passEncoder.setVertexBuffer(0, this._triangleMesh.buffer);
-    passEncoder.draw(3, 1, 0, 0);
-
-    // Draw all registered renderables (SpriteBatch etc.)
-    for (const renderable of this._renderables) {
-      renderable.render(passEncoder);
+    this.encoding = true;
+    try {
+      encoder.begin(Op.FRAME_BEGIN, 8);
+      encoder.f32(frame.time);
+      encoder.f32(dt);
+      encoder.end();
+      this.encodeControl();
+      const hooks = this.frameHooks;
+      for (let i = 0; i < hooks.length; i++) hooks[i].encodeFrame(frame);
+      this.pickClient.encode(frame);
+      flushSwarmDestroys(frame);
+      this.packer.pack(this.stage, frame);
+      encoder.begin(Op.FRAME_END, 0);
+      encoder.end();
+    } finally {
+      this.encoding = false;
     }
 
-    passEncoder.end();
-    this._device.queue.submit([commandEncoder.finish()]);
+    const packet = encoder.finish(frame.frameId);
+    this.stats.packetBytes = packet.byteLength;
+    this.stats.drawCalls = countDrawCommands(encoder, packet.byteLength);
+    this.stats.cpuMs = now() - start;
+    transport.submit(packet, encoder.transferList);
   }
 
-  public get canvas(): Canvas {
-    return this._canvas;
+  resize(width: number, height: number, resolution?: number): void {
+    if (this.isDestroyed) return;
+    const w = Math.max(0, width);
+    const h = Math.max(0, height);
+    const res =
+      resolution !== undefined && resolution > 0
+        ? resolution
+        : this.currentResolution;
+    if (
+      w === this.cssWidth &&
+      h === this.cssHeight &&
+      res === this.currentResolution
+    ) {
+      return;
+    }
+    this.cssWidth = w;
+    this.cssHeight = h;
+    this.currentResolution = res;
+    this.resizePending = true;
   }
 
-  public get device(): GPUDevice {
-    return this._device;
+  pick(x: number, y: number): Promise<PickHit | null> {
+    if (this.isDestroyed) {
+      return Promise.reject(
+        new CozyGPUError('DESTROYED', 'renderer was destroyed'),
+      );
+    }
+    return this.pickClient.pick(x, y);
   }
 
-  public get format(): GPUTextureFormat {
-    return this._format;
+  destroy(): void {
+    if (this.isDestroyed) return;
+    this.isDestroyed = true;
+    this.unobserve();
+    const error = new CozyGPUError('DESTROYED', 'renderer was destroyed');
+    this.readbackWaiters.forEach(waiter => waiter?.reject(error));
+    this.readbackWaiters.clear();
+    this.pendingReadbacks.length = 0;
+    this.pickClient.rejectAll('DESTROYED', 'renderer was destroyed');
+    try {
+      const hooks = this.frameHooks.slice();
+      for (let i = 0; i < hooks.length; i++) hooks[i].onRendererDestroyed?.();
+      this.frameHooks.length = 0;
+      this.assetsApi?.destroy();
+      this.stage.destroy({ children: true });
+    } finally {
+      this.packer.destroy();
+      dropSwarmDestroys(this.frame.rendererId);
+      dropTextureUploads(this.frame.rendererId);
+      this.transport.destroy();
+    }
   }
 
-  public destroy(): void {
-    this._depthTexture.destroy();
-    this._uniformBuffer.destroy();
+  // ─── RendererHost (M2, internal) ───────────────────────────────────────────
+
+  get _rendererId(): number {
+    return this.frame.rendererId;
   }
 
-  // ─── Private helpers ───────────────────────────────────────────────────────
+  get _caps(): Capabilities {
+    return this.transport.caps;
+  }
 
-  private _createDepthTexture(): void {
-    const canvas = this._canvas as HTMLCanvasElement | OffscreenCanvas;
-    this._depthTexture = this._device.createTexture({
-      size: { width: canvas.width, height: canvas.height },
-      format: 'depth24plus',
-      usage: GPUTextureUsage.RENDER_ATTACHMENT,
+  _addFrameHook(hook: FrontFrameHook): () => void {
+    this.frameHooks.push(hook);
+    return () => {
+      const i = this.frameHooks.indexOf(hook);
+      if (i >= 0) this.frameHooks.splice(i, 1);
+    };
+  }
+
+  /**
+   * @internal Dev-only debug hook. Runs `action` on the core wherever it lives
+   * (main thread or worker); see `Transport.debug`. Requires `debug: true`.
+   */
+  _debug(action: 'loseDevice'): void {
+    this.transport.debug?.(action);
+  }
+
+  /** @internal */
+  _isSystemReady(range: number): boolean {
+    return this.transport.kind === 'worker' || isCoreSystemReady(range);
+  }
+
+  // ─── FrontFrame hooks ──────────────────────────────────────────────────────
+
+  /** @internal */
+  _registerShared(buffer: ArrayBuffer | SharedArrayBuffer): number {
+    const generation = this.frame.generation;
+    let id = this.sharedIds.get(buffer);
+    if (id !== undefined && this.sharedGenerations.get(buffer) === generation) {
+      return id;
+    }
+    if (id === undefined) {
+      id = ids.shared.alloc();
+      this.sharedIds.set(buffer, id);
+    }
+    this.sharedGenerations.set(buffer, generation);
+    const encoder = this.encoder;
+    const objectIndex = encoder.addObject(buffer, false);
+    encoder.begin(Op.SHARED_REGISTER, 8);
+    encoder.u32(id);
+    encoder.u32(objectIndex);
+    encoder.end();
+    return id;
+  }
+
+  /** @internal */
+  _readback(
+    srcKind: number,
+    srcId: number,
+    first: number,
+    count: number,
+  ): Promise<ArrayBuffer> {
+    if (this.isDestroyed) {
+      return Promise.reject(
+        new CozyGPUError('DESTROYED', 'renderer was destroyed'),
+      );
+    }
+    const requestId = ids.readback.alloc();
+    const promise = new Promise<ArrayBuffer>((resolve, reject) => {
+      this.readbackWaiters.set(requestId, { resolve, reject });
+    });
+    const request = { requestId, srcKind, srcId, first, count };
+    if (this.encoding) this.encodeReadback(request);
+    else this.pendingReadbacks.push(request);
+    return promise;
+  }
+
+  // ─── Internals ─────────────────────────────────────────────────────────────
+
+  private encodeControl(): void {
+    const encoder = this.encoder;
+    if (this.resizePending) {
+      this.resizePending = false;
+      encoder.begin(Op.RESIZE, 12);
+      encoder.f32(this.cssWidth);
+      encoder.f32(this.cssHeight);
+      encoder.f32(this.currentResolution);
+      encoder.end();
+    }
+    if (this.clearColorPending) {
+      this.clearColorPending = false;
+      const c = this.backgroundColor;
+      encoder.begin(Op.SET_CLEAR_COLOR, 16);
+      encoder.f32(((c >> 16) & 0xff) / 255);
+      encoder.f32(((c >> 8) & 0xff) / 255);
+      encoder.f32((c & 0xff) / 255);
+      encoder.f32(this.backgroundOpacity);
+      encoder.end();
+    }
+    if (this.viewPending) {
+      // M1 has no camera API: identity stage → css transform.
+      this.viewPending = false;
+      encoder.begin(Op.SET_VIEW, 24);
+      encoder.f32(1);
+      encoder.f32(0);
+      encoder.f32(0);
+      encoder.f32(1);
+      encoder.f32(0);
+      encoder.f32(0);
+      encoder.end();
+    }
+    const pending = this.pendingReadbacks;
+    if (pending.length > 0) {
+      for (let i = 0; i < pending.length; i++) this.encodeReadback(pending[i]);
+      pending.length = 0;
+    }
+  }
+
+  private encodeReadback(request: PendingReadback): void {
+    const encoder = this.encoder;
+    encoder.begin(Op.READBACK, 20);
+    encoder.u32(request.requestId);
+    encoder.u32(request.srcKind);
+    encoder.u32(request.srcId);
+    encoder.u32(request.first);
+    encoder.u32(request.count);
+    encoder.end();
+  }
+
+  private onCoreMessage(message: CoreMessage): void {
+    switch (message.type) {
+      case 'ready':
+      case 'frameDone':
+        return;
+      case 'readback': {
+        const waiter = this.readbackWaiters.get(message.requestId);
+        if (waiter === undefined) return;
+        this.readbackWaiters.delete(message.requestId);
+        ids.readback.free(message.requestId);
+        if (waiter === null) return; // already rejected (device loss)
+        if (message.code !== undefined) {
+          waiter.reject(
+            new CozyGPUError(
+              message.code,
+              `readback ${message.requestId} failed` +
+                (message.message ? `: ${message.message}` : ''),
+            ),
+          );
+        } else {
+          waiter.resolve(message.data);
+        }
+        return;
+      }
+      case 'pick':
+        this.pickClient.handleMessage(message);
+        return;
+      case 'deviceLost':
+        this.rejectReadbacksOnLoss(message.message);
+        this.pickClient.rejectAll('DEVICE_LOST', message.message);
+        this.config.onDeviceLost?.({
+          message: message.message,
+          willRestore: true,
+        });
+        return;
+      case 'deviceRestored':
+        this.frame.generation++;
+        this.resizePending = true;
+        this.clearColorPending = true;
+        this.viewPending = true;
+        for (let i = 0; i < this.frameHooks.length; i++) {
+          this.frameHooks[i].onDeviceRestored?.();
+        }
+        this.config.onDeviceRestored?.();
+        return;
+      case 'error':
+        if (message.code === 'DEVICE_LOST') {
+          if (this.coreDead) return;
+          this.coreDead = true;
+          this.config.onDeviceLost?.({
+            message: message.message,
+            willRestore: false,
+          });
+          this.destroy();
+          return;
+        }
+        // eslint-disable-next-line no-console
+        console.error(`[cozygpu:${message.code}] ${message.message}`);
+        return;
+    }
+  }
+
+  /** Readbacks in flight when the device is lost can never return data. */
+  private rejectReadbacksOnLoss(reason: string): void {
+    const waiters = this.readbackWaiters;
+    if (waiters.size === 0) return;
+    const error = new CozyGPUError(
+      'DEVICE_LOST',
+      `readback aborted: GPU device lost (${reason})`,
+    );
+    waiters.forEach((waiter, requestId) => {
+      if (!waiter) return;
+      waiters.set(requestId, null);
+      waiter.reject(error);
     });
   }
 
-  private _preparePipeline(): GPURenderPipeline {
-    const bindGroupLayout = this._device.createBindGroupLayout({
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.VERTEX,
-          buffer: {},
-        },
-      ],
+  private observeCanvasSize(): void {
+    const canvas = this.canvas;
+    if (
+      typeof ResizeObserver === 'undefined' ||
+      typeof HTMLCanvasElement === 'undefined' ||
+      !(canvas instanceof HTMLCanvasElement)
+    ) {
+      return;
+    }
+    const observer = new ResizeObserver(entries => {
+      const entry = entries[entries.length - 1];
+      let cssW: number;
+      let cssH: number;
+      const box = entry.contentBoxSize?.[0];
+      if (box) {
+        cssW = box.inlineSize;
+        cssH = box.blockSize;
+      } else {
+        cssW = entry.contentRect.width;
+        cssH = entry.contentRect.height;
+      }
+      let res = this.currentResolution;
+      if (this.trackDevicePixelRatio) {
+        res = devicePixelRatio();
+        // Exact device pixels when the browser reports them and they agree
+        // with devicePixelRatio (emulated DPRs can report CSS-sized boxes).
+        const dp = entry.devicePixelContentBoxSize?.[0];
+        if (dp && cssW > 0 && Math.abs(dp.inlineSize - cssW * res) <= 1) {
+          res = dp.inlineSize / cssW;
+        }
+      }
+      this.resize(cssW, cssH, res);
     });
-
-    this._bindGroup = this._device.createBindGroup({
-      layout: bindGroupLayout,
-      entries: [
-        {
-          binding: 0,
-          resource: { buffer: this._uniformBuffer },
-        },
-      ],
-    });
-
-    return this._createPipeline(bindGroupLayout);
+    try {
+      observer.observe(canvas, { box: 'device-pixel-content-box' });
+      // This box also changes (and notifies) when only the DPR changes.
+      this.observesDevicePixels = true;
+    } catch {
+      observer.observe(canvas);
+    }
+    this.resizeObserver = observer;
   }
 
-  private _createPipeline(
-    bindGroupLayout: GPUBindGroupLayout,
-  ): GPURenderPipeline {
-    const pipelineLayout = this._device.createPipelineLayout({
-      bindGroupLayouts: [bindGroupLayout],
-    });
-
-    const shaderModule = this._device.createShaderModule({ code: shader });
-
-    return this._device.createRenderPipeline({
-      layout: pipelineLayout,
-      vertex: {
-        module: shaderModule,
-        entryPoint: 'vs_main',
-        buffers: [this._triangleMesh.bufferLayout],
-      },
-      fragment: {
-        module: shaderModule,
-        entryPoint: 'fs_main',
-        targets: [{ format: this._format }],
-      },
-      primitive: { topology: 'triangle-list' },
-      depthStencil: {
-        format: 'depth24plus',
-        depthWriteEnabled: true,
-        depthCompare: 'less',
-      },
-    });
+  /** Re-arms a `(resolution: Xdppx)` query; fires when the DPR changes. */
+  private watchDevicePixelRatio(): void {
+    if (this.dprQuery) {
+      this.dprQuery.removeEventListener('change', this.onDprChange);
+      this.dprQuery = null;
+    }
+    if (this.isDestroyed || typeof matchMedia !== 'function') return;
+    const dpr = devicePixelRatio();
+    if (dpr !== this.currentResolution && !this.observesDevicePixels) {
+      this.resize(this.cssWidth, this.cssHeight, dpr);
+    }
+    this.dprQuery = matchMedia(`(resolution: ${dpr}dppx)`);
+    this.dprQuery.addEventListener('change', this.onDprChange);
   }
 
-  private _beginRenderPass(): {
-    passEncoder: GPURenderPassEncoder;
-    commandEncoder: GPUCommandEncoder;
-  } {
-    const commandEncoder = this._device.createCommandEncoder();
-    const passEncoder = commandEncoder.beginRenderPass({
-      colorAttachments: [
-        {
-          view: this._context.getCurrentTexture().createView(),
-          loadOp: 'clear',
-          storeOp: 'store',
-          clearValue: { r: 0.08, g: 0.08, b: 0.12, a: 1.0 },
-        },
-      ],
-      depthStencilAttachment: {
-        view: this._depthTexture.createView(),
-        depthClearValue: 1.0,
-        depthLoadOp: 'clear',
-        depthStoreOp: 'store',
-      },
-    });
-
-    return { passEncoder, commandEncoder };
+  private unobserve(): void {
+    if (this.resizeObserver) {
+      this.resizeObserver.disconnect();
+      this.resizeObserver = null;
+    }
+    if (this.dprQuery) {
+      this.dprQuery.removeEventListener('change', this.onDprChange);
+      this.dprQuery = null;
+    }
   }
 }
 
-export { Renderer };
+function now(): number {
+  return typeof performance !== 'undefined' ? performance.now() : Date.now();
+}
+
+function devicePixelRatio(): number {
+  const dpr = (globalThis as { devicePixelRatio?: number }).devicePixelRatio;
+  return typeof dpr === 'number' && dpr > 0 ? dpr : 1;
+}
+
+/** Counts DRAW-flagged commands in the finished packet (no allocation). */
+export function countDrawCommands(
+  encoder: CommandEncoder,
+  byteLength: number,
+): number {
+  const u8 = encoder.u8;
+  const u32 = encoder.u32View;
+  let count = 0;
+  let offset = PACKET_HEADER_BYTES;
+  while (offset + COMMAND_HEADER_BYTES <= byteLength) {
+    const flags = u8[offset + CH_FLAGS] | (u8[offset + CH_FLAGS + 1] << 8);
+    if ((flags & CommandFlag.DRAW) !== 0) count++;
+    offset += COMMAND_HEADER_BYTES + u32[(offset + CH_PAYLOAD_BYTES) >> 2];
+  }
+  return count;
+}

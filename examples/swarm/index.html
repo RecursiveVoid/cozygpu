@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="data:," />
+    <title>cozygpu · swarm</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #0d0d14;
+        color: #c8d4f0;
+        font: 13px monospace;
+      }
+      canvas {
+        display: block;
+        width: 100vw;
+        height: 100vh;
+      }
+      #hud {
+        position: fixed;
+        top: 8px;
+        left: 8px;
+        pointer-events: none;
+        white-space: pre;
+        background: rgba(0, 0, 0, 0.55);
+        padding: 6px 8px;
+        border-radius: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="view"></canvas>
+    <div id="hud">swarm</div>
+    <script type="module" src="/build/examples/swarm/main.js"></script>
+  </body>
+</html>

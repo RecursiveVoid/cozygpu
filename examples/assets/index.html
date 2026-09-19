@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="data:," />
+    <title>cozygpu · assets</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #10131c;
+        color: #c8d4f0;
+        font: 13px monospace;
+      }
+      canvas {
+        display: block;
+        width: 100vw;
+        height: 100vh;
+      }
+      #hud {
+        position: fixed;
+        right: 8px;
+        bottom: 8px;
+        padding: 4px 8px;
+        background: rgba(0, 0, 0, 0.7);
+        border-radius: 4px;
+        white-space: pre;
+        pointer-events: none;
+      }
+      #progress {
+        position: fixed;
+        left: 25%;
+        top: 50%;
+        width: 50%;
+        height: 6px;
+        background: #222838;
+      }
+      #bar {
+        width: 0;
+        height: 100%;
+        background: #7aa2ff;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="view"></canvas>
+    <div id="progress"><div id="bar"></div></div>
+    <div id="hud">assets</div>
+    <script type="module" src="/build/examples/assets/main.js"></script>
+  </body>
+</html>

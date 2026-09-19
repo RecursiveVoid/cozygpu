@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="icon" href="data:," />
+    <title>cozygpu benchmarks</title>
+    <style>
+      html, body { margin: 0; background: #101018; color: #ccd; font: 13px/1.4 system-ui, sans-serif; overflow: hidden; }
+      canvas { display: block; }
+      #menu { padding: 16px; overflow: auto; height: 100vh; box-sizing: border-box; }
+      #menu a { color: #8cf; display: block; }
+      #phase { position: fixed; right: 8px; top: 8px; opacity: 0.6; }
+    </style>
+  </head>
+  <body>
+    <canvas id="view" width="1280" height="720"></canvas>
+    <div id="phase"></div>
+    <script type="module">
+      // Picks the bundle for ?lib=&renderer=; without params shows a case menu.
+      const q = new URLSearchParams(location.search);
+      const lib = q.get('lib');
+      if (!lib) {
+        document.getElementById('view').remove();
+        const menu = document.createElement('div');
+        menu.id = 'menu';
+        const engines = [
+          ['cozygpu', 'webgpu', 'auto'], ['cozygpu', 'worker', 'auto'],
+          ['pixi', 'webgpu', 'sprite'], ['pixi', 'webgpu', 'particle'],
+          ['pixi', 'webgl', 'sprite'], ['pixi', 'webgl', 'particle'],
+          ['three', 'webgl', 'instanced'], ['three', 'webgpu', 'instanced'], ['three', 'webgpu', 'compute'],
+        ];
+        const scenarios = [['sprites-moving', 100000], ['swarm', 1000000], ['sprites-static', 100000]];
+        let html = '<h2>cozygpu benchmarks</h2><p>Results land on <code>window.__benchResult</code> (see console).</p>';
+        for (const [scenario, count] of scenarios) {
+          html += `<h3>${scenario} ${count}</h3>`;
+          for (const [l, r, v] of engines) {
+            if (v === 'compute' && scenario !== 'swarm') continue;
+            html += `<a href="?lib=${l}&renderer=${r}&variant=${v}&scenario=${scenario}&count=${count}&warmup=1&duration=10">${l} ${r} ${v}</a>`;
+          }
+        }
+        menu.innerHTML = html;
+        document.body.append(menu);
+      } else {
+        const entry = lib === 'three' ? `three-${q.get('renderer') === 'webgpu' ? 'webgpu' : 'webgl'}` : lib;
+        const phase = document.getElementById('phase');
+        const iv = setInterval(() => {
+          const r = window.__benchResult;
+          phase.textContent = r ? `${r.status} ${r.frame ? r.frame.fps.toFixed(1) + ' fps' : ''}` : window.__benchPhase || 'loading';
+          if (r) clearInterval(iv);
+        }, 500);
+        import(`./dist/${entry}.js`).catch(err => {
+          window.__benchResult = { status: 'error', error: `bundle load failed: ${err}` };
+        });
+      }
+    </script>
+  </body>
+</html>
