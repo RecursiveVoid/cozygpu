@@ -661,6 +661,7 @@ describe('swarm core bind group layouts agree with the composed WGSL', () => {
     SpawnParams: L.SWARM_SPAWN_BYTES,
     SwarmDraw: L.SWARM_DRAW_BYTES,
     SwarmPick: 16,
+    SwarmCurves: L.SWARM_CURVE_BYTES,
   };
 
   it('every layout entry matches its WGSL declaration', async () => {

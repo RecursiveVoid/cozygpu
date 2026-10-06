@@ -6,6 +6,7 @@
 import { ReadbackState, TextureUsage } from '../types';
 import { createFakeGL, type FakeGL } from './fakeGL.testutil';
 import * as G from './glconst';
+import { GLReadbackRing, type GLRingHost } from './readbackRing';
 import { WebGL2Backend } from './WebGL2Backend';
 
 async function makeBackend(): Promise<{
@@ -123,6 +124,44 @@ describe('WebGL2 fence watch and pacing', () => {
     ring.destroy();
   });
 
+  it('the watch stands down while a frame is held and resumes when it goes', async () => {
+    const { fake, backend } = await makeBackend();
+    const landed = jest.fn();
+    // A host that is "holding a frame": the ring must not start its own
+    // timer, because the backend's catch-up timer polls the same fences.
+    const host: GLRingHost & { frameHeld: boolean } = {
+      gl: backend.gl,
+      lost: false,
+      epoch: backend.epoch,
+      frameSerial: 1,
+      rings: [],
+      onReadbackLanded: landed,
+      frameHeld: true,
+      bindTargetFramebuffer: (texture, depth) =>
+        backend.bindTargetFramebuffer(texture, depth),
+    };
+    const ring = new GLReadbackRing(host, 1, 16, 'test');
+    const s = ring.acquire();
+    fake.syncResults.push(
+      ...Array.from({ length: 80 }, () => G.TIMEOUT_EXPIRED),
+    );
+    ring.copyTexture(backend.beginCommands(), s, target(backend), 0, 0, 1, 1);
+    fake.clear();
+    await wait(10);
+    expect(fake.calls.filter(c => c.startsWith('clientWaitSync'))).toEqual([]);
+    expect(landed).not.toHaveBeenCalled();
+
+    // The frame went: the watch picks the still-pending slot up again.
+    host.frameHeld = false;
+    ring.resumeWatch();
+    await wait(10);
+    expect(
+      fake.calls.filter(c => c.startsWith('clientWaitSync')).length,
+    ).toBeGreaterThan(0);
+    fake.syncResults.length = 0;
+    ring.destroy();
+  });
+
   it('without onReadbackLanded no watch timer runs', async () => {
     const { fake, backend } = await makeBackend();
     backend.onReadbackLanded = null;
@@ -138,8 +177,13 @@ describe('WebGL2 fence watch and pacing', () => {
   it('never paces with idle rings, READY slots or a fresh copy, however many frames ran', async () => {
     const { fake, backend } = await makeBackend();
     const ring = backend.createReadbackRing({ slots: 2, slotBytes: 16 });
-    for (let i = 0; i < 50; i++) backend.beginCommands();
-    expect(backend.backlogged()).toBe(false); // nothing in flight
+    // Submitted frames, each followed by the pacing check the core makes:
+    // the queue-depth probe (§7.1) keeps up, so only the readback half of
+    // pacing can speak here.
+    for (let i = 0; i < 50; i++) {
+      backend.beginCommands().submit();
+      expect(backend.backlogged()).toBe(false); // nothing in flight
+    }
     const s = ring.acquire();
     expect(backend.backlogged()).toBe(false); // acquired only
     ring.copyTexture(backend.beginCommands(), s, target(backend), 0, 0, 1, 1);
@@ -154,6 +198,76 @@ describe('WebGL2 fence watch and pacing', () => {
     expect(backend.backlogged()).toBe(false);
     fake.syncResults.length = 0;
     ring.destroy();
+  });
+
+  it('holds when the GPU is QUEUE_FRAMES frames behind, with no readback at all', async () => {
+    const { fake, backend } = await makeBackend();
+    // Frames whose fence never signals: the GPU falls behind without end.
+    // Well past QUEUE_IDLE_FRAMES, so the depth is measured and allowed to
+    // speak (it only starts counting once the idle stretch is over).
+    for (let i = 0; i < 48; i++) {
+      fake.syncResults.push(G.TIMEOUT_EXPIRED);
+      backend.beginCommands().submit();
+      fake.syncResults.length = 0;
+    }
+    // One probe is armed and unsignalled, so the depth is the frame count.
+    fake.syncResults.push(G.TIMEOUT_EXPIRED);
+    expect(backend.backlogged()).toBe(true);
+    fake.syncResults.length = 0;
+
+    // A frame held on depth alone is released once the fence signals.
+    fake.syncResults.push(G.TIMEOUT_EXPIRED);
+    const held = jest.fn();
+    backend.whenCaughtUp(held);
+    fake.syncResults.length = 0;
+    expect(held).not.toHaveBeenCalled();
+    for (let i = 0; i < 30 && held.mock.calls.length === 0; i++) await wait(2);
+    expect(held).toHaveBeenCalledTimes(1);
+    expect(backend.backlogged()).toBe(false);
+  });
+
+  it('holds frames once PACE_FRAMES frames ran during a readback', async () => {
+    const { fake, backend } = await makeBackend();
+    const ring = backend.createReadbackRing({ slots: 1, slotBytes: 16 });
+    const s = ring.acquire();
+    fake.syncResults.push(G.TIMEOUT_EXPIRED);
+    ring.copyTexture(backend.beginCommands(), s, target(backend), 0, 0, 1, 1);
+    for (let i = 0; i < 6; i++) {
+      fake.syncResults.push(G.TIMEOUT_EXPIRED, G.TIMEOUT_EXPIRED);
+      backend.beginCommands().submit();
+      // The queue stays under QUEUE_FRAMES here, so this is the readback
+      // half of pacing on its own: it holds from the third frame on.
+      expect(backend.backlogged()).toBe(i >= 2);
+      fake.syncResults.length = 0;
+    }
+    ring.destroy();
+  });
+
+  it('never holds on depth in a display-paced loop, and arms few fences', async () => {
+    const { fake, backend } = await makeBackend();
+    fake.clear();
+    // The fake signals every fence at once: the GPU is never behind.
+    for (let i = 0; i < 120; i++) {
+      backend.beginCommands().submit();
+      expect(backend.backlogged()).toBe(false);
+    }
+    // One fence per QUEUE_PROBE frames at most, not one per frame.
+    const fences = fake.calls.filter(c => c.startsWith('fenceSync'));
+    expect(fences.length).toBeLessThanOrEqual(120 / 8 + 1);
+  });
+
+  it('stops holding on depth when the context is lost', async () => {
+    const { fake, backend } = await makeBackend();
+    for (let i = 0; i < 48; i++) {
+      fake.syncResults.push(G.TIMEOUT_EXPIRED);
+      backend.beginCommands().submit();
+      fake.syncResults.length = 0;
+    }
+    fake.syncResults.push(G.TIMEOUT_EXPIRED);
+    expect(backend.backlogged()).toBe(true);
+    fake.syncResults.length = 0;
+    fake.fire('webglcontextlost');
+    expect(backend.backlogged()).toBe(false);
   });
 
   it('a context loss stops pacing on the old ring', async () => {

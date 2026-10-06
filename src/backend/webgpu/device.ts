@@ -115,6 +115,9 @@ export function detectCapabilities(
     baseInstance: true,
     floatRenderTargets: true,
     integerRenderTargets: true,
+    // M3 (ARCHITECTURE §21.3): stencil attachments, `RenderPipelineDesc.stencil`
+    // and `RenderPass.setStencilReference` (masks).
+    stencil: true,
     maxSampledTextures: l.maxSampledTexturesPerShaderStage,
     timestampQuery: f.has('timestamp-query'),
     float32Filterable: f.has('float32-filterable'),

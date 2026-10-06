@@ -6,6 +6,8 @@
 import { BlendModeId } from '../backend/types';
 import {
   CommandFlag,
+  FilterOp,
+  MaskOp,
   Op,
   TextureFlag,
   TextureFormatId,
@@ -28,35 +30,55 @@ describe('ARCHITECTURE §3.4 opcode table ↔ src/commands/opcodes.ts', () => {
   const rows = [
     ...doc.matchAll(
       // Tolerates Prettier's column padding in the Markdown table.
-      /^\|\s*(0x[0-9A-Fa-f]{4})\s*\|\s*([A-Z_0-9]+)\s*\|\s*([A-Z]*)\s*\|/gm,
+      /^\|\s*(0x[0-9A-Fa-f]{4})\s*\|\s*([A-Z_0-9]+)\s*\|\s*([A-Z_+]*)\s*\|/gm,
     ),
   ].map(m => ({ code: parseInt(m[1], 16), name: m[2], flags: m[3] }));
 
   it('lists every opcode exactly once with the same value', () => {
-    expect(rows.length).toBe(Object.keys(Op).length);
-    const table = Op as Record<string, number>;
+    // M3: masks and filters keep their own tables so an unused one is
+    // tree-shaken (ARCHITECTURE §21.6); the doc table lists them together.
+    const all = { ...Op, ...MaskOp, ...FilterOp };
+    expect(rows.length).toBe(Object.keys(all).length);
+    const table = all as Record<string, number>;
     for (const row of rows)
       expect([row.name, table[row.name]]).toEqual([row.name, row.code]);
-    expect(new Set(Object.values(Op)).size).toBe(rows.length);
+    expect(new Set(Object.values(all)).size).toBe(rows.length);
   });
 
-  it('DRAW / COMPUTE flag columns match the command kinds', () => {
-    const draw = rows
-      .filter(r => r.flags === 'DRAW')
-      .map(r => r.name)
-      .sort();
-    const compute = rows
-      .filter(r => r.flags === 'COMPUTE')
-      .map(r => r.name)
-      .sort();
-    expect(draw).toEqual(['SPRITE_DRAW', 'SWARM_DRAW']);
-    expect(compute).toEqual([
+  it('DRAW / COMPUTE / PASS_BREAK flag columns match the command kinds', () => {
+    const withFlag = (flag: string) =>
+      rows
+        .filter(r => r.flags.split('+').includes(flag))
+        .map(r => r.name)
+        .sort();
+    expect(withFlag('DRAW')).toEqual([
+      'FILTER_BEGIN',
+      'FILTER_END',
+      'MASK_POP',
+      'MASK_PUSH_ALPHA',
+      'MASK_PUSH_SCISSOR',
+      'MASK_PUSH_STENCIL',
+      'SPRITE_DRAW',
+      'SPRITE_SET_EFFECT',
+      'SWARM_DRAW',
+    ]);
+    expect(withFlag('COMPUTE')).toEqual([
       'SWARM_KILL_LIST',
       'SWARM_KILL_RANGE',
       'SWARM_SPAWN',
       'SWARM_STEP',
     ]);
-    expect(CommandFlag).toEqual({ DRAW: 1, COMPUTE: 2 });
+    // M3: every PASS_BREAK command is also a DRAW command (§21.3).
+    const breaks = withFlag('PASS_BREAK');
+    expect(breaks).toEqual([
+      'FILTER_BEGIN',
+      'FILTER_END',
+      'MASK_POP',
+      'MASK_PUSH_ALPHA',
+      'MASK_PUSH_STENCIL',
+    ]);
+    for (const name of breaks) expect(withFlag('DRAW')).toContain(name);
+    expect(CommandFlag).toEqual({ DRAW: 1, COMPUTE: 2, PASS_BREAK: 4 });
   });
 
   it('format ids, texture flags and blend ids match the prose', () => {

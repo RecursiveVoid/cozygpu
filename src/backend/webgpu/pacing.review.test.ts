@@ -46,11 +46,17 @@ type Pacer = RingHost & {
 
 function setup() {
   const buffers: FakeGPUBuffer[] = [];
+  // Queue-depth probes: each onSubmittedWorkDone() is resolved by hand.
+  const probes: (() => void)[] = [];
   const device = {
     createBuffer: (d: { size: number }) => {
       const b = new FakeGPUBuffer(d.size);
       buffers.push(b);
       return b;
+    },
+    queue: {
+      onSubmittedWorkDone: () =>
+        new Promise<void>(resolve => probes.push(resolve)),
     },
   } as unknown as GPUDevice;
   // The pacing and afterSubmit paths only touch plain fields.
@@ -62,6 +68,9 @@ function setup() {
     readSubmit: 0,
     caughtUp: null,
     lost: false,
+    destroyed: false,
+    gpuDone: 0,
+    probeAt: 0,
     rings: [],
     frameScoped: false,
     canvasTexture: null,
@@ -84,7 +93,15 @@ function setup() {
     ring.copyTexture(list, s, tex, 0, 0, 1, 1);
     return s;
   };
-  return { backend, ring, buffers, read };
+  /** Runs `n` submits, resolving every probe the GPU is asked for. */
+  const keepUp = async (n: number): Promise<void> => {
+    for (let i = 0; i < n; i++) {
+      backend.afterSubmit();
+      while (probes.length > 0) probes.shift()!();
+      await settle();
+    }
+  };
+  return { backend, ring, buffers, read, probes, keepUp };
 }
 
 const settle = async (): Promise<void> => {
@@ -92,18 +109,18 @@ const settle = async (): Promise<void> => {
 };
 
 describe('WebGPU pacing with the readback ring', () => {
-  it('an idle backend never holds, however many submits ran', () => {
-    const { backend } = setup();
-    for (let i = 0; i < 1000; i++) backend.afterSubmit();
+  it('an idle backend the GPU keeps up with never holds', async () => {
+    const { backend, keepUp } = setup();
+    await keepUp(1000);
     expect(backend.backlogged()).toBe(false);
     const held = jest.fn();
     backend.whenCaughtUp(held);
     expect(held).toHaveBeenCalledTimes(1);
   });
 
-  it('a read counts from its own submit, not from earlier idle submits', () => {
-    const { backend, read } = setup();
-    for (let i = 0; i < 100; i++) backend.afterSubmit();
+  it('a read counts from its own submit, not from earlier idle submits', async () => {
+    const { backend, read, keepUp } = setup();
+    await keepUp(100);
     read();
     backend.afterSubmit(); // maps the slot: the read starts here
     expect(backend.reads).toBe(1);
@@ -182,5 +199,53 @@ describe('WebGPU pacing with the readback ring', () => {
     (backend as { lost: boolean }).lost = true;
     backend.landed();
     expect(held).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('WebGPU queue-depth pacing (M3)', () => {
+  it('holds once the GPU is QUEUE_FRAMES submits behind, with no readback', () => {
+    const { backend } = setup();
+    // The GPU answers nothing: every submit piles up.
+    for (let i = 0; i < 15; i++) backend.afterSubmit();
+    expect(backend.reads).toBe(0);
+    expect(backend.backlogged()).toBe(false);
+    backend.afterSubmit(); // 16 = QUEUE_FRAMES
+    expect(backend.backlogged()).toBe(true);
+    const held = jest.fn();
+    backend.whenCaughtUp(held);
+    expect(held).not.toHaveBeenCalled();
+  });
+
+  it('a probe that lands releases the held frame and the queue moves again', async () => {
+    const { backend, probes } = setup();
+    for (let i = 0; i < 16; i++) backend.afterSubmit();
+    const held = jest.fn();
+    backend.whenCaughtUp(held);
+    expect(probes.length).toBe(1); // armed at QUEUE_PROBE, not per submit
+    probes.shift()!();
+    await settle();
+    expect(held).toHaveBeenCalledTimes(1);
+    expect(backend.backlogged()).toBe(false);
+  });
+
+  it('arms at most one probe per QUEUE_PROBE submits while the GPU keeps up', async () => {
+    const { backend, probes, keepUp } = setup();
+    await keepUp(80);
+    // 80 submits, one probe every 8: never more than 10, never one per frame.
+    expect(probes.length).toBe(0);
+    expect(backend.backlogged()).toBe(false);
+  });
+
+  it('a lost device stops holding on queue depth', async () => {
+    const { backend, probes } = setup();
+    for (let i = 0; i < 16; i++) backend.afterSubmit();
+    const held = jest.fn();
+    backend.whenCaughtUp(held);
+    expect(held).not.toHaveBeenCalled();
+    (backend as unknown as { lost: boolean }).lost = true;
+    probes.shift()!();
+    await settle();
+    expect(held).toHaveBeenCalledTimes(1);
+    expect(backend.backlogged()).toBe(false);
   });
 });

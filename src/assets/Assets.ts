@@ -888,6 +888,20 @@ export class Assets implements AssetsApi, FrontFrameHook {
         }
         return;
       }
+      case 'font': {
+        // M3. The font code (and the MSDF parser it shares with Text) is a
+        // chunk of its own: a program without text never loads it.
+        const { loadFontAsset } = await import('./font');
+        entry.value = await loadFontAsset(
+          this,
+          entry.url,
+          buffer,
+          descriptor,
+          signal,
+          entry.children,
+        );
+        return;
+      }
       case 'texture': {
         const payload = await this.decodeTexture(
           entry.url,

@@ -10,6 +10,7 @@ import {
   TextureUsage,
   ShaderStage,
 } from '../types';
+import type { StencilState } from '../types';
 
 export { align4, bytesPerTexel, fullMipLevelCount } from '../utils';
 
@@ -92,6 +93,63 @@ export function isDepthFormat(format: TextureFormat): boolean {
     format === 'depth24plus-stencil8' ||
     format === 'depth32float'
   );
+}
+
+/** True when the format carries a stencil aspect (masks, ARCHITECTURE §21.3). */
+export function hasStencilAspect(format: TextureFormat): boolean {
+  return format === 'depth24plus-stencil8';
+}
+
+/** Full color write mask; 0 for stencil-only draws (`colorWriteDisabled`). */
+export const COLOR_WRITE_ALL = 0xf;
+
+/**
+ * Depth/stencil state of a render pipeline (M3, masks). Without `stencil` this
+ * is the M1 behavior (depth write on, less-equal). With it, depth is inert
+ * (cozygpu is 2D) and the stencil face state comes from the RHI defaults:
+ * compare 'always', keep/keep/keep, read and write mask 0xff.
+ */
+export function toGPUDepthStencil(
+  depthFormat: TextureFormat | undefined,
+  stencil: StencilState | undefined,
+): GPUDepthStencilState | undefined {
+  if (!depthFormat) return undefined;
+  if (!stencil) {
+    return {
+      format: depthFormat,
+      depthWriteEnabled: true,
+      depthCompare: 'less-equal',
+    };
+  }
+  const face: GPUStencilFaceState = {
+    compare: stencil.compare ?? 'always',
+    failOp: stencil.failOp ?? 'keep',
+    depthFailOp: stencil.depthFailOp ?? 'keep',
+    passOp: stencil.passOp ?? 'keep',
+  };
+  return {
+    format: depthFormat,
+    depthWriteEnabled: false,
+    depthCompare: 'always',
+    stencilFront: face,
+    stencilBack: face,
+    stencilReadMask: stencil.readMask ?? 0xff,
+    stencilWriteMask: stencil.writeMask ?? 0xff,
+  };
+}
+
+/** Pipeline-cache fragment for the stencil state and the color write mask. */
+export function stencilKey(
+  stencil: StencilState | undefined,
+  colorWriteDisabled: boolean | undefined,
+): string {
+  const w = colorWriteDisabled ? '0' : '';
+  if (!stencil) return `|${w}`;
+  return `|${stencil.compare ?? ''}${stencil.failOp ?? ''}${
+    stencil.depthFailOp ?? ''
+  }${stencil.passOp ?? ''}${stencil.readMask ?? 255}/${
+    stencil.writeMask ?? 255
+  }${w}`;
 }
 
 /**

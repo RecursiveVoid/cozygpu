@@ -692,3 +692,51 @@ describe('external sources (WebGL2 front)', () => {
     h.system.destroy();
   });
 });
+
+// ─── device loss with an external source (§19.4) ──────────────────────────────
+
+describe('external sources across a device restore', () => {
+  test('a restore drops the source, so onRestore can refill the own buffers', async () => {
+    const h = setup();
+    await h.system.init(h.ctx);
+    let refilled = 0;
+    const swarm = new Swarm({
+      capacity: 100,
+      // Only reachable once the restore has put the swarm back on its own
+      // buffers: spawn throws while a source is set.
+      onRestore: s => {
+        s.spawn(4);
+        refilled++;
+      },
+    });
+    const hot = external('swarm-hot', 100);
+    h.register(hot);
+    swarm.setSource({ hot, count: 50 });
+    h.frame(swarm);
+    await flush();
+    expect(h.draws(h.frame(swarm))).toEqual(['draw 4x50']);
+
+    // Device loss and restore: the core drops every registration.
+    hot.release();
+    h.externals.delete(hot.id);
+    (h.front as { generation: number }).generation = 1;
+    h.frame(swarm);
+    expect(refilled).toBe(1);
+    // No stale SWARM_SET_SOURCE for the registration the core just dropped.
+    expect(h.ops()).not.toContain(Op.SWARM_SET_SOURCE);
+    await flush();
+    // Own buffers again, drawing what onRestore spawned. A source that
+    // survived the restore would draw 50 quads out of an empty hot buffer,
+    // with colours read from cold records the restore had emptied.
+    expect(h.draws(h.frame(swarm))).toEqual(['draw 4x4']);
+
+    // The stale handle is refused; a registration on the new device works.
+    expect(() => swarm.setSource({ hot, count: 50 })).toThrow(/valid/);
+    const hot2 = external('swarm-hot', 100);
+    h.register(hot2);
+    swarm.setSource({ hot: hot2, count: 7 });
+    expect(h.draws(h.frame(swarm))).toEqual(['draw 4x7']);
+    swarm.destroy();
+    h.system.destroy();
+  });
+});

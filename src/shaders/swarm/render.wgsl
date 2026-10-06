@@ -1,6 +1,6 @@
-// cozygpu swarm render template. Owner: "swarm".
+// cozygpu swarm render template.
 // The composer prepends prelude.wgsl and replaces whole marker lines:
-//   FLAGS      const bools RF_FADE_OUT, RF_SHRINK, RF_ALIGN, RF_CIRCLE
+//   FLAGS      const bools RF_FADE_OUT, RF_SHRINK, RF_ALIGN, RF_CIRCLE, RF_CURVES
 //   SLOT_DECL  the `visible` binding when culling / allocation 'gpu'
 //   SLOT       `let slot = ...;`
 //   COLOR      body of swarm_color (textured quad or SDF circle)
@@ -13,6 +13,15 @@
 
 // PICK_ALPHA_THRESHOLD (src/types/layouts.ts)
 const SWARM_PICK_ALPHA: f32 = 0.5;
+
+// Over-life curves (SWARM_SET_CURVES): four stops of packed color, size
+// multiplier and alpha multiplier, evaluated here when RF_CURVES is set.
+struct SwarmCurves {
+  stops: vec4f,
+  color: vec4u,
+  size: vec4f,
+  alpha: vec4f,
+}
 
 struct SwarmPick {
   id: u32,
@@ -29,7 +38,19 @@ struct SwarmPick {
 @group(2) @binding(2) var<storage, read> frames: array<vec4f>;
 @group(2) @binding(3) var<uniform> draw: SwarmDraw;
 @group(2) @binding(5) var<uniform> swarmPick: SwarmPick;
+@group(2) @binding(6) var<uniform> curves: SwarmCurves;
 //@SLOT_DECL
+
+// Piecewise-linear weights of the four over-life stops at normalized age t
+// (src/types/layouts.ts SWARM_CURVE_BYTES). Branch-free: at most two weights
+// are non-zero, so a value is `dot(w, stops)`.
+fn swarm_curve_w(t: f32) -> vec4f {
+  let s = curves.stops;
+  let u0 = clamp((t - s.x) / max(s.y - s.x, 1e-6), 0.0, 1.0);
+  let u1 = clamp((t - s.y) / max(s.z - s.y, 1e-6), 0.0, 1.0);
+  let u2 = clamp((t - s.z) / max(s.w - s.z, 1e-6), 0.0, 1.0);
+  return vec4f(1.0 - u0, u0 - u0 * u1, u1 - u1 * u2, u2);
+}
 
 struct SwarmVertex {
   @builtin(position) position: vec4f,
@@ -62,7 +83,21 @@ fn vs_main(
   let q = vec2f(f32(vi & 1u), f32((vi >> 1u) & 1u));
   let t = 1.0 - clamp(h.age / h.life, 0.0, 1.0);
 
-  var size = h.scale;
+  // Over-life curves: identity multipliers unless RF_CURVES.
+  var curveTint = vec4f(1.0);
+  var curveSize = 1.0;
+  if (RF_CURVES) {
+    let cw = swarm_curve_w(1.0 - t);
+    curveSize = dot(cw, curves.size);
+    curveTint =
+      unpack4x8unorm(curves.color.x) * cw.x +
+      unpack4x8unorm(curves.color.y) * cw.y +
+      unpack4x8unorm(curves.color.z) * cw.z +
+      unpack4x8unorm(curves.color.w) * cw.w;
+    curveTint.a *= dot(cw, curves.alpha);
+  }
+
+  var size = h.scale * curveSize;
   if (RF_SHRINK) {
     size *= t;
   }
@@ -83,7 +118,7 @@ fn vs_main(
     1.0,
   );
 
-  let color = unpack4x8unorm(c.color);
+  let color = unpack4x8unorm(c.color) * curveTint;
   var a = color.a * draw.alpha;
   if (RF_FADE_OUT) {
     a *= t;

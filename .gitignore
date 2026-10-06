@@ -59,8 +59,18 @@ examples/_screenshots/
 
 # Local tooling / assistant files (never published)
 CLAUDE.md
+CLAUDE.local.md
 .claude/
+AGENTS.md
+.cursor/
+.cursorrules
 
 # Internal planning docs (kept locally, not published)
 docs/reports/
 ROADMAP.md
+
+# Benchmark scratch runs: only final results are published
+benchmarks/results/*
+!benchmarks/results/*-final.json
+!benchmarks/results/*-final.md
+!benchmarks/results/latest.md

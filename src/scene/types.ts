@@ -13,9 +13,11 @@
  * classes (`Container`, `Sprite`, `Texture`, `Swarm`) can use the plain names.
  */
 import type { BlendMode } from '../backend/types';
+import type { Filter, FilterOptions } from '../filters/types';
+import type { MaskTarget } from '../masks/types';
 import type { FrontFrame } from '../types/core';
 
-export type NodeKind = 'container' | 'sprite' | 'swarm';
+export type NodeKind = 'container' | 'sprite' | 'swarm' | 'group';
 
 export interface NodeOptions {
   label?: string;
@@ -138,6 +140,46 @@ export interface ContainerNode extends SceneNode {
     columns: SpriteColumns,
     options?: BindColumnsOptions,
   ): ColumnBinding;
+}
+
+// ─── Groups: masks and filters (M3, ARCHITECTURE §21, §22) ────────────────────
+
+export interface GroupOptions extends NodeOptions {
+  children?: SceneNode[];
+  mask?: MaskTarget;
+  filters?: readonly Filter[] | null;
+  filterOptions?: FilterOptions;
+}
+
+/**
+ * M3. A Container that can carry a mask and/or a filter chain. Effects are
+ * deliberately NOT on every Container: a group is a batch boundary and may
+ * cost a render target, and keeping them here also keeps the mask and filter
+ * code out of programs that never import `Group` (ARCHITECTURE §22.8).
+ *
+ * Both effects load their implementation chunk on first use. Until it is
+ * ready (usually the same or the next frame) the group's subtree is NOT
+ * drawn, so a mask never flashes unclipped content; `ready` resolves when it
+ * is.
+ */
+export interface GroupNode extends ContainerNode {
+  readonly kind: 'group';
+  /**
+   * Clips this group's subtree: a scene node whose pixels are the mask, a
+   * plain rect, or a `MaskSpec` with `mode` / `invert` / `threshold`.
+   * `null` removes it.
+   */
+  mask: MaskTarget;
+  /**
+   * Full-screen passes applied to this group's subtree, in order. `null` or
+   * an empty array removes them. A chain whose entries are all `cheap`
+   * (color matrix, text outline) never takes a render target.
+   */
+  filters: readonly Filter[] | null;
+  /** Resolution, area, blend and target reuse of the filter chain. */
+  filterOptions: FilterOptions;
+  /** Resolves when every effect chunk of this group has loaded. */
+  readonly ready: Promise<void>;
 }
 
 /** M2. Bit set for `ContainerNode.bulkChildren` / `BulkChildren.commit`. */

@@ -31,7 +31,7 @@ import type {
   GLRenderPipeline,
   GLTexture,
 } from './resources';
-import type { GLState } from './state';
+import { GL_STENCIL_INSIDE, type GLState } from './state';
 
 const MAX_GROUPS = 4;
 const MAX_DYNAMIC_OFFSETS = 8;
@@ -248,6 +248,11 @@ export class GLRenderPass extends GLPassBase implements RenderPass {
   private indexOffset = 0;
   private readonly clearUint = new Uint32Array(4);
   private readonly clearFloat = new Float32Array(4);
+  /** M3 masks: current stencil reference and whether a mask is active. */
+  private stencilRef = 0;
+  private stencilActive = false;
+  /** True while the last applied pipeline disabled color writes. */
+  private colorWriteOff = false;
   /** Draws issued since the last gl.flush() (see FLUSH_EVERY_DRAWS). */
   private drawsSinceFlush = 0;
 
@@ -308,11 +313,29 @@ export class GLRenderPass extends GLPassBase implements RenderPass {
         gl.clearColor(r, g, b, a);
         gl.clear(G.COLOR_BUFFER_BIT);
       }
+      if (target === 'canvas' && host.caps.stencil && !desc.depth) {
+        // M3 masks (§21.3): the canvas' stencil buffer comes from the context
+        // attributes, and clearing the canvas clears it with the color, so a
+        // stencil mask always starts counting from 0.
+        state.setStencilWriteMask(0xff);
+        gl.clearStencil(0);
+        gl.clear(G.STENCIL_BUFFER_BIT);
+      }
     }
     const depth = desc.depth;
     if (depth && depth.load === 'clear') {
       gl.clearDepth(depth.clearValue ?? 1);
       gl.clear(G.DEPTH_BUFFER_BIT);
+    }
+    // M3 masks (§21.3). The default framebuffer gets its stencil buffer from
+    // the context attributes, so the clear is honoured for the canvas target
+    // as well — `depth.target` is only attached to a texture target's FBO.
+    this.stencilRef = 0;
+    this.stencilActive = false;
+    if (depth && depth.stencilLoad === 'clear') {
+      state.setStencilWriteMask(0xff);
+      gl.clearStencil(depth.stencilClearValue ?? 0);
+      gl.clear(G.STENCIL_BUFFER_BIT);
     }
   }
 
@@ -333,11 +356,39 @@ export class GLRenderPass extends GLPassBase implements RenderPass {
     this.host.gl.scissor(x, this.targetHeight - y - h, w, h);
   }
 
+  /**
+   * M3 (ARCHITECTURE §21.3). Mask nesting depth for the draws that follow.
+   * Applied with the next draw's stencil state (GL has one function call for
+   * comparison, reference and read mask).
+   */
+  setStencilReference(reference: number): void {
+    this.stencilRef = reference;
+  }
+
   private applyPipelineState(): void {
     const pipeline = this.pipeline!;
     const state = this.host.state;
     state.setBlend(pipeline.blend);
     state.setDepthTest(pipeline.depth);
+    const stencil = pipeline.stencil;
+    if (stencil) {
+      this.stencilActive = true;
+      state.setStencilTest(true);
+      state.setStencil(stencil, this.stencilRef);
+    } else if (this.stencilActive) {
+      // Inside a mask: pipelines without their own stencil state (sprites,
+      // swarms) are clipped by the buffer but never write to it.
+      state.setStencil(GL_STENCIL_INSIDE, this.stencilRef);
+    } else {
+      // No mask in this pass (yet): the test must be off, or draws would be
+      // tested against whatever the last pass left in the buffer.
+      state.setStencilTest(false);
+    }
+    if (pipeline.colorWriteDisabled || this.colorWriteOff) {
+      const off = pipeline.colorWriteDisabled;
+      this.colorWriteOff = off;
+      state.setColorMask(!off);
+    }
   }
 
   draw(

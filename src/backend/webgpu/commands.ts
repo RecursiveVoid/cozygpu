@@ -7,6 +7,7 @@
  * allocated once and mutated.
  */
 import { CozyGPUError } from '../../types/errors';
+import { hasStencilAspect } from './convert';
 import type {
   CommandList,
   ComputePass,
@@ -79,6 +80,11 @@ export class WebGPURenderPass implements RenderPass {
 
   setScissor(x: number, y: number, w: number, h: number): void {
     this.encoder!.setScissorRect(x, y, w, h);
+  }
+
+  /** M3 (ARCHITECTURE §21.3). Mask nesting depth for the draws that follow. */
+  setStencilReference(reference: number): void {
+    this.encoder!.setStencilReference(reference);
   }
 
   draw(
@@ -210,7 +216,8 @@ export class WebGPUCommandList implements CommandList {
       ? this.resolveView(color.resolveTarget)
       : undefined;
     // A multisampled target only feeds its resolve target.
-    ca.storeOp = ca.resolveTarget ? 'discard' : 'store';
+    ca.storeOp =
+      ca.resolveTarget && !color.keepMultisampled ? 'discard' : 'store';
     ca.loadOp = color.load;
     const cc = color.clearColor;
     const format =
@@ -240,9 +247,20 @@ export class WebGPUCommandList implements CommandList {
     const depth = desc.depth;
     if (depth) {
       const da = this.depthAttachment;
-      da.view = (depth.target as WebGPUTexture).view;
+      const target = depth.target as WebGPUTexture;
+      da.view = target.view;
       da.depthLoadOp = depth.load;
       da.depthClearValue = depth.clearValue ?? 1;
+      // M3 (masks): the stencil aspect only exists on combined formats, and
+      // WebGPU rejects stencil ops on a format without one.
+      if (hasStencilAspect(target.format)) {
+        da.stencilLoadOp = depth.stencilLoad ?? depth.load;
+        da.stencilStoreOp = 'store';
+        da.stencilClearValue = depth.stencilClearValue ?? 0;
+      } else {
+        da.stencilLoadOp = undefined;
+        da.stencilStoreOp = undefined;
+      }
       this.renderPassDesc.depthStencilAttachment = da;
     } else {
       this.renderPassDesc.depthStencilAttachment = undefined;

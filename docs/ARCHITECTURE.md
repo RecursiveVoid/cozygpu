@@ -185,11 +185,11 @@ the worker bundle must be built from the same version.
 
 ### 3.3 Command header (8 B)
 
-| off | type | field                                        |
-| --- | ---- | -------------------------------------------- |
-| 0   | u16  | opcode (high byte = system range)            |
-| 2   | u16  | flags: bit0 `DRAW`, bit1 `COMPUTE`, others 0 |
-| 4   | u32  | payloadBytes (padded, multiple of 4)         |
+| off | type | field                                                                |
+| --- | ---- | -------------------------------------------------------------------- |
+| 0   | u16  | opcode (high byte = system range)                                    |
+| 2   | u16  | flags: bit0 `DRAW`, bit1 `COMPUTE`, bit2 `PASS_BREAK` (M3), others 0 |
+| 4   | u32  | payloadBytes (padded, multiple of 4)                                 |
 
 Example: `SPRITE_DRAW(bufferId=1, first=0, count=500, texId=3, blend=normal)`
 is 28 bytes:
@@ -202,48 +202,69 @@ op     flags  payload=20   bufferId=1   first=0      count=500    texId=3      b
 ### 3.4 Opcodes
 
 Ranges: `0x00` core, `0x01` texture, shared memory, readback and picking
-(all handled by RenderCore), `0x02` sprite, `0x03` swarm, `0x04–0x7F`
-reserved (M3: text, masks, filters), `0x80–0xFF` extensions. Unknown
+(all handled by RenderCore), `0x02` sprite, `0x03` swarm, `0x04` mask (M3),
+`0x05` filter (M3), `0x06–0x7F` reserved, `0x80–0xFF` extensions. Unknown
 opcodes are skipped using `payloadBytes`, with one warning per opcode.
 
-| opcode | name                         | flags   | payload                                                                                                                       |
-| ------ | ---------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| 0x0000 | NOP                          |         | —                                                                                                                             |
-| 0x0001 | FRAME_BEGIN                  |         | f32 time, f32 dt                                                                                                              |
-| 0x0002 | RESIZE                       |         | f32 cssWidth, f32 cssHeight, f32 resolution                                                                                   |
-| 0x0003 | SET_CLEAR_COLOR              |         | f32 r, g, b, a (straight)                                                                                                     |
-| 0x0004 | SET_VIEW                     |         | f32 a, b, c, d, tx, ty (stage → css px)                                                                                       |
-| 0x00FF | FRAME_END                    |         | —                                                                                                                             |
-| 0x0100 | TEXTURE_CREATE               |         | u32 texId, width, height, formatId, texFlags (bits 24–31: mip level count, M2)                                                |
-| 0x0101 | TEXTURE_UPLOAD_PIXELS        |         | u32 texId, x, y, w, h, u8[w·h·4]                                                                                              |
-| 0x0102 | TEXTURE_UPLOAD_BITMAP        |         | u32 texId, objectIndex, flipY                                                                                                 |
-| 0x0103 | TEXTURE_DESTROY              |         | u32 texId                                                                                                                     |
-| 0x0104 | TEXTURE_UPLOAD_BITMAP_REGION |         | M2. u32 texId, objectIndex, x, y, flipY                                                                                       |
-| 0x0105 | TEXTURE_UPLOAD_COMPRESSED    |         | M2. u32 texId, mipLevel, width, height, objectIndex (ArrayBuffer), byteOffset, byteLength                                     |
-| 0x0106 | TEXTURE_GENERATE_MIPMAPS     |         | M2. u32 texId                                                                                                                 |
-| 0x0110 | SHARED_REGISTER              |         | u32 sharedId, objectIndex                                                                                                     |
-| 0x0111 | SHARED_RELEASE               |         | u32 sharedId                                                                                                                  |
-| 0x0120 | READBACK                     |         | u32 requestId, srcKind (0 sprite buf, 1 swarm hot, 2 swarm cold), srcId, first, count; M2: srcKind 3 = swarm alive count      |
-| 0x0121 | PICK                         |         | M2. u32 requestId, f32 x, f32 y (css px)                                                                                      |
-| 0x0200 | SPRITE_BUFFER_ALLOC          |         | u32 bufferId, capacity                                                                                                        |
-| 0x0201 | SPRITE_BUFFER_DESTROY        |         | u32 bufferId                                                                                                                  |
-| 0x0202 | SPRITE_UPLOAD                |         | u32 bufferId, first, count, u8[count·40]                                                                                      |
-| 0x0203 | SPRITE_UPLOAD_SHARED         |         | u32 bufferId, first, count, sharedId, byteOffset                                                                              |
-| 0x0210 | SPRITE_DRAW                  | DRAW    | u32 bufferId, first, count, texId, blendModeId                                                                                |
-| 0x0300 | SWARM_CREATE                 |         | u32 swarmId, capacity, texId, blendModeId, renderFlags, paramsBytes, computeSrcBytes, renderSrcBytes, u8[compute], u8[render] |
-| 0x0301 | SWARM_DESTROY                |         | u32 swarmId                                                                                                                   |
-| 0x0302 | SWARM_SET_PIPELINE           |         | like CREATE without capacity                                                                                                  |
-| 0x0303 | SWARM_WRITE_HOT              |         | u32 swarmId, first, count, u8[count·40]                                                                                       |
-| 0x0304 | SWARM_WRITE_COLD             |         | u32 swarmId, first, count, u8[count·16]                                                                                       |
-| 0x0305 | SWARM_SPAWN                  | COMPUTE | u32 swarmId, u8[112] SpawnParams                                                                                              |
-| 0x0306 | SWARM_KILL_RANGE             | COMPUTE | u32 swarmId, first, count                                                                                                     |
-| 0x0307 | SWARM_KILL_LIST              | COMPUTE | u32 swarmId, n, u32[n]                                                                                                        |
-| 0x0308 | SWARM_SET_PARAMS             |         | u32 swarmId, byteOffset, byteLength, u8[byteLength]                                                                           |
-| 0x0309 | SWARM_STEP                   | COMPUTE | u32 swarmId, f32 dt, u32 substeps, u32 activeCount                                                                            |
-| 0x030A | SWARM_DRAW                   | DRAW    | u32 swarmId, f32 a, b, c, d, tx, ty, f32 alpha, u32 drawCount                                                                 |
-| 0x030B | SWARM_SET_FRAMES             |         | u32 swarmId, count, f32[count·4] (u0, v0, u1, v1)                                                                             |
-| 0x030C | SWARM_SET_PICK               |         | M2. u32 swarmId, pickId (Swarm node id; 0 = not pickable)                                                                     |
-| 0x030D | SWARM_SET_SOURCE             |         | M2.5. u32 swarmId, hotExternalId (0 = own buffers), coldExternalId (0 = own), flags (SIMULATE=1)                              |
+The flags column lists every bit a command carries; `DRAW+PASS_BREAK`
+(M3, §21.3) means the core ends the open render pass before the command and
+asks the owning system which pass to open next.
+
+| opcode | name                         | flags           | payload                                                                                                                       |
+| ------ | ---------------------------- | --------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| 0x0000 | NOP                          |                 | —                                                                                                                             |
+| 0x0001 | FRAME_BEGIN                  |                 | f32 time, f32 dt                                                                                                              |
+| 0x0002 | RESIZE                       |                 | f32 cssWidth, f32 cssHeight, f32 resolution                                                                                   |
+| 0x0003 | SET_CLEAR_COLOR              |                 | f32 r, g, b, a (straight)                                                                                                     |
+| 0x0004 | SET_VIEW                     |                 | f32 a, b, c, d, tx, ty (stage → css px)                                                                                       |
+| 0x00FF | FRAME_END                    |                 | —                                                                                                                             |
+| 0x0100 | TEXTURE_CREATE               |                 | u32 texId, width, height, formatId, texFlags (bits 24–31: mip level count, M2)                                                |
+| 0x0101 | TEXTURE_UPLOAD_PIXELS        |                 | u32 texId, x, y, w, h, u8[w·h·4]                                                                                              |
+| 0x0102 | TEXTURE_UPLOAD_BITMAP        |                 | u32 texId, objectIndex, flipY                                                                                                 |
+| 0x0103 | TEXTURE_DESTROY              |                 | u32 texId                                                                                                                     |
+| 0x0104 | TEXTURE_UPLOAD_BITMAP_REGION |                 | M2. u32 texId, objectIndex, x, y, flipY                                                                                       |
+| 0x0105 | TEXTURE_UPLOAD_COMPRESSED    |                 | M2. u32 texId, mipLevel, width, height, objectIndex (ArrayBuffer), byteOffset, byteLength                                     |
+| 0x0106 | TEXTURE_GENERATE_MIPMAPS     |                 | M2. u32 texId                                                                                                                 |
+| 0x0110 | SHARED_REGISTER              |                 | u32 sharedId, objectIndex                                                                                                     |
+| 0x0111 | SHARED_RELEASE               |                 | u32 sharedId                                                                                                                  |
+| 0x0120 | READBACK                     |                 | u32 requestId, srcKind (0 sprite buf, 1 swarm hot, 2 swarm cold), srcId, first, count; M2: srcKind 3 = swarm alive count      |
+| 0x0121 | PICK                         |                 | M2. u32 requestId, f32 x, f32 y (css px)                                                                                      |
+| 0x0200 | SPRITE_BUFFER_ALLOC          |                 | u32 bufferId, capacity                                                                                                        |
+| 0x0201 | SPRITE_BUFFER_DESTROY        |                 | u32 bufferId                                                                                                                  |
+| 0x0202 | SPRITE_UPLOAD                |                 | u32 bufferId, first, count, u8[count·40]                                                                                      |
+| 0x0203 | SPRITE_UPLOAD_SHARED         |                 | u32 bufferId, first, count, sharedId, byteOffset                                                                              |
+| 0x0210 | SPRITE_DRAW                  | DRAW            | u32 bufferId, first, count, texId, blendModeId                                                                                |
+| 0x0211 | SPRITE_DEFINE_EFFECT         |                 | M3. u32 effectId, u8[96] sprite effect block (color matrix, outline)                                                          |
+| 0x0212 | SPRITE_DESTROY_EFFECT        |                 | M3. u32 effectId                                                                                                              |
+| 0x0213 | SPRITE_SET_EFFECT            | DRAW            | M3. u32 effectId (0 = none) for the SPRITE_DRAWs that follow in this packet                                                   |
+| 0x0300 | SWARM_CREATE                 |                 | u32 swarmId, capacity, texId, blendModeId, renderFlags, paramsBytes, computeSrcBytes, renderSrcBytes, u8[compute], u8[render] |
+| 0x0301 | SWARM_DESTROY                |                 | u32 swarmId                                                                                                                   |
+| 0x0302 | SWARM_SET_PIPELINE           |                 | like CREATE without capacity                                                                                                  |
+| 0x0303 | SWARM_WRITE_HOT              |                 | u32 swarmId, first, count, u8[count·40]                                                                                       |
+| 0x0304 | SWARM_WRITE_COLD             |                 | u32 swarmId, first, count, u8[count·16]                                                                                       |
+| 0x0305 | SWARM_SPAWN                  | COMPUTE         | u32 swarmId, u8[112] SpawnParams                                                                                              |
+| 0x0306 | SWARM_KILL_RANGE             | COMPUTE         | u32 swarmId, first, count                                                                                                     |
+| 0x0307 | SWARM_KILL_LIST              | COMPUTE         | u32 swarmId, n, u32[n]                                                                                                        |
+| 0x0308 | SWARM_SET_PARAMS             |                 | u32 swarmId, byteOffset, byteLength, u8[byteLength]                                                                           |
+| 0x0309 | SWARM_STEP                   | COMPUTE         | u32 swarmId, f32 dt, u32 substeps, u32 activeCount                                                                            |
+| 0x030A | SWARM_DRAW                   | DRAW            | u32 swarmId, f32 a, b, c, d, tx, ty, f32 alpha, u32 drawCount                                                                 |
+| 0x030B | SWARM_SET_FRAMES             |                 | u32 swarmId, count, f32[count·4] (u0, v0, u1, v1)                                                                             |
+| 0x030C | SWARM_SET_PICK               |                 | M2. u32 swarmId, pickId (Swarm node id; 0 = not pickable)                                                                     |
+| 0x030D | SWARM_SET_SOURCE             |                 | M2.5. u32 swarmId, hotExternalId (0 = own buffers), coldExternalId (0 = own), flags (SIMULATE=1)                              |
+| 0x030E | SWARM_SET_CURVES             |                 | M3. u32 swarmId, u8[64] over-life curves (stops, color, size, alpha)                                                          |
+| 0x0400 | MASK_BUFFER_ALLOC            |                 | M3. u32 bufferId, capacity (mask quads, 40 B each)                                                                            |
+| 0x0401 | MASK_BUFFER_DESTROY          |                 | M3. u32 bufferId                                                                                                              |
+| 0x0402 | MASK_UPLOAD                  |                 | M3. u32 bufferId, first, count, u8[count·40]                                                                                  |
+| 0x0403 | MASK_UPLOAD_SHARED           |                 | M3. u32 bufferId, first, count, sharedId, byteOffset                                                                          |
+| 0x0410 | MASK_PUSH_SCISSOR            | DRAW            | M3. u32 maskId, f32 x, y, width, height (css px), u32 flags                                                                   |
+| 0x0411 | MASK_PUSH_STENCIL            | DRAW+PASS_BREAK | M3. u32 maskId, bufferId, first, count, texId, flags, f32 threshold                                                           |
+| 0x0412 | MASK_PUSH_ALPHA              | DRAW+PASS_BREAK | M3. u32 maskId, bufferId, first, count, texId, flags, f32 x, y, width, height, resolution                                     |
+| 0x0418 | MASK_POP                     | DRAW+PASS_BREAK | M3. u32 maskId (PASS_BREAK only when it ends a stencil or alpha segment)                                                      |
+| 0x0500 | FILTER_DEFINE                |                 | M3. u32 filterId, passCount, uniformBytes, flags, srcBytes, u8[srcBytes]                                                      |
+| 0x0501 | FILTER_DESTROY               |                 | M3. u32 filterId                                                                                                              |
+| 0x0502 | FILTER_SET_UNIFORMS          |                 | M3. u32 filterId, byteOffset, byteLength, u8[byteLength]                                                                      |
+| 0x0510 | FILTER_BEGIN                 | DRAW+PASS_BREAK | M3. u32 groupId, f32 x, y, width, height (css px), f32 resolution, u32 flags                                                  |
+| 0x0511 | FILTER_END                   | DRAW+PASS_BREAK | M3. u32 groupId, blendModeId, f32 alpha, u32 count, u32[count] filterIds                                                      |
 
 Format ids: `rgba8unorm`=0, `rgba8unorm-srgb`=1, `r8unorm`=2,
 `rgba16float`=3. M2 compressed format ids (names equal the RHI
@@ -1003,12 +1024,12 @@ thresholds.
 | Command overhead                                                                                             | 8 B header; typical command ≤ 64 B                                                                                   |
 | Worker mode                                                                                                  | ≤ 1 frame latency; main-thread busy loop of 8 ms must not drop core frames; 0 allocations per frame with the ring    |
 | `createRenderer` (excluding first pipeline compile)                                                          | < 150 ms                                                                                                             |
-| Bundle (min+gzip), minimal program: createRenderer + Texture + Sprite, WebGPU, including the chunks it loads | ≤ 40 KB (M2.5)                                                                                                       |
-| Bundle, same minimal program on WebGL2                                                                       | ≤ 42 KB (M2.5)                                                                                                       |
-| Bundle, each lazily loaded feature chunk                                                                     | its own budget (§18.3): size at the M2.5 freeze + 0.5 KB                                                             |
+| Bundle (min+gzip), minimal program: createRenderer + Texture + Sprite, WebGPU, including the chunks it loads | ≤ 44 KB (end of M3)                                                                                                  |
+| Bundle, same minimal program on WebGL2                                                                       | ≤ 46 KB (end of M3)                                                                                                  |
+| Bundle, each lazily loaded feature chunk                                                                     | its own budget (§18.3): measured size + 0.5 KB                                                                       |
 | Bundle, no growth: every fixture and feature chunk                                                           | ≤ `scripts/size-baseline.json` + 0.5 KB                                                                              |
 | Bundle, all exports (sum of every chunk)                                                                     | reported only (no absolute budget since M2.5); no-growth checked                                                     |
-| Worker bundle: `dist/cozygpu.worker.js` + the backend chunk it loads                                         | ≤ 25 KB                                                                                                              |
+| Worker bundle: `dist/cozygpu.worker.js` + the backend chunk it loads                                         | ≤ 25 KB (WebGPU) / ≤ 26 KB (WebGL2, end of M3)                                                                       |
 | M2.5 hooks (§19): `commit()`, events, interop, pick polling                                                  | 0 allocations per frame; no events per frame                                                                         |
 
 M1 measurements (Apple M4, Chrome 152 headless; see
@@ -1057,6 +1078,81 @@ was refreshed after review):
 | worker-webgpu  | 21.6 KB  | 25 KB  |
 | worker-webgl2  | 23.4 KB  | 25 KB  |
 
+**M3 freeze (2026-09-22).** Measured with the M3 contracts and stubs in
+place, before any M3 feature is built:
+
+| fixture        | M2.5 end | M3 freeze | budget         |
+| -------------- | -------- | --------- | -------------- |
+| minimal-webgpu | 39.9 KB  | 40.4 KB   | 41 KB (was 40) |
+| minimal-webgl2 | 41.7 KB  | 42.3 KB   | 43 KB (was 42) |
+| all-exports    | 104.3 KB | 108.2 KB  | —              |
+| worker-webgpu  | 21.6 KB  | 21.9 KB   | 25 KB          |
+| worker-webgl2  | 23.4 KB  | 23.7 KB   | 25 KB          |
+
+The minimal program grew 0.5 KB although no M3 feature is on it. About
+0.4 KB of that is **chunk-splitting cost**: the four new lazy features pull
+shared modules (errors, ids, the lazy-system registry) out of the entry
+chunk into one more shared chunk, and every chunk boundary costs gzip
+efficiency; the entry chunk itself shrank from 18.2 to 17.9 KB. The rest is
+the contract code that had to be on the path (the PASS_BREAK branch in
+RenderCore, two `LazyCoreSystem` placeholders, the new sprite/swarm opcode
+keys). Mask and filter opcodes were moved into their own `MaskOp` /
+`FilterOp` tables for the same reason (§21.6), which recovered 0.1 KB.
+
+The minimal budgets were therefore raised by 1 KB each, to 41 KB (WebGPU)
+and 43 KB (WebGL2), leaving about 0.6 KB of headroom for the M3 build.
+**The no-growth check is what actually holds the line**: every fixture and
+chunk is pinned to `scripts/size-baseline.json` + 0.5 KB, so an M3 feature
+that leaks onto the minimal path fails the gate even under the raised
+budget. The M3 feature chunks are seeded in the baseline at their target
+budget (they are stubs today); refresh them down to the measured size when
+the feature is done.
+
+**End of M3 (2026-09-22).** Every feature built, baseline refreshed after
+review:
+
+| fixture        | M3 freeze | end of M3 | budget         |
+| -------------- | --------- | --------- | -------------- |
+| minimal-webgpu | 40.4 KB   | 43.5 KB   | 44 KB (was 41) |
+| minimal-webgl2 | 42.3 KB   | 45.6 KB   | 46 KB (was 43) |
+| all-exports    | 108.2 KB  | 144.1 KB  | —              |
+| worker-webgpu  | 21.9 KB   | 23.2 KB   | 25 KB          |
+| worker-webgl2  | 23.7 KB   | 25.3 KB   | 26 KB (was 25) |
+
+No mask, filter, text or particle module is on the minimal path (verified
+with an esbuild metafile over the minimal fixture: its reachable chunks
+contain none of `src/masks/**`, `src/filters/**`, `src/text/**`,
+`src/particles/**`). The 3.1 KB the minimal program did grow, measured by
+swapping single files back to their M3-freeze version in the fixture build:
+
+| source                                                      | min+gzip |
+| ----------------------------------------------------------- | -------- |
+| `sprites/core.ts` — cheap-effect routing (§22.7)            | +0.41 KB |
+| `scene/bulk.ts` — paired column copy (1.9× faster `commit`) | +0.34 KB |
+| `sprites/front.ts` — the render-group seam (§21.4)          | +0.16 KB |
+| `RenderCore.ts` — `mainPass`, MSAA store, pass-break count  | +0.09 KB |
+| `commands/encoder.ts` — the shared-slot `utf8` scratch      | +0.08 KB |
+| `lazySystems.ts` — the `passBreak` forwarder                | +0.03 KB |
+| backend chunks — GL stencil, queue pacing, the MSDF branch  | +0.52 KB |
+| four more lazy roots: shared-chunk splitting overhead       | +1.3 KB  |
+
+The splitting overhead is the same effect the freeze already measured, at
+the scale of four real features: exporting `Group`, `Particles` and `Text`
+moves shared modules into more, smaller chunks, and each boundary costs
+gzip efficiency. It is **not** feature code — a build with those three
+export lines removed still contains no feature module, only fewer chunks.
+
+One real leak was found and fixed rather than budgeted: the particle
+emitter compiler imported `swarm/behaviors`, which is also a static export
+of the library entry. A module reachable both statically from the entry and
+from a lazy chunk lands in a chunk the entry loads eagerly, so the behavior
+table, the shader composer and 9 KB of swarm WGSL were on the minimal path
+(50.0 KB WebGPU). `src/swarm/velocity.ts` now holds the one behavior the
+emitter needs and imports nothing, which took 6.5 KB back off the path.
+**The rule for later milestones:** a lazily loaded chunk must not import a
+module that the library entry also reaches statically, unless that module
+is tiny.
+
 M2.5 added about 1.3 KB to the minimal path (events, userId, columns,
 picking poll, interop stub). It was recovered without API
 changes: the pick client (`picking.ts`) and the core half of interop
@@ -1096,6 +1192,10 @@ Modules talk to each other only through the entry points below.
 Cross-module call graph:
 
 ```
+scene    → (Group only) masks/mask.ts:createMaskBinding, filters/filters.ts:createFilterBinding (both dynamic)
+masks    → filters/targets.ts:createTargetPool (alpha masks share the filter target pool)
+text     → scene/Container.ts, scene/Sprite.ts (glyph children), assets (font atlas)
+particles→ swarm/Swarm.ts (owns one), swarm/types.ts
 renderer → assets/proxy.ts:createAssetsProxy, renderer/lazySystems.ts:isCoreSystemReady,
            backend/createBackend.ts → import('./webgpu/WebGPUBackend') | import('./webgl2/WebGL2Backend'),
            worker/LocalTransport.ts:createLocalTransport (Transport.interop)
@@ -1670,21 +1770,29 @@ Build configuration lives in `rollup.config.cjs` and `scripts/**`;
 
 ### 18.1 Dynamic imports
 
-| module (chunk)                                    | loaded by            | when                                                                |
-| ------------------------------------------------- | -------------------- | ------------------------------------------------------------------- |
-| `backend/webgpu/WebGPUBackend`                    | `createBackend`      | WebGPU selected                                                     |
-| `backend/webgl2/WebGL2Backend`                    | `createBackend`      | WebGL2 selected or fallback                                         |
-| `sprites/shadersWGSL` / `sprites/shadersGLSL`     | sprite core `init`   | per `caps.shaderLanguage` (one language per page)                   |
-| `sprites/frontPatch` (incremental structure pass) | scene packer         | first structure change (full rebuilds until loaded, §16.2)          |
-| `renderer/pickingCoreImpl`                        | `pickingCore` proxy  | first PICK (requests queue until loaded, §16.3)                     |
-| `worker/WorkerTransport`                          | `createRenderer`     | `worker: true`                                                      |
-| `swarm/core`                                      | `lazySystems` loader | first swarm command (local mode; worker: first SWARM packet, §17)   |
-| `swarm/glsl` (GLSL templates + composer)          | swarm front          | first swarm on a GLSL renderer                                      |
-| `assets/Assets`                                   | `assets/proxy`       | first async `renderer.assets` call                                  |
-| `renderer/interopImpl` + `coreInterop` (M2.5)     | `renderer.interop()` | first `interop()` call (§19.4)                                      |
-| `renderer/picking` (pick client, M2.5)            | `renderer.pick()`    | first `pick()` (it encodes in a render after the chunk loaded)      |
-| `backend/*/readbackRing` (M2.5)                   | backend              | first pick (`loadReadbackRing`), `readTexture`, WebGL2 `readBuffer` |
-| `backend/webgpu/compileMessages` (M2.5)           | WebGPU backend       | a shader reports compilation messages                               |
+| module (chunk)                                    | loaded by             | when                                                                |
+| ------------------------------------------------- | --------------------- | ------------------------------------------------------------------- |
+| `backend/webgpu/WebGPUBackend`                    | `createBackend`       | WebGPU selected                                                     |
+| `backend/webgl2/WebGL2Backend`                    | `createBackend`       | WebGL2 selected or fallback                                         |
+| `sprites/shadersWGSL` / `sprites/shadersGLSL`     | sprite core `init`    | per `caps.shaderLanguage` (one language per page)                   |
+| `sprites/frontPatch` (incremental structure pass) | scene packer          | first structure change (full rebuilds until loaded, §16.2)          |
+| `renderer/pickingCoreImpl`                        | `pickingCore` proxy   | first PICK (requests queue until loaded, §16.3)                     |
+| `worker/WorkerTransport`                          | `createRenderer`      | `worker: true`                                                      |
+| `swarm/core`                                      | `lazySystems` loader  | first swarm command (local mode; worker: first SWARM packet, §17)   |
+| `swarm/glsl` (GLSL templates + composer)          | swarm front           | first swarm on a GLSL renderer                                      |
+| `assets/Assets`                                   | `assets/proxy`        | first async `renderer.assets` call                                  |
+| `renderer/interopImpl` + `coreInterop` (M2.5)     | `renderer.interop()`  | first `interop()` call (§19.4)                                      |
+| `renderer/picking` (pick client, M2.5)            | `renderer.pick()`     | first `pick()` (it encodes in a render after the chunk loaded)      |
+| `backend/*/readbackRing` (M2.5)                   | backend               | first pick (`loadReadbackRing`), `readTexture`, WebGL2 `readBuffer` |
+| `backend/webgpu/compileMessages` (M2.5)           | WebGPU backend        | a shader reports compilation messages                               |
+| `masks/mask` + `masks/core` (M3)                  | `Group`               | first `group.mask = …` (worker: a loader in the worker entry)       |
+| `filters/filters` + `filters/core` (M3)           | `Group`               | first `group.filters = …` (worker: a loader in the worker entry)    |
+| `filters/builtin` (M3)                            | filter front          | first chain that uses a built-in filter                             |
+| `text/layout` (M3)                                | `Text`                | first layout                                                        |
+| `text/msdf` (M3)                                  | `Text`, `assets/font` | first MSDF text, or a `kind: 'font'` asset                          |
+| `text/canvas` (M3)                                | `Text`                | first `SystemFont` style                                            |
+| `assets/font` (M3)                                | `Assets`              | a `kind: 'font'` load                                               |
+| `particles/emitter` (M3)                          | `Particles`           | construction                                                        |
 
 - ESM output (`dist/`) uses code splitting (`output.dir`, chunk names
   `chunks/[name]-[hash].js`). The CJS build and the example builds use
@@ -1764,6 +1872,25 @@ their size at the end of M2.5 + 0.5 KB):
 | readback-webgpu  | `src/backend/webgpu/readbackRing.ts`    | 1.5 KB      | 2.1 KB  |
 | readback-webgl2  | `src/backend/webgl2/readbackRing.ts`    | 2.1 KB      | 2.7 KB  |
 | wgsl-diagnostics | `src/backend/webgpu/compileMessages.ts` | 0.4 KB      | 1.0 KB  |
+
+M3 chunks are budgeted differently: their number is a **target ceiling**
+set at the contract freeze, not a measured size plus slack, and the feature
+has to fit it. They are re-measured, and only lowered, when the feature is
+built.
+
+| chunk (M3)      | module                     | target |
+| --------------- | -------------------------- | ------ |
+| mask-core       | `src/masks/core.ts`        | 5.0 KB |
+| filter-core     | `src/filters/core.ts`      | 7.0 KB |
+| filters-builtin | `src/filters/builtin.ts`   | 6.0 KB |
+| text-core       | `src/text/layout.ts`       | 4.0 KB |
+| text-msdf       | `src/text/msdf.ts`         | 5.0 KB |
+| text-canvas     | `src/text/canvas.ts`       | 4.0 KB |
+| particles       | `src/particles/emitter.ts` | 5.0 KB |
+
+Each M3 chunk also carries what only it reaches: `mask-core` and
+`filter-core` hold their front half as well as the core system, and
+`text-msdf` is shared by `Text` and the `assets/font` chunk.
 
 **3. No growth:** every fixture and feature chunk against
 `scripts/size-baseline.json` (min+gzip bytes). More than 0.5 KB over the
@@ -1964,10 +2091,15 @@ renderer.render();
   makes it visible. WebGL2 callers must call `interop.invalidateState()`
   after their own GL calls and before the next render().
 - **Device loss:** the core drops every registration (`lossEpoch` bumps,
-  `ExternalInstanceBuffer.valid` turns false) and swarms with an external
-  source draw nothing. After the `deviceRestored` event the caller reads
-  `interop.device` again, recreates its buffers, registers them and calls
-  `setSource` again.
+  `ExternalInstanceBuffer.valid` turns false), and the Swarm drops its source
+  with them, so it is back on its own (now empty) buffers. `onRestore`
+  therefore runs with `spawn` / `write` available and must refill the cold
+  records a draw-only source still reads colour, frame and user id from; a
+  swarm that only re-registered its hot buffer would draw fully transparent
+  quads. After the `deviceRestored` event the caller reads `interop.device`
+  again, recreates its buffers, registers them and calls `setSource` again —
+  the pre-loss handles are invalid, so a missed re-registration throws
+  instead of drawing nothing. `examples/swarm/external.ts` is the reference.
 - cozygpu never writes, resizes or destroys an external buffer. Releasing
   a registered buffer that a swarm still uses makes that swarm draw
   nothing until a new source is set.
@@ -2136,21 +2268,586 @@ fills it.
 
 ## 20. Later milestones (design notes only)
 
-The following are **not** part of M2 or M2.5.
+The following are **not** part of M2 or M2.5. Masking, filters, text and
+particles were designed and frozen for M3: see §21–§24.
 
-- **Masking (M3).** Stencil masks, plus scissor for axis-aligned rects.
-- **Filters and effects (M3).** Render-to-texture passes (blur, color
-  matrix, bloom) on containers, with a pooled render-target cache.
-- **MSDF text (M3).** Atlas from the asset loader; glyph quads batch
-  through the sprite path with an MSDF fragment variant (flag bit).
-- **Particles on Swarm (M3).** Emitters (rate, burst, shape) implemented
-  as `spawn()` schedules, plus color and size curves baked into small
-  1D textures sampled by age/life.
 - **Per-renderer dirty tracking.** Dirty bits are process-wide, so one
   node tree drawn by two renderers can miss updates.
 - **External sprite instances.** A consumer for the reserved
   `'sprite-instance'` external layout (an instanced sprite drawable fed by
   outside GPU code, §19.4).
 - **Bounds readback, camera API** (`SET_VIEW` from a public camera),
-  custom blend factors, render-to-texture API, WebGPU compatibility-mode
-  swarm fallback via transform-style ping-pong textures.
+  custom blend factors, a public render-to-texture API (M3 has the pooled
+  targets but keeps them internal, §22.4), WebGPU compatibility-mode swarm
+  fallback via transform-style ping-pong textures.
+- **Masks and filters in picking** (§21.5): the pick pass ignores both in
+  M3, so a pick inside a masked group hits unclipped geometry.
+- **Text shaping** beyond kerning: no bidi, no complex-script shaping and
+  no ligatures. The Canvas2D path inherits whatever the browser does per
+  glyph, not per run.
+
+## 21. Masking (M3)
+
+Files: `src/masks/**`, `src/shaders/mask/**`, `examples/masking/**`, plus
+the render-group seam in the scene packer (§21.4) and the stencil additions
+to the RHI (§21.3). Public API: `docs/API.md` "Group: masks and filters".
+
+### 21.1 Shape of the feature
+
+A mask clips the subtree of a **`Group`** (`src/scene/Group.ts`, §21.4), not
+of every Container: an effect is a batch boundary and may cost a render
+target, and keeping it off `Container` keeps every byte of mask and filter
+code out of programs that never use one (§22.8).
+
+```ts
+const panel = new GPU.Group();
+panel.mask = shapeSprite; // pixels of a sprite
+panel.mask = { x: 0, y: 0, width: 300, height: 200 }; // a rect
+panel.mask = { source: shapeSprite, invert: true, mode: 'stencil' };
+panel.mask = null; // remove
+```
+
+The mask source is a `SceneNode` (its drawn pixels) or a rect in the
+group's parent space. A node used as a mask does not have to be in the
+scene tree; when it is, it also draws normally.
+
+### 21.2 Choosing the implementation (normative)
+
+`mode: 'auto'` (the default) picks the cheapest implementation that is
+correct for the mask:
+
+| condition                                                                             | implementation                                            |
+| ------------------------------------------------------------------------------------- | --------------------------------------------------------- |
+| a rect, or a single sprite whose world 2×2 has no rotation/skew and no negative scale | **scissor** — `RenderPass.setScissor`, no draw, no target |
+| any other geometry, with `caps.stencil`                                               | **stencil**                                               |
+| `caps.stencil` false, or the mask has soft edges (`mode: 'alpha'`)                    | **alpha** (render to texture)                             |
+
+- A mask whose texels are binary (scissor, stencil) uses
+  `threshold` (default `MASK_ALPHA_THRESHOLD`) to decide what masks.
+- An explicit `mode` that the backend cannot do falls back to 'alpha' and
+  emits one `error` event (§19.2); it never silently draws unclipped.
+- `invert` flips the test. Scissor cannot invert a rect that does not touch
+  the canvas edge, so an inverted rect mask goes to stencil (or alpha).
+- **'auto' cannot see a soft edge.** It looks at geometry, not texels, so an
+  unrotated sprite with a feathered texture resolves to scissor and clips to
+  a hard rectangle. Ask for `mode: 'alpha'` by name when the mask's own alpha
+  ramp is the point (`examples/masking` does).
+- **As built, 'auto' never picks stencil on WebGPU.** WebGPU binds stencil
+  state to the pipeline and forbids a pipeline without a depth-stencil state
+  in a pass that has a depth-stencil attachment, so attaching the buffer
+  mid-frame would invalidate every sprite and swarm draw. Until those
+  pipelines declare stencil state, WebGPU masks resolve to scissor or alpha
+  and an explicit `mode: 'stencil'` falls back to alpha. WebGL2 uses stencil
+  as described. Cost of lifting it: the sprite and swarm pipelines are
+  created with `depthFormat: MASK_STENCIL_FORMAT` and `stencil: { compare:
+'equal', writeMask: 0 }`, and RenderCore always attaches a
+  `depth24plus-stencil8` target to the main pass — one canvas-sized
+  depth-stencil texture per renderer, on every program whether it masks or
+  not.
+
+### 21.3 Core side and the pass break
+
+The mask core system (`src/masks/core.ts`, range `0x04`) owns:
+
+- **Mask instance buffers.** The front packs mask quads into a buffer with
+  the ordinary sprite instance layout (`SPRITE_INSTANCE_BYTES`) and uploads
+  them with `MASK_UPLOAD`. Masks are small (1–50 quads), so this
+  buffer is separate from the sprite one and is only rewritten when the
+  mask moves. `MASK_UPLOAD_SHARED` stays in the opcode table but is never
+  emitted and the core does not handle it: a few dozen quads always travel
+  inline, so the shared-memory path would only add code.
+- **The scissor stack.** `MASK_PUSH_SCISSOR` intersects with the rect
+  already in force and `MASK_POP` restores the previous one. Nesting is
+  therefore free.
+- **The stencil attachment.** The main pass has no depth/stencil buffer, so
+  the first `MASK_PUSH_STENCIL` of a frame carries `CommandFlag.PASS_BREAK`:
+  RenderCore ends the open pass, calls `CoreSystem.passBreak`, and the mask
+  system returns a `RenderPassDesc` for the same color target with
+  `load: 'load'` plus `depth: { target: stencilTexture, stencilLoad:
+'clear' }`. Everything after that draws with the stencil attached, so at
+  most **one break per frame** is needed however many stencil masks there
+  are. Masked draws use pipelines with `stencil.compare: 'equal'` and
+  `writeMask: 0`; the mask itself draws with `passOp: 'increment-clamp'`
+  and `colorWriteDisabled`, and `setStencilReference(depth)` selects the
+  nesting level (up to `MASK_MAX_DEPTH`).
+- **Alpha masks.** `MASK_PUSH_ALPHA` breaks to a pooled target (the pool
+  belongs to filters, §22.4, so there is one pool in the library), the
+  subtree renders there, and `MASK_POP` breaks back and composites the
+  target multiplied by the mask's alpha. This is the only mask that costs
+  a target, and it is the only one that is continuous rather than binary.
+
+`CommandFlag.PASS_BREAK` (bit 2) is the general mechanism, also used by
+filters:
+
+1. RenderCore replays DRAW commands in stream order as before.
+2. A command with PASS_BREAK whose system has `passBreak`: the open pass is
+   ended, `passBreak(reader, list, frame)` runs (it may record whole passes
+   on the frame's CommandList), and the pass it returns is opened — `null`
+   means "the frame's main pass again, with `load: 'load'`".
+3. The command's own `draw` then runs inside that new pass.
+
+With `antialias: true` every break resolves the MSAA target, so a frame
+with many groups costs one resolve per break; §22.4 keeps the count low by
+merging adjacent groups' passes where it can. Two things follow from MSAA
+and are implemented:
+
+- A pass that will be reopened must keep its multisampled attachment.
+  RenderCore counts the PASS_BREAK commands of the packet while it collects
+  the draw offsets and sets `RenderPassDesc.color.keepMultisampled` on the
+  main pass when there is at least one; otherwise the attachment is
+  discarded after its resolve, as before. Without this the first break
+  throws away everything drawn before it.
+- A capture target that the group's own sprites draw into has to match the
+  main pass' sample count, because those sprites use the main pipelines. An
+  alpha mask and a filter capture therefore acquire a multisampled
+  attachment that resolves into the single-sampled texture everything
+  downstream samples. `KEEP_TARGET` cannot load a multisampled attachment
+  from a resolved texture, so under MSAA a kept filter target starts each
+  frame cleared.
+- `CoreContext.mainPass` is the descriptor of the frame's main pass, with
+  its colour attachment and resolve target already set. A system's
+  `passBreak` copies that colour entry when it reopens the main pass
+  differently — the mask system adds its `depth` entry to it, which is what
+  makes stencil masks work under MSAA.
+
+### 21.4 The render-group seam in the packer
+
+`Group` implements `RenderGroup` (`src/types/core.ts`):
+`_emitGroupBegin(frame, world, worldOffset, worldAlpha) → boolean` and
+`_emitGroupEnd(frame)`. The scene packer (`src/sprites/front.ts`) treats a
+group like a `CustomDrawable` that has children:
+
+- the structure pass gives it its own kind (`KIND_GROUP`) and **ends the
+  current batch** at both the begin and the end of the group, exactly as a
+  CustomDrawable does — a group is never merged into a neighbouring batch;
+- the draw pass calls `_emitGroupBegin` with the group's world transform
+  (already computed by the transform pass) before the subtree's batches, and
+  `_emitGroupEnd` after them. Commands are emitted in draw order, exactly as
+  a CustomDrawable's `_emitDraw` is;
+- when `_emitGroupBegin` returns false the whole subtree is skipped for
+  that frame (nothing is emitted, no instance indices move): the group's
+  effect chunk or its core system has not loaded yet. A mask must never
+  flash unclipped content. The packer skips forward to the matching
+  `BATCH_GROUP_END`, counting nested begins, so an inner group is skipped
+  with its outer one.
+
+Nesting works because push/pop are stream commands: masks nest up to
+`MASK_MAX_DEPTH`, and a group can carry both a mask and filters (the
+filter capture opens first, the mask applies inside it).
+
+**A live group puts the packer on full structure rebuilds.** A group spans a
+range of batches, and the incremental splice (§16.2) describes a batch by
+one flat index, which cannot express a range that the patched region may sit
+inside, contain, or end exactly at. `nodeStore.groups` counts live `Group`
+nodes and `pack()` takes the full rebuild while it is non-zero. Groups are a
+handful of nodes in a scene, so this costs a DFS of the tree on structure
+changes; the 100k-sprite incremental path is untouched for scenes without
+groups. Lifting it means giving the batch list a begin/end pair the splice
+can move as a unit.
+
+### 21.5 Interaction with picking and batching
+
+- Picking ignores masks and filters in M3: the pick pass replays the same
+  DRAW commands, and the mask and filter systems have no `drawPick`, so a
+  pick inside a masked group hits the unclipped geometry. This is a known
+  limitation; the alternative (replaying mask state into the 1×1 pick pass)
+  is cheap for scissor and stencil and should be the first improvement.
+- Every group costs at least two extra commands and one batch split. A
+  screen full of individually masked sprites is the wrong shape for this
+  API; mask one group of many sprites instead.
+
+### 21.6 Loading, worker mode and readiness
+
+Masks are lazy in both modes:
+
+- **Main thread.** `Group` imports `src/masks/mask.ts` on the first `mask`
+  assignment. That module registers the core system factory
+  (`registerCoreSystemFactory`) and both halves travel in the `mask-core`
+  chunk, so the renderer can take MASK commands as soon as the chunk lands.
+  `group.ready` resolves then; `GPU.loadEffects()` preloads.
+- **Worker.** `src/worker/entry.ts` registers a _loader_ for the mask and
+  filter ranges, and the worker host holds a packet that carries commands
+  of a range whose chunk is still loading (the mechanism swarm has used
+  since M2, §17). The front therefore never waits on `isSystemReady` for
+  these ranges.
+- Mask and filter opcodes live in their own `MaskOp` / `FilterOp` tables
+  rather than in `Op`, because a const object is tree-shaken as a whole and
+  its properties are not.
+
+## 22. Filters (M3)
+
+Files: `src/filters/**`, `src/shaders/filter/**`, `examples/filters/**`,
+plus the sprite-effect branch in the sprite shaders and the effect binding
+in the sprite core (§22.7). Public API: `docs/API.md` "Group: masks and
+filters".
+
+### 22.1 Shape of the feature
+
+```ts
+const world = new GPU.Group();
+world.filters = [
+  GPU.filters.blur({ strength: 4 }),
+  GPU.filters.colorMatrix().saturate(0.5),
+];
+world.filterOptions = { resolution: 0.5 };
+```
+
+A chain applies to the group's whole subtree. Full-screen effects wrap the
+scene in a group (`renderer.stage` itself stays a plain Container, so the
+minimal program carries nothing).
+
+### 22.2 The pass structure (normative)
+
+1. `FILTER_BEGIN` (DRAW | PASS_BREAK) — the core acquires a target for the
+   group's **filter area** and opens a pass into it, cleared to transparent
+   black (or kept, with `keepTarget`). The group's own draw commands follow
+   in the stream and land there unchanged.
+2. `FILTER_END` (DRAW | PASS_BREAK) — `passBreak` records one full-screen
+   pass per enabled filter (per `passes` of its definition), ping-ponging
+   between two pooled targets, then returns the pass that was interrupted;
+   the command's `draw` composites the final target with one quad, using
+   `filterOptions.blendMode` and the group's world alpha.
+
+Filters run in **physical pixels** on premultiplied data. The view uniform
+is bound at group 0 as everywhere else, the source texture + sampler at
+group 1, and the per-pass uniform (prelude `FILTER_PASS_BYTES`, then the
+filter's own params) at group 2 with a dynamic offset.
+
+### 22.3 Custom filters
+
+`GPU.defineFilter({ name, params, defaults, wgsl, glsl, passes, padding })`
+returns a factory, mirroring `defineBehavior`. The fragment entry, the
+bindings and the `$params.<name>` rewrite are specified on
+`FilterDefinition` in `src/filters/types.ts`; a filter without a shader for
+the renderer's `caps.shaderLanguage` reports UNSUPPORTED once and is
+skipped while the rest of the chain runs. Sources travel to the core with
+`FILTER_DEFINE` once per filter (and again after a device loss); uniform
+changes are `FILTER_SET_UNIFORMS`, never a recompile.
+
+### 22.4 Target pool, area and resolution (normative)
+
+`src/filters/targets.ts` keeps one pool per renderer, keyed by
+(width, height, format, sampleCount) after rounding each dimension up to
+`FILTER_TARGET_GRANULARITY` (64) physical pixels, so a group that changes
+size a little keeps the same texture. Targets are acquired for the duration
+of a frame and released in `endFrame`; a target unused for
+`TARGET_IDLE_FRAMES` frames is destroyed. **Nothing is allocated in a
+steady-state frame.**
+
+- **Area.** By default the group's bounds, grown by the chain's largest
+  `padding` and clipped to the canvas. `filterOptions.area` overrides it,
+  which is also how an app avoids recomputing bounds for a group it already
+  knows the extent of. As built, `area` is read in canvas/css space rather
+  than the group's parent space; the two differ only once a camera
+  `SET_VIEW` is in play, which M3 has no public API for.
+- **Resolution.** The target is `area × dpr × filterOptions.resolution`
+  (default 1); `FilterFlag.HALF_RESOLUTION` halves it again for the passes
+  of one filter. Blur chains normally run at 0.5.
+- The pool is also what alpha masks use (§21.3), so the library never holds
+  two pools.
+- **As built, the capture target is canvas-sized, scissored to the filter
+  area, not area-sized.** The group's own sprites are drawn by the sprite
+  pipeline with the frame's View uniform bound at group 0, and nothing in
+  the RHI or `CoreContext` lets a system rebind group 0 for one pass, so an
+  area-sized target would move every sprite (a negative viewport origin, the
+  other way out, is invalid in WebGPU). Only the area's texels are ever
+  shaded and the pool means every group at one resolution shares two or
+  three textures, so the cost is bounded — but memory is canvas-sized.
+  Making it area-sized needs a dynamic-offset View bind group or a
+  `CoreContext.viewBindGroupFor(area)`.
+- The intermediate chain targets are never multisampled: the chain
+  pipelines are single-sampled and the composite draw is a single quad. The
+  **capture** attachment is the exception — see §21.3.
+
+### 22.5 Front side
+
+`src/filters/filters.ts` resolves each `Filter` to a program (loading
+`filters-builtin` when the chain uses a built-in), keeps the uniform
+mirrors, computes the area, and emits the commands. It has zero allocations
+per frame once the chain stopped changing: values are written into a
+per-filter `Float32Array` mirror and uploaded only when dirty.
+
+### 22.6 Built-ins
+
+| filter         | passes                      | cheap   | notes                                                                                                                                                                                                 |
+| -------------- | --------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `blur`         | 2 (separable) or 4 (Kawase) | no      | `quality: 'fast'` = dual Kawase down/up, much cheaper at large radii; `axis` limits it to one direction                                                                                               |
+| `colorMatrix`  | 1                           | yes     | chainable helpers (`saturate`, `hue`, `contrast`, `tint`, …) build a 4×5 matrix                                                                                                                       |
+| `displacement` | 1                           | no      | samples a map texture, offsets by two channels                                                                                                                                                        |
+| `outline`      | 1 (+ padding)               | not yet | the in-batch path needs a text-only signal the packer does not give the front, so it always runs as one pass; correct for every kind of content, but it costs a target where §22.6 promises otherwise |
+| `glow`         | blur + additive composite   | no      | `innerStrength` keeps the source on top                                                                                                                                                               |
+
+### 22.7 Cheap effects: staying inside the sprite batch (normative)
+
+A chain whose entries are **all cheap** never takes a render target. The
+filter front compiles it into one `SPRITE_EFFECT_BYTES` block (a 4×5 color
+matrix plus outline color/width and glow softness), sends it with
+`SPRITE_DEFINE_EFFECT`, and the group emits `SPRITE_SET_EFFECT(effectId)`
+before its subtree and `SPRITE_SET_EFFECT(0)` after it. The sprite core
+binds the effect uniform (dynamic offset, stride 256) for the draws in
+between and the sprite fragment shader applies it:
+
+- `color' = clamp(matrix · color + offset)` on straight-alpha color, before
+  premultiplication — so tint, saturation, hue, contrast and grayscale cost
+  one mat4 multiply and no pass;
+- with `SpriteInstanceFlag.SDF_OUTLINE` (text) the same block's outline
+  color/width draw the glyph's outline band from the distance field.
+
+Rules:
+
+- Cheap and expensive filters can be mixed: the leading run of cheap
+  filters folds into the batch and the rest still takes a target.
+- The effect is per batch, not per instance: a group with a cheap chain
+  splits the batch at its edges, like any other group, but adds no
+  per-instance bytes (the instance record stays 40 B).
+- `SPRITE_SET_EFFECT` is only emitted by a scene that uses effects; every
+  packet starts at effect 0.
+
+### 22.8 Why effects live on `Group`
+
+Measured at the M3 freeze: putting `mask` and `filters` accessors on
+`Container` costs the minimal program about 0.2 KB min+gzip and pulls the
+resolution logic onto the minimal path, for a feature most programs never
+use. `Group` is exported from `src/index.ts` as a value, so a program that
+does not reference it is tree-shaken clean, and the mask and filter code is
+only reachable through it (§18.1).
+
+## 23. Text (M3)
+
+Files: `src/text/**`, `src/shaders/text/**` (if a variant ever needs its
+own program), `examples/text/**`, `src/assets/font.ts` and the MSDF branch
+of the sprite shaders (§23.3). Public API: `docs/API.md` "Text".
+
+### 23.1 Shape of the feature
+
+```ts
+const font = await renderer.assets.load<GPU.FontAsset>({
+  url: 'fonts/inter.json',
+  kind: 'font',
+});
+const label = new GPU.Text('Score: 0', { font: font.value, size: 24 });
+stage.addChild(label);
+label.text = 'Score: 1'; // re-lays out the tail only
+```
+
+`style.font` is either a loaded `FontAsset` (MSDF, the default path) or a
+`SystemFont` descriptor (`{ family: 'Menlo' }`), which selects the Canvas2D
+path (§23.5).
+
+### 23.2 A Text is a Container of glyph sprites (normative)
+
+`Text extends Container` and owns its children: one `Sprite` per visible
+glyph, in reading order. This is deliberate:
+
+- glyph quads are ordinary sprite instances, so they upload through the
+  sprite instance buffer, **batch with the sprites around them** when they
+  share the atlas page, and cost nothing new in the packer;
+- picking, `userId`, masks and filters work on text with no extra code;
+- transforms, alpha and tint come from the existing node store.
+
+The cost is one node per glyph (about 200 B of store). Text is a UI
+feature; a scene with 100k glyphs should use several `Text` nodes, not one
+per character. Whitespace produces no child.
+
+### 23.3 MSDF rendering
+
+An MSDF font asset is the atlas JSON of msdf-atlas-gen / msdfgen plus its
+page image. `kind: 'font'` (§15.2) loads the JSON, resolves the page
+through the same `AssetsApi` (so it is cached, refcounted and budgeted like
+any texture) and parses metrics in `src/text/msdf.ts`.
+
+Glyph sprites from an MSDF page set `SpriteInstanceFlag.MSDF`. The sprite
+fragment shader (both languages) gains one branch:
+
+```
+coverage = clamp((median(t.r, t.g, t.b) - 0.5) * distanceScale + 0.5, 0, 1)
+```
+
+**As built, `distanceScale` is derived from `fwidth` of the sampled median
+alone** — the screen-space derivative of the field itself — not from the
+font's `distanceRange` through the per-batch effect block. That is a
+deliberate deviation from the first draft of this section: it needs no
+uniform, no pipeline variant per font and no effect bound at all, which is
+what lets glyph sprites batch with plain sprites. `FontAsset.distanceRange`
+is still parsed and exposed. Following the original wording later means
+`clamp(sd * screenPxRange + 0.5, 0, 1)` with `screenPxRange` from the effect
+block. WGSL rejects `fwidth` in non-uniform control flow, so all three
+sprite shaders evaluate the coverage before branching on the flag.
+
+`SpriteInstanceFlag.SDF_OUTLINE` is specified but **not implemented**:
+nothing sets the flag and the shaders do not read it. It needs the outline
+colour and width from the per-batch sprite effect block
+(`SE_OUTLINE_COLOR` / `SE_OUTLINE_WIDTH` / `SE_GLOW`, which the filter work
+does pack and bind) plus a `stroke` / `strokeWidth` pair on `TextStyle`.
+The branch is the only text-specific GPU code; there is no text core system
+and no text opcode range.
+
+### 23.4 Layout (front, DOM-free)
+
+`src/text/layout.ts` (chunk `text-core`) does line breaking (`wrap: 'word' |
+'char' | 'none'`), alignment (including `justify`), baseline placement,
+`letterSpacing` / `wordSpacing`, kerning, `maxLines` and `ellipsis`, and
+writes the resulting quads into the glyph sprites. It runs on the front in
+both renderer modes and touches no DOM.
+
+**Incremental updates.** Assigning `text` compares the new string with the
+old one from the front, finds the first differing code point, and re-lays
+out from there: glyph sprites before it keep their positions and are not
+even marked dirty. Glyph children are reused in place, the list only grows
+or shrinks at the tail, so a counter that changes its last two digits
+rewrites two instances and moves no batch boundary.
+
+`text.metrics` reports width, height, line count, first baseline and glyph
+count as of the last layout; `text.ready` resolves after the first layout
+(the chunks and, for a canvas font, the first rasterisation).
+
+### 23.5 Canvas2D fallback
+
+`src/text/canvas.ts` (chunk `text-canvas`) rasterises glyphs on demand at
+`SystemFont.atlasSize` into shared atlas pages with the asset loader's
+skyline packer, uploads them through the normal texture path and hands the
+layout pass ordinary sub-textures. It covers arbitrary installed fonts,
+emoji and scripts no pre-baked atlas has.
+
+- Front side only. It uses `OffscreenCanvas` when the page has it, a canvas
+  element otherwise — never in core code, so worker mode is unaffected (the
+  front is the main thread in both modes).
+- Canvas glyphs do not set the MSDF flag: they are ordinary alpha texels
+  and blur when scaled far past their atlas size.
+- A missing glyph makes `GlyphSource.ensure` return a promise; the Text
+  re-lays out when it resolves. Steady-state frames return null and
+  allocate nothing.
+
+### 23.6 Device loss and worker mode
+
+The font atlas is an asset, so `Assets` reloads it after
+`deviceRestored` like any texture (§15.7) and glyph sprites keep their
+handles. Canvas atlas pages are re-rasterised from the cached glyph list.
+Nothing about text is core-side, so worker mode needs no text code in the
+worker bundle.
+
+## 24. Particles (M3)
+
+Files: `src/particles/**`, `examples/particles/**`, and the over-life curve
+support in `src/swarm/**` and `src/shaders/swarm/**` (§24.4). Public API:
+`docs/API.md` "Particles".
+
+### 24.1 Shape of the feature
+
+```ts
+const fx = new GPU.Particles({
+  capacity: 200_000,
+  texture: spark,
+  emitter: {
+    rate: 5000,
+    shape: { disc: { radius: 20 } },
+    speed: [40, 120],
+    life: [0.4, 1.2],
+  },
+  over: { color: ['#fff', '#f80', '#00000000'], size: [4, 0] },
+});
+stage.addChild(fx);
+fx.emitter().moveTo(x, y);
+```
+
+`Particles` owns a `Swarm` (`fx.swarm`) and forwards the scene node
+surface to it. Everything it adds compiles down to what Swarm already
+does — there is no second simulation path.
+
+### 24.2 What compiles to what (normative)
+
+| declarative                                                    | compiles to                                                                                                     |
+| -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `shape`, `speed`/`direction`, `size`, `life`, `color`, `frame` | `SpawnOptions` + `SpawnFlag` bits (disc position, polar velocity, uniform scale)                                |
+| `rate`                                                         | a fractional accumulator; one `SWARM_SPAWN` per emitter per frame                                               |
+| `burst`                                                        | a scheduled count added to the same accumulator                                                                 |
+| `color` / `alpha` / `size` over life                           | the `SWARM_CURVE_BYTES` block, evaluated in the RENDER shader                                                   |
+| `rotation` / `drag` over life                                  | generated behaviors (WGSL + GLSL) appended before the user's                                                    |
+| `group`                                                        | `SpawnOptions.group` → `cold.flags` bits, so one Particles can run several populations with different behaviors |
+
+### 24.3 The zero-CPU-per-object rule
+
+Per frame the front does, per **emitter** (not per particle): advance the
+accumulator, write at most one SpawnParams block, emit one `SWARM_SPAWN`.
+Nothing walks particles, nothing uploads per-particle data, and the packet
+stays a few hundred bytes at any capacity — the Swarm budgets of §10 hold
+unchanged. `moveTo` writes two floats into the emitter's spawn block.
+
+### 24.4 Over-life curves
+
+Curves are 4 stops (`SWARM_CURVE_STOPS`) at normalized ages, uploaded once
+with `SWARM_SET_CURVES` and read by the render shader when
+`SwarmRenderFlag.CURVES` is set: `t = age / life`, then a piecewise-linear
+lookup for packed color, size multiplier and alpha multiplier. This keeps
+color animation off the simulation entirely — there is no per-frame write
+to the cold buffer, and immortal objects simply stay at stop 0. It
+supersedes the M1 `fadeOut` / `shrink` flags, which remain as the cheap
+special cases.
+
+Curves that must affect motion (`rotation`, `drag`) cannot live in the
+render shader: they compile to generated behaviors whose params carry the
+stops, so they run in the step shader like any other behavior and work on
+both backends.
+
+### 24.5 Backends and allocation
+
+- **WebGPU.** Anything Swarm supports: `allocation: 'ring'` by default,
+  `'gpu'` when the app wants a free list (mortal particles reusing slots
+  without CPU knowledge, §14.3).
+- **WebGL2.** Transform feedback only: `allocation: 'ring'`, capacity
+  within `SWARM_GL_MAX_CAPACITY`, every generated behavior must have its
+  GLSL variant (the compiler emits both, always). Particles therefore need
+  a finite `life`; `life: 'immortal'` with a `rate` is refused with
+  INVALID_ARGUMENT because a ring of immortal objects never frees slots.
+- Deaths are GPU-side in every mode; `fx.swarm.aliveCount()` is the way to
+  observe them, never a per-frame CPU count.
+
+### 24.6 Presets
+
+`GPU.particlePresets.fire/smoke/sparks/rain/confetti(options?)` return full
+`ParticlesOptions` (emitter + curves + behaviors) that the caller can
+spread and edit. They are data, not a second API: a preset is exactly what
+the user could have written.
+
+## 25. M3 contract additions
+
+Every file below is settled for M3: implement against it, do not change a
+signature. Where an implementation is missing it is a stub that throws
+`CozyGPUError('NOT_IMPLEMENTED')` (or rejects with it), so `tsc` and `jest`
+pass while the four features are built in parallel.
+
+| file                           | additions                                                                                                                                                                                                                                     |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/commands/opcodes.ts`      | `PROTOCOL_VERSION` 4; `CommandFlag.PASS_BREAK`; `OpcodeRange.MASK` / `FILTER`, `FIRST_LAZY_RANGE`; `SPRITE_DEFINE_EFFECT` / `SPRITE_DESTROY_EFFECT` / `SPRITE_SET_EFFECT`; `SWARM_SET_CURVES`; `MaskOp`, `FilterOp`, `MaskFlag`, `FilterFlag` |
+| `src/types/layouts.ts`         | `SpriteInstanceFlag.MSDF` / `SDF_OUTLINE`; `SPRITE_EFFECT_BYTES` + `SE_*` + `SpriteEffectFlag`; `MASK_STENCIL_FORMAT`, `MASK_MAX_DEPTH`, `MASK_ALPHA_THRESHOLD`; `FILTER_*` + `FP_*`; `SWARM_CURVE_BYTES` + `SCV_*`, `SwarmRenderFlag.CURVES` |
+| `src/backend/types.ts`         | `caps.stencil`; `CompareFunction`, `StencilOperation`, `StencilState`; `RenderPipelineDesc.stencil` / `.colorWriteDisabled`; `RenderPassDesc.depth.stencilLoad` / `.stencilClearValue`; `RenderPass.setStencilReference`                      |
+| `src/types/core.ts`            | `RenderGroup`, `isRenderGroup`; `CoreSystem.passBreak?`                                                                                                                                                                                       |
+| `src/scene/types.ts`           | `NodeKind` gains `'group'`; `GroupNode`, `GroupOptions`                                                                                                                                                                                       |
+| `src/masks/types.ts` (new)     | `MaskRect`, `MaskSource`, `MaskSpec`, `MaskMode`, `MaskTarget`, `MaskBinding`, `CreateMaskBinding`                                                                                                                                            |
+| `src/filters/types.ts` (new)   | `FilterParam*`, `FilterDefinition`, `Filter`, `ColorMatrixFilter`, `BuiltinFilters`, `FilterOptions`, `FilterBinding`, `CreateFilterBinding`                                                                                                  |
+| `src/text/types.ts` (new)      | `GlyphMetrics`, `FontAsset`, `SystemFont`, `GlyphSource`, `TextStyle`, `TextOptions`, `TextMetrics`, `TextNode`                                                                                                                               |
+| `src/particles/types.ts` (new) | `EmitterShape`, `EmitterOptions`, `Emitter`, `OverLife`, `ParticlePreset(s)`, `ParticlesOptions`, `ParticlesNode`                                                                                                                             |
+| `src/assets/types.ts`          | `AssetKind` gains `'font'`; `FontAssetOptions`; `AssetDescriptor.font`                                                                                                                                                                        |
+| `src/index.ts`                 | values `Group`, `loadEffects`, `filters`, `defineFilter`, `Text`, `Particles`, `particlePresets`, `loadParticles`; the matching types                                                                                                         |
+| `scripts/size.mjs`             | minimal budgets 41 / 43 KB; seven M3 chunk targets                                                                                                                                                                                            |
+
+Seams already wired into the shared files (fill in the implementation in
+the named module; the call sites stay where they are):
+
+- `src/scene/Group.ts` — stores `mask` / `filters` / `filterOptions`, loads
+  the chunks, implements `RenderGroup` by delegating to `MaskBinding` and
+  `FilterBinding`. Only those two bindings are yours.
+- `src/masks/mask.ts` / `src/filters/filters.ts` — register their core
+  system factory when loaded; `createMaskBinding` / `createFilterBinding`
+  are the stubs to replace.
+- `src/renderer/systems.ts` and `src/worker/entry.ts` — the mask and filter
+  ranges already have their `LazyCoreSystem` placeholder and their worker
+  loader.
+- `src/renderer/RenderCore.ts` — the PASS_BREAK branch already calls
+  `CoreSystem.passBreak`.
+- `src/assets/Assets.ts` — `kind: 'font'` already dispatches to
+  `src/assets/font.ts`.
+- `src/text/Text.ts` — the shell already loads `layout` plus `msdf` or
+  `canvas`; `layoutText` and `createGlyphSource` are the stubs to replace.
+- `src/particles/Particles.ts` — the shell and `particlePresets`; the
+  compiler in `src/particles/emitter.ts` is the stub to replace.

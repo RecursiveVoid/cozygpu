@@ -1,10 +1,13 @@
 import { CozyGPUError } from '../types/errors';
 import {
+  SPRITE_EFFECT_BYTES,
   SPRITE_INSTANCE_BYTES,
   SWARM_COLD_BYTES,
+  SWARM_CURVE_BYTES,
   SWARM_HOT_BYTES,
   SWARM_SPAWN_BYTES,
 } from '../types/layouts';
+import { FilterFlag, FilterOp, MaskFlag, MaskOp } from './opcodes';
 import {
   COMMAND_HEADER_BYTES,
   CommandFlag,
@@ -48,6 +51,8 @@ function fieldBytes(field: Field): number {
 const computeSrc = '@compute @workgroup_size(64) fn main() { /* ü → 🚀 */ }';
 const renderSrc =
   '@vertex fn vs() -> @builtin(position) vec4f { return vec4f(); }';
+const filterSrc =
+  '@fragment fn fs_main(@location(0) uv: vec2f) -> @location(0) vec4f { return vec4f(); }';
 
 /** One representative payload per opcode, following docs/ARCHITECTURE.md §3.4. */
 const specs: Array<[number, number, Field[]]> = [
@@ -124,6 +129,57 @@ const specs: Array<[number, number, Field[]]> = [
   [Op.SWARM_SET_FRAMES, 0, [u(7), u(1), f(0), f(0), f(0.5), f(0.5)]],
   [Op.SWARM_SET_PICK, 0, [u(7), u(42)]],
   [Op.SWARM_SET_SOURCE, 0, [u(7), u(3), u(0), u(1)]],
+  [Op.SWARM_SET_CURVES, 0, [u(7), b(SWARM_CURVE_BYTES)]],
+  // M3 sprite effects (ARCHITECTURE §22.7)
+  [Op.SPRITE_DEFINE_EFFECT, 0, [u(4), b(SPRITE_EFFECT_BYTES)]],
+  [Op.SPRITE_DESTROY_EFFECT, 0, [u(4)]],
+  [Op.SPRITE_SET_EFFECT, CommandFlag.DRAW, [u(4)]],
+  // M3 masks (ARCHITECTURE §21)
+  [MaskOp.MASK_BUFFER_ALLOC, 0, [u(9), u(64)]],
+  [MaskOp.MASK_BUFFER_DESTROY, 0, [u(9)]],
+  [MaskOp.MASK_UPLOAD, 0, [u(9), u(0), u(2), b(2 * SPRITE_INSTANCE_BYTES)]],
+  [MaskOp.MASK_UPLOAD_SHARED, 0, [u(9), u(0), u(2), u(3), u(0)]],
+  [
+    MaskOp.MASK_PUSH_SCISSOR,
+    CommandFlag.DRAW,
+    [u(11), f(10), f(20), f(100), f(50), u(MaskFlag.INVERT)],
+  ],
+  [
+    MaskOp.MASK_PUSH_STENCIL,
+    CommandFlag.DRAW | CommandFlag.PASS_BREAK,
+    [u(11), u(9), u(0), u(2), u(1), u(MaskFlag.ALPHA_TEST), f(0.5)],
+  ],
+  [
+    MaskOp.MASK_PUSH_ALPHA,
+    CommandFlag.DRAW | CommandFlag.PASS_BREAK,
+    [u(11), u(9), u(0), u(2), u(1), u(0), f(0), f(0), f(256), f(256), f(1)],
+  ],
+  [MaskOp.MASK_POP, CommandFlag.DRAW | CommandFlag.PASS_BREAK, [u(11)]],
+  // M3 filters (ARCHITECTURE §22)
+  [
+    FilterOp.FILTER_DEFINE,
+    0,
+    [
+      u(5),
+      u(1),
+      u(16),
+      u(FilterFlag.HALF_RESOLUTION),
+      u(utf8ByteLength(filterSrc)),
+      s(filterSrc),
+    ],
+  ],
+  [FilterOp.FILTER_DESTROY, 0, [u(5)]],
+  [FilterOp.FILTER_SET_UNIFORMS, 0, [u(5), u(0), u(8), b(8)]],
+  [
+    FilterOp.FILTER_BEGIN,
+    CommandFlag.DRAW | CommandFlag.PASS_BREAK,
+    [u(12), f(0), f(0), f(300), f(200), f(1), u(0)],
+  ],
+  [
+    FilterOp.FILTER_END,
+    CommandFlag.DRAW | CommandFlag.PASS_BREAK,
+    [u(12), u(0), f(1), u(2), u(5), u(6)],
+  ],
   [Op.FRAME_END, 0, []],
 ];
 
@@ -202,7 +258,8 @@ function checkSpec(
 describe('command stream', () => {
   it('covers every opcode in the Op table', () => {
     const covered = new Set(specs.map(([op]) => op));
-    for (const op of Object.values(Op)) expect(covered.has(op)).toBe(true);
+    const all = { ...Op, ...MaskOp, ...FilterOp };
+    for (const op of Object.values(all)) expect(covered.has(op)).toBe(true);
   });
 
   it('round-trips every opcode with alignment and padding', () => {

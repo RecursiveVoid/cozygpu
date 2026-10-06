@@ -22,6 +22,7 @@ import type {
   VertexBufferLayout,
 } from '../types';
 import type { GLTextureFormat, GLVertexFormat } from './formats';
+import type { GLStencil } from './state';
 
 /** What resources need from the backend to release themselves. */
 export interface GLOwner {
@@ -206,6 +207,10 @@ export class GLRenderPipeline
     readonly blend: number,
     readonly depth: boolean,
     readonly label: string | undefined,
+    /** M3 masks: stencil state in GL enums, null when the pipeline has none. */
+    readonly stencil: GLStencil | null = null,
+    /** M3 masks: stencil-only draws (`RenderPipelineDesc.colorWriteDisabled`). */
+    readonly colorWriteDisabled = false,
   ) {}
 
   /** Programs and vertex arrays are shared through the backend cache. */

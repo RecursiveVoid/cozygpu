@@ -16,6 +16,7 @@ import type {
   CommandList,
   ImportBufferDesc,
   RenderPass,
+  RenderPassDesc,
   RhiBindGroup,
   RhiBindGroupLayout,
   RhiBuffer,
@@ -75,10 +76,13 @@ export interface FrontFrame {
   ): Promise<ArrayBuffer>;
   /**
    * M2. True when the core system for opcode range `range` can take commands.
-   * Worker mode: always true (the worker bundle is eager). Local mode: false
-   * until a lazily imported system (ARCHITECTURE §18.1) finished loading;
-   * the first call starts the import. Front code emits nothing for that range
-   * while false and retries next frame.
+   * Local mode: false until a lazily imported system (ARCHITECTURE §18.1)
+   * finished loading; the first call starts the import. Front code emits
+   * nothing for that range while false and retries next frame.
+   *
+   * Worker mode: always true. The worker host holds a packet whose commands
+   * need a chunk that is still loading, so the front never has to wait
+   * (ARCHITECTURE §17, §21.6).
    */
   isSystemReady(range: number): boolean;
 }
@@ -144,6 +148,41 @@ export function isCustomDrawable(node: unknown): node is CustomDrawable {
   );
 }
 
+/**
+ * M3 (ARCHITECTURE §21.4). A container whose subtree is drawn inside an
+ * effect: a mask, a filter chain, or both. The scene packer treats such a
+ * container as a batch boundary — like a CustomDrawable, but with children:
+ * it calls `_emitGroupBegin` before walking the subtree and `_emitGroupEnd`
+ * after it, with the open sprite batch flushed on both sides. Implemented by
+ * `Group` (src/scene/Group.ts), which delegates to the lazily loaded mask and
+ * filter modules.
+ */
+export interface RenderGroup {
+  /**
+   * @internal Emits the group's begin commands. Returns false when the
+   * subtree must not be drawn this frame (effect chunk or core system not
+   * ready yet, ARCHITECTURE §21.6); the packer then skips the subtree and
+   * does not call `_emitGroupEnd`.
+   */
+  _emitGroupBegin(
+    frame: FrontFrame,
+    world: Float32Array,
+    worldOffset: number,
+    worldAlpha: number,
+  ): boolean;
+  /** @internal Emits the group's end commands (pop mask, run the chain). */
+  _emitGroupEnd(frame: FrontFrame): void;
+}
+
+export function isRenderGroup(node: unknown): node is RenderGroup {
+  return (
+    typeof node === 'object' &&
+    node !== null &&
+    typeof (node as { _emitGroupBegin?: unknown })._emitGroupBegin ===
+      'function'
+  );
+}
+
 // ─── CORE side ────────────────────────────────────────────────────────────────
 
 export interface CoreInitOptions {
@@ -186,6 +225,15 @@ export interface CoreContext {
    * test contexts need not provide it; RenderCore always does.
    */
   getExternalBuffer?(externalId: number): RhiBuffer | undefined;
+  /**
+   * M3 (ARCHITECTURE §21.3). The main pass of the current frame, with its
+   * color attachment (and resolve target under MSAA) already set. A system's
+   * `passBreak` copies that color entry into its own descriptor when it has
+   * to reopen the main pass differently — a mask adding a `depth` entry for
+   * the stencil buffer, for instance. Optional so a test context need not
+   * provide it; RenderCore always does. Do not mutate it.
+   */
+  readonly mainPass?: RenderPassDesc;
   post(message: CoreMessage, transfer?: Transferable[]): void;
 }
 
@@ -244,6 +292,20 @@ export interface CoreSystem {
     frame: CoreFrameState,
     view: RhiBindGroup,
   ): void;
+  /**
+   * M3 multi-pass hook (ARCHITECTURE §21.3). Called for a DRAW command that
+   * also carries `CommandFlag.PASS_BREAK`, after the core ended the open
+   * render pass and before it opens the next one. The system may record whole
+   * passes on `list` here (filter chain passes, mask capture), and returns
+   * the description of the pass the core opens next, or null to reopen the
+   * frame's main pass with `load: 'load'`. The core then calls `draw` for the
+   * same command inside that new pass. Missing hook = the break is ignored.
+   */
+  passBreak?(
+    reader: CommandReader,
+    list: CommandList,
+    frame: CoreFrameState,
+  ): RenderPassDesc | null;
   /** Device restored: rebuild GPU objects from retained CPU state. GPU-only data is gone. */
   restore(ctx: CoreContext): Promise<void>;
   destroy(): void;

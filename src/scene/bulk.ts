@@ -59,11 +59,15 @@ const ALL_FIELDS = 31;
 
 // Column indexes (Rows._a/_o/_s) in SpriteColumns key order. Columns below
 // C_TINT are Float32Array, the rest Uint32Array.
+const C_X = 0;
 const C_Y = 1;
 const C_ROT = 2;
+const C_SX = 3;
 const C_SY = 4;
+const C_ALPHA = 5;
 const C_TINT = 6;
 const C_FRAME = 7;
+const C_USER = 8;
 /** Column keys; also the node property each column writes (except frame). */
 const KEYS = [
   'x',
@@ -102,6 +106,129 @@ const COL_DIRTY = [
   0,
   0,
 ];
+
+/** The source array of column `c`, or null when `fields` leaves it out. */
+function bound(
+  a: readonly (Column | null)[],
+  fields: number,
+  c: number,
+): Column | null {
+  return (fields & COL_FIELD[c]) !== 0 ? a[c] : null;
+}
+
+// ─── Copy loops ──────────────────────────────────────────────────────────────
+// One module-level function per loop shape, each free of per-row branches and
+// taking its arrays as parameters, so the JIT sees one element type per access
+// site and can hoist the bounds checks.
+//
+// Columns that land in the same store record are copied two at a time: the
+// record's cache line, the store slot and the dirty byte are then touched once
+// instead of twice. x + y halve the walk over `pos` (this is what makes a
+// `commit()` cheaper than the same number of `setPosition()` calls), and
+// rotation / scaleX / scaleY / alpha halve the much wider walk over `local`.
+// Dense sources (offset 0, stride 1 — plain external columns) get their own
+// copy of the position loop: indexing straight by the loop counter is
+// measurably cheaper than `offset + i × stride`.
+
+/** x and y of rows [first, end), sources indexed by the row directly. */
+function copyPosDense(
+  slots: Int32Array,
+  dirty: Uint8Array,
+  P: Float32Array,
+  cx: Float32Array,
+  cy: Float32Array,
+  first: number,
+  end: number,
+): void {
+  for (let i = first; i < end; i++) {
+    const slot = slots[i];
+    const po = slot * POS_STRIDE;
+    P[po] = cx[i];
+    P[po + 1] = cy[i];
+    dirty[slot] |= Dirty.POSITION;
+  }
+}
+
+/** One f32 column into `T[slot × ts + to]`, ORing `bit` per row. */
+function copyF32(
+  slots: Int32Array,
+  dirty: Uint8Array,
+  T: Float32Array,
+  ts: number,
+  to: number,
+  bit: number,
+  src: Float32Array,
+  off: number,
+  stride: number,
+  first: number,
+  end: number,
+): void {
+  for (let i = first; i < end; i++) {
+    const slot = slots[i];
+    T[slot * ts + to] = src[off + i * stride];
+    dirty[slot] |= bit;
+  }
+}
+
+/** Two f32 columns of the same store record, rows [first, end). */
+function copyF32x2(
+  slots: Int32Array,
+  dirty: Uint8Array,
+  T: Float32Array,
+  ts: number,
+  toA: number,
+  toB: number,
+  bit: number,
+  srcA: Float32Array,
+  offA: number,
+  strA: number,
+  srcB: Float32Array,
+  offB: number,
+  strB: number,
+  first: number,
+  end: number,
+): void {
+  for (let i = first; i < end; i++) {
+    const slot = slots[i];
+    const to = slot * ts;
+    T[to + toA] = srcA[offA + i * strA];
+    T[to + toB] = srcB[offB + i * strB];
+    dirty[slot] |= bit;
+  }
+}
+
+/** tint of rows [first, end): sprites only, 24 bits. */
+function copyTint(
+  slots: Int32Array,
+  sprite: Uint8Array,
+  dirty: Uint8Array,
+  T: Uint32Array,
+  src: Uint32Array,
+  off: number,
+  stride: number,
+  first: number,
+  end: number,
+): void {
+  for (let i = first; i < end; i++) {
+    if (sprite[i] !== 1) continue;
+    const slot = slots[i];
+    T[slot] = src[off + i * stride] & 0xffffff;
+    dirty[slot] |= Dirty.SPRITE;
+  }
+}
+
+/** userId of rows [first, end): every child, and never drawn (no dirty bit). */
+function copyUserId(
+  slots: Int32Array,
+  T: Uint32Array,
+  src: Uint32Array,
+  off: number,
+  stride: number,
+  first: number,
+  end: number,
+): void {
+  for (let i = first; i < end; i++) T[slots[i]] = src[off + i * stride];
+}
 
 /** The node-store array a column writes (not for C_FRAME). */
 function storeOf(c: number): Column {
@@ -207,35 +334,107 @@ class Rows {
           }
         }
       } else {
-        // One tight loop per column; x and y are separate columns.
-        for (let c = 0; c < 9; c++) {
-          const src = a[c];
-          if (src === null || c === C_FRAME || (fields & COL_FIELD[c]) === 0) {
-            continue;
-          }
-          const off = o[c];
-          const stride = st[c];
-          const T = storeOf(c);
-          const ts = COL_STRIDE[c];
-          const to = COL_OFF[c];
-          const bit = COL_DIRTY[c];
-          if (c < C_TINT) {
-            for (let i = first; i < end; i++) {
-              const slot = slots[i];
-              T[slot * ts + to] = src[off + i * stride];
-              dirty[slot] |= bit;
+        // The column arrays are typed on the way in, not read through the
+        // `Column` union: `rebind` and `ChildBulk.check` guarantee
+        // Float32Array below C_TINT and Uint32Array from C_TINT up.
+        const cx = bound(a, fields, C_X);
+        const cy = bound(a, fields, C_Y);
+        // Group 0 is x + y in `pos`, group 1 is the four `local` columns.
+        // Plain external columns take the dense position loop and skip group
+        // 0; every other shape is paired inside its own group.
+        let g = 0;
+        if (
+          cx !== null &&
+          cy !== null &&
+          o[C_X] === 0 &&
+          st[C_X] === 1 &&
+          o[C_Y] === 0 &&
+          st[C_Y] === 1
+        ) {
+          g = 1;
+          copyPosDense(
+            slots,
+            dirty,
+            s.pos,
+            cx as Float32Array,
+            cy as Float32Array,
+            first,
+            end,
+          );
+        }
+        for (; g < 2; g++) {
+          const T = g === 0 ? s.pos : s.local;
+          const ts = g === 0 ? POS_STRIDE : LOCAL_STRIDE;
+          const last = g === 0 ? C_Y : C_ALPHA;
+          // The bound column of this group still waiting for a partner.
+          let p = -1;
+          for (let c = g === 0 ? C_X : C_ROT; c <= last; c++) {
+            if (bound(a, fields, c) === null) continue;
+            if (p < 0) {
+              p = c;
+              continue;
             }
-          } else {
-            // tint (sprites only, 24 bits) or userId (no dirty bit).
-            const tint = c === C_TINT;
-            const mask = tint ? 0xffffff : -1;
-            for (let i = first; i < end; i++) {
-              if (tint && sprite[i] !== 1) continue;
-              const slot = slots[i];
-              T[slot] = src[off + i * stride] & mask;
-              dirty[slot] |= bit;
-            }
+            copyF32x2(
+              slots,
+              dirty,
+              T,
+              ts,
+              COL_OFF[p],
+              COL_OFF[c],
+              COL_DIRTY[p] | COL_DIRTY[c],
+              a[p] as Float32Array,
+              o[p],
+              st[p],
+              a[c] as Float32Array,
+              o[c],
+              st[c],
+              first,
+              end,
+            );
+            p = -1;
           }
+          // A column with no partner in its record goes alone.
+          if (p >= 0) {
+            copyF32(
+              slots,
+              dirty,
+              T,
+              ts,
+              COL_OFF[p],
+              COL_DIRTY[p],
+              a[p] as Float32Array,
+              o[p],
+              st[p],
+              first,
+              end,
+            );
+          }
+        }
+        const ct = bound(a, fields, C_TINT);
+        if (ct !== null) {
+          copyTint(
+            slots,
+            sprite,
+            dirty,
+            s.tint,
+            ct as Uint32Array,
+            o[C_TINT],
+            st[C_TINT],
+            first,
+            end,
+          );
+        }
+        const cu = bound(a, fields, C_USER);
+        if (cu !== null) {
+          copyUserId(
+            slots,
+            s.userId,
+            cu as Uint32Array,
+            o[C_USER],
+            st[C_USER],
+            first,
+            end,
+          );
         }
       }
       if ((fields & BulkField.FRAME) !== 0) {

@@ -12,9 +12,11 @@
 /**
  * 2 = M2 (new 0x01 texture/pick opcodes, SWARM_SET_PICK).
  * 3 = M2.5 (SWARM_SET_SOURCE; the pick texel is rgba32uint with a user id).
+ * 4 = M3 (mask 0x04 and filter 0x05 ranges, PASS_BREAK, sprite effects,
+ *     SWARM_SET_CURVES).
  * Front and worker bundle must match.
  */
-export const PROTOCOL_VERSION = 3;
+export const PROTOCOL_VERSION = 4;
 /** 'CZG1' read as little-endian u32. */
 export const PACKET_MAGIC = 0x3147_5a43;
 
@@ -37,6 +39,15 @@ export const CommandFlag = {
   DRAW: 1 << 0,
   /** Queues compute work, executed in the compute phase in stream order. */
   COMPUTE: 1 << 1,
+  /**
+   * M3 (ARCHITECTURE §21.3). Set together with DRAW: before the command is
+   * drawn the core ends the open render pass, asks the owning system for the
+   * pass to open next (`CoreSystem.passBreak`) and draws the command into
+   * that new pass. Masks that need a stencil attachment and filters that
+   * render a group into an offscreen target use it. A packet without any
+   * PASS_BREAK command costs nothing (one counter test per packet).
+   */
+  PASS_BREAK: 1 << 2,
 } as const;
 
 /** Opcode ranges: the high byte selects the owning CoreSystem. */
@@ -45,9 +56,19 @@ export const OpcodeRange = {
   TEXTURE: 0x01, // textures & shared memory (backend)
   SPRITE: 0x02, // sprites (sprites)
   SWARM: 0x03, // swarm (swarm)
-  // 0x04–0x7f reserved for future first-party systems (text, masks, filters, M3)
+  MASK: 0x04, // M3 masks: scissor, stencil, alpha (masking)
+  FILTER: 0x05, // M3 filter chains and render targets (filters)
+  // 0x06–0x7f reserved for future first-party systems
   EXTENSION: 0x80, // 0x80–0xff third-party / experimental
 } as const;
+
+/**
+ * M3. First range whose core system is a lazily loaded chunk in BOTH modes
+ * (masks, filters). In worker mode the host holds a packet that carries
+ * commands of such a range until the chunk landed, exactly as it already does
+ * for SWARM (ARCHITECTURE §21.6).
+ */
+export const FIRST_LAZY_RANGE = OpcodeRange.MASK;
 
 export const Op = {
   // ── 0x00 CORE ──────────────────────────────────────────────────────────────
@@ -109,6 +130,21 @@ export const Op = {
   SPRITE_UPLOAD_SHARED: 0x0203,
   /** DRAW. u32 bufferId, u32 first, u32 count, u32 texId, u32 blendModeId */
   SPRITE_DRAW: 0x0210,
+  /**
+   * M3. u32 effectId, u8[SPRITE_EFFECT_BYTES] (layouts.ts). Defines or
+   * replaces a cheap in-batch effect (color matrix + outline/glow), bound by
+   * SPRITE_SET_EFFECT. Cheap effects never allocate a render target.
+   */
+  SPRITE_DEFINE_EFFECT: 0x0211,
+  /** M3. u32 effectId */
+  SPRITE_DESTROY_EFFECT: 0x0212,
+  /**
+   * M3. DRAW. u32 effectId (0 = none). Binds a cheap effect block for the
+   * SPRITE_DRAWs that follow it in this packet; every packet starts with
+   * effect 0, so a scene without effects never carries this command
+   * (ARCHITECTURE §22.7).
+   */
+  SPRITE_SET_EFFECT: 0x0213,
 
   // ── 0x03 SWARM ─────────────────────────────────────────────────────────────
   /**
@@ -151,7 +187,113 @@ export const Op = {
    * SWARM_STEP.activeCount when simulating), as for own buffers.
    */
   SWARM_SET_SOURCE: 0x030d,
+  /**
+   * M3 (particles, ARCHITECTURE §24.4). u32 swarmId,
+   * u8[SWARM_CURVE_BYTES] over-life curves (layouts.ts). Read by the render
+   * shader when SwarmRenderFlag.CURVES is set; never per object, never per
+   * frame unless the curves change.
+   */
+  SWARM_SET_CURVES: 0x030e,
 } as const;
+
+/**
+ * M3 mask opcodes (ARCHITECTURE §21). They live in their own table, not in
+ * `Op`, so a program without masks does not carry them: a const object is
+ * tree-shaken as a whole, its properties are not.
+ */
+export const MaskOp = {
+  /** u32 bufferId, u32 capacity (mask quads, SPRITE_INSTANCE_BYTES each) */
+  MASK_BUFFER_ALLOC: 0x0400,
+  /** u32 bufferId */
+  MASK_BUFFER_DESTROY: 0x0401,
+  /** u32 bufferId, u32 first, u32 count, u8[count*SPRITE_INSTANCE_BYTES] */
+  MASK_UPLOAD: 0x0402,
+  /**
+   * u32 bufferId, u32 first, u32 count, u32 sharedId, u32 byteOffset.
+   * Reserved: the front always uploads inline (a mask is a few dozen quads),
+   * so nothing emits this and the mask core does not handle it.
+   */
+  MASK_UPLOAD_SHARED: 0x0403,
+  /**
+   * DRAW. u32 maskId, f32 x, f32 y, f32 width, f32 height (css px, canvas
+   * space), u32 flags (MaskFlag). Intersects the scissor rect of the open
+   * pass; the cheapest implementation (§21.2).
+   */
+  MASK_PUSH_SCISSOR: 0x0410,
+  /**
+   * DRAW (+ PASS_BREAK on the first stencil mask of a frame, which reopens
+   * the main pass with a stencil attachment). u32 maskId, u32 bufferId,
+   * u32 first, u32 count, u32 texId, u32 flags (MaskFlag), f32 threshold.
+   */
+  MASK_PUSH_STENCIL: 0x0411,
+  /**
+   * DRAW | PASS_BREAK. Soft (alpha) mask: the group is captured into an
+   * offscreen target and multiplied by the mask's alpha on pop.
+   * u32 maskId, u32 bufferId, u32 first, u32 count, u32 texId, u32 flags
+   * (MaskFlag), f32 x, f32 y, f32 width, f32 height (bounds, css px),
+   * f32 resolution.
+   */
+  MASK_PUSH_ALPHA: 0x0412,
+  /**
+   * DRAW (+ PASS_BREAK when it ends a stencil or alpha segment).
+   * u32 maskId — pops the innermost mask pushed with the same id.
+   */
+  MASK_POP: 0x0418,
+} as const;
+
+/** M3 filter opcodes (ARCHITECTURE §22). Own table, see `MaskOp`. */
+export const FilterOp = {
+  /**
+   * u32 filterId, u32 passCount, u32 uniformBytes, u32 flags (FilterFlag),
+   * u32 srcBytes, u8[srcBytes] (pad). Shader source in the core's language
+   * (`caps.shaderLanguage`), composed on the front. Sent once per filter
+   * program and re-sent after a device loss.
+   */
+  FILTER_DEFINE: 0x0500,
+  /** u32 filterId */
+  FILTER_DESTROY: 0x0501,
+  /** u32 filterId, u32 byteOffset, u32 byteLength, u8[byteLength] */
+  FILTER_SET_UNIFORMS: 0x0502,
+  /**
+   * DRAW | PASS_BREAK. Starts capturing the group into a pooled target.
+   * u32 groupId, f32 x, f32 y, f32 width, f32 height (filter area in css px,
+   * canvas space, padding included), f32 resolution, u32 flags (FilterFlag).
+   */
+  FILTER_BEGIN: 0x0510,
+  /**
+   * DRAW | PASS_BREAK. Runs the chain over the captured target and composites
+   * the result where the group sat. u32 groupId, u32 blendModeId, f32 alpha,
+   * u32 count, u32[count] filterIds (chain order).
+   */
+  FILTER_END: 0x0511,
+} as const;
+
+/** M3. MASK_PUSH_* flags. */
+export const MaskFlag = {
+  /** Keep what is OUTSIDE the mask instead of inside. */
+  INVERT: 1 << 0,
+  /** Mask texels below `threshold` are transparent (stencil/alpha masks). */
+  ALPHA_TEST: 1 << 1,
+} as const;
+
+/** M3. FILTER_DEFINE / FILTER_BEGIN flags. */
+export const FilterFlag = {
+  /** The pass reads the previous pass' output at half resolution (blur chains). */
+  HALF_RESOLUTION: 1 << 0,
+  /** Sample with 'nearest' instead of 'linear'. */
+  NEAREST: 1 << 1,
+  /** The chain needs the target cleared to transparent black (default: yes). */
+  KEEP_TARGET: 1 << 2,
+} as const;
+
+/**
+ * M3. FILTER_DEFINE.flags carries the FilterFlag bits in 0..15 and, above
+ * them, the word index of the program's `map` param plus one (0 = the program
+ * has none). The core binds the texture that param names at @group(3) for the
+ * pass, which is how `displacement` reads its map.
+ */
+export const FILTER_MAP_SHIFT = 16;
+export const FILTER_MAP_MASK = 0xff;
 
 /** M2.5. SWARM_SET_SOURCE.flags. */
 export const SwarmSourceFlag = {
@@ -159,7 +301,10 @@ export const SwarmSourceFlag = {
   SIMULATE: 1 << 0,
 } as const;
 
-export type Opcode = (typeof Op)[keyof typeof Op];
+export type Opcode =
+  | (typeof Op)[keyof typeof Op]
+  | (typeof MaskOp)[keyof typeof MaskOp]
+  | (typeof FilterOp)[keyof typeof FilterOp];
 
 export function opcodeRange(opcode: number): number {
   return opcode >>> 8;

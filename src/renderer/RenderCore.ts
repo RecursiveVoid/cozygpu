@@ -111,6 +111,8 @@ export class Context implements CoreContext {
   viewBindGroup!: RhiBindGroup;
   textureLayout!: RhiBindGroupLayout;
   textures!: TextureRegistry;
+  /** M3: the descriptor of the frame's main pass (ARCHITECTURE §21.3). */
+  mainPass!: RenderPassDesc;
 
   constructor(
     readonly backend: Backend,
@@ -214,6 +216,7 @@ export class RenderCoreImpl implements RenderCore {
   ) {
     this.debugEnabled = isDebugEnabled(options);
     this.ctx = new Context(backend, options.antialias ? 4 : 1, post);
+    this.ctx.mainPass = this.passDesc;
     this.decoder = createCommandDecoder();
     this.replay = new DrawReplay(this.decoder, this.systemsByRange, this.frame);
     for (let i = 0; i < systems.length; i++) {
@@ -325,12 +328,16 @@ export class RenderCoreImpl implements RenderCore {
     frame.frameId = decoder.frameId;
     const reader = decoder.reader;
     let drawCount = 0;
+    // M3: a frame with a pass break reopens the main pass, so under MSAA its
+    // multisampled attachment must survive the first pass' resolve.
+    let passBreaks = 0;
 
     // 1. Execute non-DRAW commands, remember DRAW offsets.
     while (decoder.next()) {
       if ((reader.flags & CommandFlag.DRAW) !== 0) {
         if (drawCount === this.drawOffsets.length) this.growDrawOffsets();
         this.drawOffsets[drawCount++] = reader.commandOffset;
+        if ((reader.flags & CommandFlag.PASS_BREAK) !== 0) passBreaks++;
         continue;
       }
       try {
@@ -346,7 +353,7 @@ export class RenderCoreImpl implements RenderCore {
 
     // A hidden (zero-size) canvas skips GPU work but still acks the frame.
     if (frame.pixelWidth > 0 && frame.pixelHeight > 0) {
-      this.renderFrame(reader, drawCount);
+      this.renderFrame(reader, drawCount, passBreaks);
     }
 
     for (let i = 0; i < this.systems.length; i++) {
@@ -385,7 +392,11 @@ export class RenderCoreImpl implements RenderCore {
 
   // ─── Frame phases ──────────────────────────────────────────────────────────
 
-  private renderFrame(reader: CommandReader, drawCount: number): void {
+  private renderFrame(
+    reader: CommandReader,
+    drawCount: number,
+    passBreaks: number,
+  ): void {
     const backend = this.backend;
     const frame = this.frame;
     const view = this.view;
@@ -411,14 +422,16 @@ export class RenderCoreImpl implements RenderCore {
 
       // 3. Main render pass: replay DRAW commands in stream order.
       const color = this.passDesc.color;
+      color.load = 'clear';
       if (this.msaaTarget) {
         color.target = this.msaaTarget;
         color.resolveTarget = 'canvas';
+        color.keepMultisampled = passBreaks > 0;
       } else {
         color.target = 'canvas';
         color.resolveTarget = undefined;
       }
-      const pass = list.beginRenderPass(this.passDesc);
+      let pass = list.beginRenderPass(this.passDesc);
       const decoder = this.decoder;
       for (let i = 0; i < drawCount; i++) {
         decoder.seek(this.drawOffsets[i]);
@@ -426,6 +439,19 @@ export class RenderCoreImpl implements RenderCore {
         if (!system) {
           this.warnUnknownOpcode(reader.opcode);
           continue;
+        }
+        // M3 (ARCHITECTURE §21.3): masks and filters may need a different
+        // pass (stencil attachment, offscreen target) for what follows.
+        if ((reader.flags & CommandFlag.PASS_BREAK) !== 0 && system.passBreak) {
+          pass.end();
+          let desc: RenderPassDesc | null = null;
+          try {
+            desc = system.passBreak(reader, list, frame);
+          } catch (err) {
+            this.report(err, `${system.name}.passBreak`);
+          }
+          color.load = 'load';
+          pass = list.beginRenderPass(desc ?? this.passDesc);
         }
         try {
           system.draw(reader, pass, frame);

@@ -65,6 +65,13 @@ export interface Capabilities {
   readonly integerRenderTargets: boolean;
   /** M2. Sampled textures per shader stage (WebGL2: MAX_TEXTURE_IMAGE_UNITS, >= 16). */
   readonly maxSampledTextures: number;
+  /**
+   * M3 (ARCHITECTURE §21). Stencil attachments, `RenderPipelineDesc.stencil`
+   * and `RenderPass.setStencilReference`. Both backends can do it; it is a
+   * capability so front code can fall back to scissor/alpha masks while a
+   * backend has not built it (both report false until then).
+   */
+  readonly stencil: boolean;
   readonly timestampQuery: boolean;
   readonly float32Filterable: boolean;
   readonly textureCompression: {
@@ -170,6 +177,48 @@ export type Topology =
   | 'point-list';
 export type FilterMode = 'nearest' | 'linear';
 export type AddressMode = 'clamp-to-edge' | 'repeat' | 'mirror-repeat';
+
+/** M3. WebGPU spelling; the WebGL2 backend maps them to GL constants. */
+export type CompareFunction =
+  | 'never'
+  | 'less'
+  | 'equal'
+  | 'less-equal'
+  | 'greater'
+  | 'not-equal'
+  | 'greater-equal'
+  | 'always';
+
+export type StencilOperation =
+  | 'keep'
+  | 'zero'
+  | 'replace'
+  | 'invert'
+  | 'increment-clamp'
+  | 'decrement-clamp'
+  | 'increment-wrap'
+  | 'decrement-wrap';
+
+/**
+ * M3 (ARCHITECTURE §21.3). Stencil state of a render pipeline. Front and back
+ * faces share it (cozygpu never culls). The reference value is dynamic
+ * (`RenderPass.setStencilReference`), so one pipeline serves every nesting
+ * depth.
+ */
+export interface StencilState {
+  /** Default 'always'. */
+  compare?: CompareFunction;
+  /** Default 'keep'. */
+  failOp?: StencilOperation;
+  /** Default 'keep'. */
+  depthFailOp?: StencilOperation;
+  /** Default 'keep'. */
+  passOp?: StencilOperation;
+  /** Default 0xff. */
+  readMask?: number;
+  /** Default 0xff. 0 = read-only (masked drawing). */
+  writeMask?: number;
+}
 
 /** Blend presets; custom factors are M3. */
 export type BlendMode = 'normal' | 'add' | 'multiply' | 'screen' | 'none';
@@ -321,6 +370,16 @@ export interface RenderPipelineDesc {
   blend?: BlendMode;
   depthFormat?: TextureFormat;
   sampleCount?: 1 | 4;
+  /**
+   * M3. Requires `caps.stencil` and a `depthFormat` with a stencil aspect
+   * (layouts.ts MASK_STENCIL_FORMAT). Without it the pipeline ignores the
+   * stencil buffer entirely. Depth testing stays off (cozygpu is 2D).
+   */
+  stencil?: StencilState;
+  /**
+   * M3. Skip writing color (stencil-only draws). Defaults to false.
+   */
+  colorWriteDisabled?: boolean;
 }
 
 export type RhiRenderPipeline = RhiResource;
@@ -364,11 +423,27 @@ export interface RenderPassDesc {
     target: ColorTarget;
     /** MSAA resolve target when `target` is multisampled. */
     resolveTarget?: ColorTarget;
+    /**
+     * M3. Keep the multisampled attachment when the pass ends instead of
+     * discarding it after the resolve. Needed only when a later pass of the
+     * same frame reopens this attachment with `load: 'load'` — a mask or a
+     * filter that broke the main pass (ARCHITECTURE §21.3). Ignored when
+     * `resolveTarget` is unset.
+     */
+    keepMultisampled?: boolean;
     load: 'clear' | 'load';
     /** Straight RGBA 0..1. Read from a reusable Float32Array: no allocation. */
     clearColor?: Float32Array;
   };
-  depth?: { target: RhiTexture; load: 'clear' | 'load'; clearValue?: number };
+  depth?: {
+    target: RhiTexture;
+    load: 'clear' | 'load';
+    clearValue?: number;
+    /** M3. Stencil aspect, when the format has one. Default: same as `load`. */
+    stencilLoad?: 'clear' | 'load';
+    /** M3. Default 0. */
+    stencilClearValue?: number;
+  };
 }
 
 export interface RenderPass {
@@ -382,6 +457,11 @@ export interface RenderPass {
   setIndexBuffer(buffer: RhiBuffer, format: IndexFormat, offset?: number): void;
   setViewport(x: number, y: number, w: number, h: number): void;
   setScissor(x: number, y: number, w: number, h: number): void;
+  /**
+   * M3. Stencil reference for the following draws (mask nesting depth).
+   * Requires `caps.stencil`; throws UNSUPPORTED otherwise.
+   */
+  setStencilReference(reference: number): void;
   draw(
     vertexCount: number,
     instanceCount?: number,

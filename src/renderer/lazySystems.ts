@@ -23,7 +23,12 @@
  * after `init(ctx)` is called (anything asynchronous, like pipelines, has to
  * be tolerated by draw/compute, as the Swarm core already does).
  */
-import type { CommandList, RenderPass, RhiBindGroup } from '../backend/types';
+import type {
+  CommandList,
+  RenderPass,
+  RenderPassDesc,
+  RhiBindGroup,
+} from '../backend/types';
 import type { CommandReader } from '../commands/types';
 import type { CoreContext, CoreFrameState, CoreSystem } from '../types/core';
 
@@ -154,8 +159,26 @@ export class LazyCoreSystem implements CoreSystem {
   }
 
   draw(reader: CommandReader, pass: RenderPass, frame: CoreFrameState): void {
-    const inner = this.inner;
+    // Resolve here too: a range whose commands are all DRAW (a scissor-only
+    // mask never uploads anything) would otherwise never instantiate.
+    const inner = this.inner ?? this.resolve();
     if (inner) inner.draw(reader, pass, frame);
+  }
+
+  /**
+   * Declared unconditionally (RenderCore only calls it when the property
+   * exists), so a lazily created system can still open the pass it needs —
+   * the stencil attachment of a mask, the offscreen target of a filter.
+   */
+  passBreak(
+    reader: CommandReader,
+    list: CommandList,
+    frame: CoreFrameState,
+  ): RenderPassDesc | null {
+    const inner = this.inner ?? this.resolve();
+    return inner && inner.passBreak
+      ? inner.passBreak(reader, list, frame)
+      : null;
   }
 
   /**

@@ -516,6 +516,7 @@ export const composeSwarmShaders: SwarmShaderComposer = (
       `const RF_SHRINK: bool = ${flag(SwarmRenderFlag.SHRINK)};`,
       `const RF_ALIGN: bool = ${flag(SwarmRenderFlag.ALIGN_TO_VELOCITY)};`,
       `const RF_CIRCLE: bool = ${flag(SwarmRenderFlag.CIRCLE)};`,
+      `const RF_CURVES: bool = ${flag(SwarmRenderFlag.CURVES)};`,
     ].join('\n'),
   );
   render = replaceMarker(

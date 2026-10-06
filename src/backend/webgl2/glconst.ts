@@ -9,6 +9,7 @@
 
 // Clear bits, primitives
 export const DEPTH_BUFFER_BIT = 0x0100;
+export const STENCIL_BUFFER_BIT = 0x0400;
 export const COLOR_BUFFER_BIT = 0x4000;
 export const POINTS = 0x0000;
 export const LINES = 0x0001;
@@ -28,7 +29,24 @@ export const SCISSOR_TEST = 0x0c11;
 export const RASTERIZER_DISCARD = 0x8c89;
 export const CULL_FACE = 0x0b44;
 export const STENCIL_TEST = 0x0b90;
+
+// Compare functions (CompareFunction) and stencil operations (M3, masks)
+export const NEVER = 0x0200;
+export const LESS = 0x0201;
+export const EQUAL = 0x0202;
 export const LEQUAL = 0x0203;
+export const GREATER = 0x0204;
+export const NOTEQUAL = 0x0205;
+export const GEQUAL = 0x0206;
+export const ALWAYS = 0x0207;
+export const KEEP = 0x1e00;
+export const REPLACE = 0x1e01;
+export const INCR = 0x1e02;
+export const DECR = 0x1e03;
+export const INVERT = 0x150a;
+export const INCR_WRAP = 0x8507;
+export const DECR_WRAP = 0x8508;
+export const ZERO = 0x0000;
 
 // Buffers
 export const ARRAY_BUFFER = 0x8892;
@@ -41,7 +59,19 @@ export const PIXEL_UNPACK_BUFFER = 0x88ec;
 export const TRANSFORM_FEEDBACK_BUFFER = 0x8c8e;
 export const TRANSFORM_FEEDBACK = 0x8e22;
 export const DYNAMIC_DRAW = 0x88e8;
-export const STREAM_READ = 0x88e1;
+/**
+ * GL_STREAM_COPY, the usage hint of every pack buffer in a readback ring.
+ *
+ * A `*_READ` hint makes Chrome keep a client-side shadow copy of the buffer to
+ * accelerate the readback, on the assumption that the buffer is filled once
+ * and then read once. A ring deliberately refills the same buffer every read,
+ * so the shadow is thrown away each time and Chrome logs "READ-usage buffer
+ * was written, then fenced, but written again before being read back" once per
+ * read. Measured over 40 reads on Chrome 153 / ANGLE Metal, the hint changes
+ * nothing else: getBufferSubData p50 0.115 ms with STREAM_COPY against
+ * 0.110 ms with STREAM_READ, same end-to-end latency, no warnings.
+ */
+export const STREAM_COPY = 0x88e2;
 export const INTERLEAVED_ATTRIBS = 0x8c8c;
 
 // Data types

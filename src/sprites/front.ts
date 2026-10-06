@@ -55,8 +55,13 @@ import {
   sameTextureSource,
 } from '../scene/Texture';
 import type { ContainerNode, SceneNode, TextureHandle } from '../scene/types';
-import { isCustomDrawable } from '../types/core';
-import type { CustomDrawable, FrontFrame, ScenePacker } from '../types/core';
+import { isCustomDrawable, isRenderGroup } from '../types/core';
+import type {
+  CustomDrawable,
+  FrontFrame,
+  RenderGroup,
+  ScenePacker,
+} from '../types/core';
 import { ids } from '../types/ids';
 import { SPRITE_INSTANCE_BYTES } from '../types/layouts';
 import { DirtyRanges, MERGE_GAP } from './DirtyRanges';
@@ -65,9 +70,14 @@ import { InstanceStore } from './InstanceStore';
 const KIND_CONTAINER = 0;
 const KIND_SPRITE = 1;
 const KIND_CUSTOM = 2;
+/** M3: a container drawn inside an effect (ARCHITECTURE §21.4). */
+const KIND_GROUP = 3;
 
 export const BATCH_SPRITES = 0;
 export const BATCH_CUSTOM = 1;
+/** M3: the two ends of a render group; both carry its flat index. */
+export const BATCH_GROUP_BEGIN = 2;
+export const BATCH_GROUP_END = 3;
 
 /** Per-flat-entry "changed this frame" bits propagated to children. */
 const CH_WORLD = 1;
@@ -418,6 +428,9 @@ export class SpriteScenePacker implements ScenePacker {
       if (
         !this.incremental ||
         stage !== this.lastStage ||
+        // A render group spans a range of batches, which the incremental
+        // splice cannot describe (ARCHITECTURE §21.4).
+        nodeStore.groups > 0 ||
         !this.patch(stage, useSAB)
       ) {
         this.rebuild(stage, useSAB);
@@ -599,12 +612,17 @@ export class SpriteScenePacker implements ScenePacker {
     if (isCustomDrawable(node)) {
       kind = KIND_CUSTOM;
       this.outBatches.push(BATCH_CUSTOM, abs);
+    } else if (isRenderGroup(node)) {
+      // A group ends the open batch on both sides (ARCHITECTURE §21.4).
+      kind = KIND_GROUP;
+      this.outBatches.push(BATCH_GROUP_BEGIN, abs);
     }
     out.kind[i] = kind | this.mark(slot, abs);
 
     const children = (node as ContainerNode).children;
     if (children) this.visitChildren(children, 0, abs);
     out.end[i] = this.outBase + out.count;
+    if (kind === KIND_GROUP) this.outBatches.push(BATCH_GROUP_END, abs);
   }
 
   /** @internal frontPatch.ts */
@@ -1156,17 +1174,44 @@ export class SpriteScenePacker implements ScenePacker {
         enc.u32(batches.blend[b]);
         enc.end();
       } else {
+        const kind = batches.kind[b];
         const flat = batches.flat[b];
+        const node = list.nodes[flat];
         const slot = list.slot[flat];
-        (list.nodes[flat] as unknown as CustomDrawable)._emitDraw(
-          frame,
-          s.world,
-          slot * AFF,
-          s.worldAlpha[slot],
-        );
+        if (kind === BATCH_CUSTOM) {
+          (node as unknown as CustomDrawable)._emitDraw(
+            frame,
+            s.world,
+            slot * AFF,
+            s.worldAlpha[slot],
+          );
+        } else if (kind === BATCH_GROUP_BEGIN) {
+          // False = the group's effect is not drawable this frame; its whole
+          // subtree is skipped so a mask never flashes unclipped content.
+          const drawable = (node as unknown as RenderGroup)._emitGroupBegin(
+            frame,
+            s.world,
+            slot * AFF,
+            s.worldAlpha[slot],
+          );
+          if (!drawable) b = skipGroup(batches, b);
+        } else {
+          (node as unknown as RenderGroup)._emitGroupEnd(frame);
+        }
       }
     }
   }
+}
+
+/** Batch index of the BATCH_GROUP_END matching the begin at `b`. */
+function skipGroup(batches: BatchList, b: number): number {
+  let depth = 1;
+  for (let j = b + 1; j < batches.count; j++) {
+    const kind = batches.kind[j];
+    if (kind === BATCH_GROUP_BEGIN) depth++;
+    else if (kind === BATCH_GROUP_END && --depth === 0) return j;
+  }
+  return batches.count;
 }
 
 export function createScenePacker(): ScenePacker {

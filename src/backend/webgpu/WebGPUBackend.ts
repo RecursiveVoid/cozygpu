@@ -48,12 +48,15 @@ import type {
 import { BufferUsage } from '../types';
 import { WebGPUCommandList, type CommandHost } from './commands';
 import {
+  COLOR_WRITE_ALL,
   GPU_BUFFER_USAGE,
   align4,
   bytesPerTexel,
   isDepthFormat,
+  stencilKey,
   toGPUBlendState,
   toGPUBufferUsage,
+  toGPUDepthStencil,
   toGPUShaderStage,
   toGPUTextureUsage,
 } from './convert';
@@ -128,6 +131,30 @@ struct VOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f }
  */
 const PACE_FRAMES = 3;
 
+/**
+ * Queue-depth pacing, the M3 half of the same problem. PACE_FRAMES only runs
+ * while a readback is in flight, so an uncapped loop that has never read
+ * anything still queues as deep as Chrome lets it — and then the FIRST pick
+ * waits behind all of it. Measured at 100k static sprites, vsync off: the
+ * first pick took 711 ms on WebGPU (7.8 s on WebGL2) while later picks, which
+ * PACE_FRAMES already covers, took 18 ms.
+ *
+ * So the backend now also holds when the GPU is more than QUEUE_FRAMES
+ * submits behind, readback or not. The depth is measured by one
+ * `onSubmittedWorkDone()` probe at a time, armed only once the queue looks
+ * deep (QUEUE_PROBE) and re-armed at the hold point, so a display-paced loop
+ * — where the GPU is never more than a frame or two behind — arms one every
+ * QUEUE_PROBE frames at most and never holds.
+ *
+ * The tradeoff: an uncapped loop is now capped at roughly QUEUE_FRAMES frames
+ * of queued work, so its throughput becomes GPU-bound and `stats.skippedFrames`
+ * rises. That is the point — the frames beyond the queue depth were never
+ * displayed — but a benchmark that measures front CPU with vsync off sees
+ * fewer, not cheaper, frames.
+ */
+const QUEUE_FRAMES = 16;
+const QUEUE_PROBE = 8;
+
 export class WebGPUBackend implements Backend, CommandHost {
   readonly kind = 'webgpu' as const;
   caps: Capabilities;
@@ -160,6 +187,12 @@ export class WebGPUBackend implements Backend, CommandHost {
   private submits = 0;
   private readSubmit = 0;
   private caughtUp: (() => void) | null = null;
+  /** Queue-depth probe (see QUEUE_FRAMES): submits the GPU has finished. */
+  private gpuDone = 0;
+  /** `submits` when the outstanding probe was armed; 0 = none outstanding. */
+  private probeAt = 0;
+  /** The probe's settle callback, created on the first probe and reused. */
+  private probeCb: (() => void) | null = null;
 
   // Creation-time caches (per device; cleared by installDevice). Keys are
   // built only when creating resources, never per frame.
@@ -264,6 +297,7 @@ export class WebGPUBackend implements Backend, CommandHost {
     this.submits++;
     const rings = this.rings;
     for (let i = 0; i < rings.length; i++) rings[i].submitted();
+    if (this.submits - this.gpuDone >= QUEUE_PROBE) this.probeQueue();
     if (this.frameScoped) {
       this.frameScoped = false;
       this.popScope('frame', undefined);
@@ -273,11 +307,14 @@ export class WebGPUBackend implements Backend, CommandHost {
 
   /**
    * @internal Frame pacing (not part of the RHI; RenderCore duck-types it).
-   * True while a readback is in flight and PACE_FRAMES frames were
-   * submitted since it started.
+   * True while a readback is in flight and PACE_FRAMES frames were submitted
+   * since it started, or while the GPU is QUEUE_FRAMES submits behind.
    */
   backlogged(): boolean {
-    return this.reads > 0 && this.submits - this.readSubmit >= PACE_FRAMES;
+    return (
+      (this.reads > 0 && this.submits - this.readSubmit >= PACE_FRAMES) ||
+      this.submits - this.gpuDone >= QUEUE_FRAMES
+    );
   }
 
   /** @internal A readback starts (ring slot mapping, readBuffer, readTexture). */
@@ -286,12 +323,37 @@ export class WebGPUBackend implements Backend, CommandHost {
   }
 
   /**
-   * @internal A readback landed (RingHost too): a held frame goes once
-   * nothing is in flight, so the next render() polls the ring.
+   * Arms the queue-depth probe unless one is outstanding. One pre-bound
+   * callback, so only the promise itself is allocated.
+   */
+  private probeQueue(): void {
+    if (this.probeAt !== 0 || this.lost || this.destroyed) return;
+    this.probeAt = this.submits;
+    let cb = this.probeCb;
+    // Created once, never per probe; both settlements take the same path.
+    if (!cb) cb = this.probeCb = () => this.probeLanded();
+    this.device.queue.onSubmittedWorkDone().then(cb, cb);
+  }
+
+  private probeLanded(): void {
+    if (this.probeAt > this.gpuDone) this.gpuDone = this.probeAt;
+    this.probeAt = 0;
+    // A lost or destroyed queue never answers again: stop holding on depth.
+    if (this.lost || this.destroyed) this.gpuDone = this.submits;
+    this.landed();
+  }
+
+  /**
+   * @internal A readback landed (RingHost too), or the queue-depth probe
+   * resolved: a held frame goes once nothing holds it any more, so the next
+   * render() polls the ring.
    */
   landed(): void {
     const callback = this.caughtUp;
-    if (callback !== null && (this.reads === 0 || this.lost)) {
+    const held =
+      !this.lost &&
+      (this.reads > 0 || this.submits - this.gpuDone >= QUEUE_FRAMES);
+    if (callback !== null && !held) {
       this.caughtUp = null;
       callback();
     } else {
@@ -302,9 +364,14 @@ export class WebGPUBackend implements Backend, CommandHost {
   /** @internal Set by RenderCore: answers landed picks (ARCHITECTURE §19.6). */
   onReadbackLanded: (() => void) | null = null;
 
-  /** @internal Calls `callback` once no readback is in flight (or now). */
+  /**
+   * @internal Calls `callback` once nothing holds the frame any more (or
+   * now). The probe is armed here too: a frame held on queue depth alone has
+   * no readback to wake it, so it needs one outstanding.
+   */
   whenCaughtUp(callback: () => void): void {
     this.caughtUp = callback;
+    this.probeQueue();
     this.landed();
   }
 
@@ -758,6 +825,8 @@ export class WebGPUBackend implements Backend, CommandHost {
           {
             format: desc.colorFormat ?? this.caps.canvasFormat,
             blend: toGPUBlendState(desc.blend),
+            // M3 (masks, §21.3): stencil-only draws write no color.
+            writeMask: desc.colorWriteDisabled ? 0 : COLOR_WRITE_ALL,
           },
         ],
       },
@@ -766,13 +835,7 @@ export class WebGPUBackend implements Backend, CommandHost {
         cullMode: 'none',
       },
       multisample: { count: desc.sampleCount ?? 1 },
-      depthStencil: desc.depthFormat
-        ? {
-            format: desc.depthFormat,
-            depthWriteEnabled: true,
-            depthCompare: 'less-equal',
-          }
-        : undefined,
+      depthStencil: toGPUDepthStencil(desc.depthFormat, desc.stencil),
     };
     const pending = device.createRenderPipelineAsync(descriptor);
     this.renderPipelineCache.set(key, pending);
@@ -1005,8 +1068,11 @@ export class WebGPUBackend implements Backend, CommandHost {
     this.device = device;
     this.lost = false;
     this.frameScoped = false;
-    // Rings and reads of the old device are dead (their owners recreate them).
+    // Rings and reads of the old device are dead (their owners recreate them),
+    // and its queue took the outstanding depth probe with it.
     this.reads = 0;
+    this.probeAt = 0;
+    this.gpuDone = this.submits;
     this.rings.length = 0;
     this.list.abandon();
     this.canvasTexture = null;
@@ -1076,7 +1142,7 @@ export class WebGPUBackend implements Backend, CommandHost {
       }
       key += ';';
     }
-    return `${key}|${desc.topology ?? 'triangle-list'}|${desc.colorFormat ?? this.caps.canvasFormat}|${desc.blend ?? ''}|${desc.depthFormat ?? ''}|${desc.sampleCount ?? 1}`;
+    return `${key}|${desc.topology ?? 'triangle-list'}|${desc.colorFormat ?? this.caps.canvasFormat}|${desc.blend ?? ''}|${desc.depthFormat ?? ''}|${desc.sampleCount ?? 1}${stencilKey(desc.stencil, desc.colorWriteDisabled)}`;
   }
 
   private createPipelineLayout(

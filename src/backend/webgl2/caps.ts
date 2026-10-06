@@ -32,6 +32,10 @@ export function detectGLCapabilities(
     baseInstance: has('WEBGL_draw_instanced_base_vertex_base_instance'),
     floatRenderTargets: has('EXT_color_buffer_float'),
     integerRenderTargets: true,
+    // M3 (ARCHITECTURE §21.3): stencil attachments, pipeline stencil state and
+    // `RenderPass.setStencilReference` (masks). The default framebuffer is
+    // created with a stencil buffer (see WebGL2Backend.create).
+    stencil: true,
     maxSampledTextures:
       Number(gl.getParameter(G.MAX_TEXTURE_IMAGE_UNITS)) || 16,
     timestampQuery: false,

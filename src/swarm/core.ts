@@ -59,6 +59,7 @@ import type { CoreContext, CoreFrameState, CoreSystem } from '../types/core';
 import {
   PICK_TARGET_FORMAT,
   SWARM_COLD_BYTES,
+  SWARM_CURVE_BYTES,
   SWARM_DRAW_BYTES,
   SWARM_HOT_BYTES,
   SWARM_SIM_BYTES,
@@ -154,6 +155,8 @@ interface GpuSwarm {
   readonly free: RhiBuffer;
   readonly counters: RhiBuffer;
   frames: RhiBuffer;
+  /** Over-life curves (SWARM_SET_CURVES, 64 B); zeroed until one arrives. */
+  readonly curves: RhiBuffer;
   arena: RhiBuffer;
   arenaEntries: number;
   killList: RhiBuffer;
@@ -404,6 +407,7 @@ export function createWebGPUSwarmCore(): SwarmCoreSystem {
       if (variant & LAYOUT_PICK) {
         entries.push(uniform(5, F, SWARM_PICK_UNIFORM_BYTES));
       }
+      entries.push(uniform(6, V, SWARM_CURVE_BYTES));
       renderLayouts.push(
         b.createBindGroupLayout({
           label: `swarm.render${variant}`,
@@ -549,6 +553,7 @@ export function createWebGPUSwarmCore(): SwarmCoreSystem {
       { binding: 1, resource: { buffer: cold } },
       { binding: 2, resource: { buffer: s.frames } },
       { binding: 3, resource: { buffer: s.draw } },
+      { binding: 6, resource: { buffer: s.curves } },
     ];
     if (visible) {
       renderEntries.push({ binding: 4, resource: { buffer: s.visible! } });
@@ -817,6 +822,7 @@ export function createWebGPUSwarmCore(): SwarmCoreSystem {
     s.free.destroy();
     s.counters.destroy();
     s.frames.destroy();
+    s.curves.destroy();
     s.arena.destroy();
     s.killList.destroy();
     s.visible?.destroy();
@@ -937,6 +943,11 @@ export function createWebGPUSwarmCore(): SwarmCoreSystem {
         label: `swarm${id}.frames`,
         size: 16,
         usage: BufferUsage.STORAGE | BufferUsage.COPY_DST,
+      }),
+      curves: b.createBuffer({
+        label: `swarm${id}.curves`,
+        size: SWARM_CURVE_BYTES,
+        usage: BufferUsage.UNIFORM | BufferUsage.COPY_DST,
       }),
       arena: b.createBuffer({
         label: `swarm${id}.arena`,
@@ -1547,6 +1558,15 @@ export function createWebGPUSwarmCore(): SwarmCoreSystem {
         }
         case Op.SWARM_SET_FRAMES:
           setFrames(s, reader);
+          break;
+        case Op.SWARM_SET_CURVES:
+          backend.writeBuffer(
+            s.curves,
+            0,
+            reader.u8,
+            reader.blob(SWARM_CURVE_BYTES),
+            SWARM_CURVE_BYTES,
+          );
           break;
         case Op.SWARM_SET_PICK:
           setPick(s, reader.u32());

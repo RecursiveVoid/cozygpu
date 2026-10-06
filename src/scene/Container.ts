@@ -53,7 +53,8 @@ export class Container extends NodeBase implements ContainerNode {
     }
   }
 
-  get kind(): 'container' {
+  /** `Group` (M3) narrows this to 'group'; every other subclass keeps it. */
+  get kind(): 'container' | 'group' {
     return 'container';
   }
 

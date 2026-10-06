@@ -18,29 +18,45 @@ import { createDefaultCoreSystems } from '../renderer/systems';
 import { startWorkerHost } from './host';
 import type { WorkerScopeLike } from './host';
 
-// The swarm core (~10 KB min+gzip) is its own chunk in the worker too, so a
-// sprite-only worker does not fetch it. The front never waits on
-// `isSystemReady` in worker mode, so the host holds the first packet with
-// SWARM commands until the chunk has loaded (pendingLoad below).
+// Optional core systems are their own chunks in the worker too, so a
+// sprite-only worker fetches none of them. The front never waits on
+// `isSystemReady` in worker mode, so the host holds the first packet that
+// carries commands of such a range until the chunk has loaded (pendingLoad).
+const LAZY_RANGES = [
+  OpcodeRange.SWARM,
+  OpcodeRange.MASK,
+  OpcodeRange.FILTER,
+] as const;
+
 registerCoreSystemLoader(OpcodeRange.SWARM, () =>
   import('../swarm/core').then(m => m.createSwarmCoreSystem),
 );
+registerCoreSystemLoader(OpcodeRange.MASK, () =>
+  import('../masks/core').then(m => m.createMaskCoreSystem),
+);
+registerCoreSystemLoader(OpcodeRange.FILTER, () =>
+  import('../filters/core').then(m => m.createFilterCoreSystem),
+);
 
 const scan = createCommandDecoder();
-let swarmReady = false;
+/** Ranges already loaded; once every one is in, the scan stops running. */
+let readyRanges = 0;
+const ALL_READY = (1 << LAZY_RANGES.length) - 1;
 
-/** Header walk of `packet` until the swarm core is loaded (then free). */
+/** Header walk of `packet` until every lazy range it needs has loaded. */
 function pendingLoad(packet: FramePacket): Promise<void> | null {
-  if (swarmReady) return null;
+  if (readyRanges === ALL_READY) return null;
   try {
     scan.reset(packet);
     while (scan.next()) {
-      if (scan.reader.opcode >>> 8 !== OpcodeRange.SWARM) continue;
-      if (isCoreSystemReady(OpcodeRange.SWARM)) {
-        swarmReady = true;
-        return null;
+      const range = scan.reader.opcode >>> 8;
+      const index = LAZY_RANGES.indexOf(range as (typeof LAZY_RANGES)[number]);
+      if (index < 0 || (readyRanges & (1 << index)) !== 0) continue;
+      if (isCoreSystemReady(range)) {
+        readyRanges |= 1 << index;
+        continue;
       }
-      return loadCoreSystem(OpcodeRange.SWARM);
+      return loadCoreSystem(range);
     }
   } catch {
     // A corrupt packet is the core's to report.

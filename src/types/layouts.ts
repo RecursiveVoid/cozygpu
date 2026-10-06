@@ -29,7 +29,90 @@ export const SPRITE_INSTANCE_F32_PER = SPRITE_INSTANCE_BYTES / 4; // 10 slots wh
 export const SpriteInstanceFlag = {
   /** Fragment shader applies texture alpha only (tinted glyph/mask look). */
   ALPHA_ONLY: 1 << 0,
+  /**
+   * M3 text (ARCHITECTURE §23.3). The sampled texel is a multi-channel
+   * signed distance field: coverage = smoothstep around median(r, g, b) with
+   * screen-space derivatives. Glyph quads keep the sprite instance layout, so
+   * text batches with sprites of the same atlas page.
+   */
+  MSDF: 1 << 1,
+  /**
+   * M3 text. Draw the distance field's outline band as well, using the
+   * outline color/width of the batch's sprite effect (SPRITE_EFFECT_BYTES).
+   * Without an effect bound the flag is ignored.
+   */
+  SDF_OUTLINE: 1 << 2,
+  // bits 3–7 free; bits 8–31 are the pick id (SI_PICK_SHIFT).
 } as const;
+
+// ─── Sprite effect block (M3, ARCHITECTURE §22.7) ─────────────────────────────
+/**
+ * Cheap, per-batch effects that stay inside the sprite pipeline: no render
+ * target, no extra pass, one uniform with a dynamic offset (stride 256).
+ * Defined with SPRITE_DEFINE_EFFECT and selected by SPRITE_DRAW.effectId.
+ * `color' = clamp(matrix * color + offset)`, applied to straight-alpha color
+ * before premultiplication.
+ */
+export const SPRITE_EFFECT_BYTES = 96;
+/** mat4x4f, column-major: the RGBA part of the 4×5 color matrix. */
+export const SE_MATRIX = 0;
+/** vec4f: the matrix' 5th column (offset), 0..1. */
+export const SE_OFFSET = 64;
+/** u32 packed RGBA8 outline/glow color (premultiplied at use). */
+export const SE_OUTLINE_COLOR = 80;
+/** f32 outline half-width, in distance-field units (0 = off). */
+export const SE_OUTLINE_WIDTH = 84;
+/** f32 glow softness, in distance-field units (0 = hard edge). */
+export const SE_GLOW = 88;
+/** u32 SpriteEffectFlag. */
+export const SE_FLAGS = 92;
+
+export const SpriteEffectFlag = {
+  /** Skip the color matrix (outline only); saves the multiply. */
+  NO_MATRIX: 1 << 0,
+} as const;
+
+// ─── Masks (M3, ARCHITECTURE §21) ─────────────────────────────────────────────
+/** Attachment format a stencil mask asks the core to add to the main pass. */
+export const MASK_STENCIL_FORMAT = 'depth24plus-stencil8';
+/**
+ * Maximum nesting depth of stencil masks. The stencil buffer counts depth, so
+ * a push increments and a pop decrements; 8 keeps the reference below the
+ * 8-bit stencil range with room for the invert bit.
+ */
+export const MASK_MAX_DEPTH = 8;
+/** Mask texels with (premultiplied) alpha below this do not mask (MaskFlag.ALPHA_TEST). */
+export const MASK_ALPHA_THRESHOLD = 0.5;
+
+// ─── Filters (M3, ARCHITECTURE §22) ───────────────────────────────────────────
+/** Largest uniform block a filter program may declare (one dynamic offset). */
+export const FILTER_MAX_UNIFORM_BYTES = 256;
+/**
+ * Pooled render targets are rounded up to a multiple of this many physical
+ * pixels in each dimension, so a resizing group reuses the same target
+ * (ARCHITECTURE §22.4).
+ */
+export const FILTER_TARGET_GRANULARITY = 64;
+/** Largest filter chain length per group. */
+export const FILTER_MAX_PASSES = 8;
+/**
+ * Filter uniform block prelude, written by the core before every pass:
+ * struct FilterPass { texel: vec2f, size: vec2f, area: vec4f, time: f32,
+ *                     pass: u32, _pad: vec2f }
+ * The filter's own uniforms start at FILTER_UNIFORM_OFFSET.
+ */
+export const FILTER_PASS_BYTES = 48;
+export const FP_TEXEL = 0; // vec2f: 1 / target size, in physical px
+export const FP_SIZE = 8; // vec2f: target size, physical px
+export const FP_AREA = 16; // vec4f: x, y, width, height of the group, css px
+export const FP_TIME = 32; // f32
+export const FP_PASS = 36; // u32 index in the chain
+/**
+ * vec2f: css px → target px, so a strength expressed in stage pixels means
+ * the same at any device pixel ratio and any `filterOptions.resolution`.
+ */
+export const FP_UNIT = 40;
+export const FILTER_UNIFORM_OFFSET = FILTER_PASS_BYTES;
 
 // ─── Picking (M2, ARCHITECTURE §16.3) ─────────────────────────────────────────
 /** SI_FLAGS bits 8–31: pick id = SceneNode.id when pickable, else 0. */
@@ -130,6 +213,22 @@ export const SWARM_SIM_BYTES = 16;
 // struct SwarmDraw { col0: vec2f, col1: vec2f, translate: vec2f, alpha: f32, flags: u32 }
 export const SWARM_DRAW_BYTES = 32;
 
+// ─── Swarm over-life curves (M3 particles) — 64 B ─────────────────────────────
+// struct SwarmCurves { stops: vec4f,            // 4 normalized ages, ascending
+//                      color: array<u32, 4>,    // packed RGBA8 at each stop
+//                      size: vec4f,             // scale multiplier at each stop
+//                      alpha: vec4f }           // alpha multiplier at each stop
+// The RENDER shader evaluates them from age/life when SwarmRenderFlag.CURVES
+// is set (immortal objects use stop 0). Uploaded with SWARM_SET_CURVES; there
+// is no per-object cost and no CPU work per particle (ARCHITECTURE §24.4).
+export const SWARM_CURVE_BYTES = 64;
+export const SCV_STOPS = 0; // vec4f, values in [0, 1], ascending
+export const SCV_COLOR = 16; // 4 × u32 packed RGBA8
+export const SCV_SIZE = 32; // vec4f
+export const SCV_ALPHA = 48; // vec4f
+/** Curve stops per channel (fixed; a curve with fewer stops repeats the last). */
+export const SWARM_CURVE_STOPS = 4;
+
 export const SwarmRenderFlag = {
   /** alpha *= 1 - age/life */
   FADE_OUT: 1 << 0,
@@ -139,6 +238,8 @@ export const SwarmRenderFlag = {
   ALIGN_TO_VELOCITY: 1 << 2,
   /** procedural anti-aliased circle instead of a textured quad */
   CIRCLE: 1 << 3,
+  /** M3. Evaluate the SWARM_SET_CURVES block by age/life in the render shader. */
+  CURVES: 1 << 4,
 } as const;
 
 // ─── View uniform (@group(0) @binding(0) for every 2D pipeline) — 48 B ────────

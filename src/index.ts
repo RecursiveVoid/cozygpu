@@ -49,6 +49,58 @@ export type {
   TextureOptions,
 } from './scene';
 
+// ─── Masks & filters (M3) ────────────────────────────────────────────────────
+// `Group` is the only scene class that carries effects, and nothing else
+// references it, so a program that never uses one bundles no mask or filter
+// code (ARCHITECTURE §22.8). The implementations are separate chunks it loads
+// on first use; `loadEffects()` preloads them.
+export { Group, loadEffects } from './scene/Group';
+export type { GroupNode, GroupOptions } from './scene/types';
+export type {
+  MaskMode,
+  MaskRect,
+  MaskSource,
+  MaskSpec,
+  MaskTarget,
+} from './masks/types';
+export { filters, defineFilter } from './filters';
+export type {
+  BuiltinFilters,
+  ColorMatrixFilter,
+  Filter,
+  FilterDefinition,
+  FilterOptions,
+  FilterParamSpec,
+  FilterParamType,
+  FilterParamValue,
+  FilterParamValues,
+} from './filters';
+
+// ─── Text (M3) ───────────────────────────────────────────────────────────────
+export { Text } from './text';
+export type {
+  FontAsset,
+  GlyphMetrics,
+  SystemFont,
+  TextMetrics,
+  TextNode,
+  TextOptions,
+  TextStyle,
+} from './text';
+
+// ─── Particles (M3) ──────────────────────────────────────────────────────────
+export { Particles, particlePresets, loadParticles } from './particles';
+export type {
+  Emitter,
+  EmitterOptions,
+  EmitterShape,
+  OverLife,
+  ParticlePreset,
+  ParticlePresets,
+  ParticlesNode,
+  ParticlesOptions,
+} from './particles';
+
 // ─── Swarm (tier 2) ──────────────────────────────────────────────────────────
 export { Swarm, behaviors, defineBehavior } from './swarm';
 /** WebGL2 swarm ceilings: refuse above MAX, warn once above WARN (§14.2). */
@@ -75,6 +127,7 @@ export type {
 export type {
   AssetDescriptor,
   AssetFormat,
+  FontAssetOptions,
   AssetHandle,
   AssetKind,
   AssetSource,

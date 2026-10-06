@@ -18,6 +18,8 @@ struct View {            // @size(48)
 @group(1) @binding(1) var spriteSampler: sampler;
 
 const ALPHA_ONLY: u32 = 1u;
+// Text (ARCHITECTURE §23.3): layouts.ts SpriteInstanceFlag.MSDF.
+const MSDF: u32 = 2u;
 // Picking (ARCHITECTURE §4.7, §16.3): layouts.ts SI_PICK_SHIFT / PICK_ALPHA_THRESHOLD.
 const PICK_SHIFT: u32 = 8u;
 const PICK_ALPHA_THRESHOLD: f32 = 0.5;
@@ -55,11 +57,24 @@ fn vs_main(@builtin(vertex_index) vi: u32, inst: Instance) -> VertexOut {
   return out;
 }
 
+// Multi-channel distance field coverage. The distance scale comes from the
+// screen-space derivative of the field itself, so one atlas serves every size
+// and rotation without a per-font uniform. `fwidth` needs uniform control
+// flow, so both entry points evaluate this before branching on the flag.
+fn msdfCoverage(rgb: vec3f) -> f32 {
+  let d = max(min(rgb.r, rgb.g), min(max(rgb.r, rgb.g), rgb.b)) - 0.5;
+  return clamp(d / max(fwidth(d), 1e-4) + 0.5, 0.0, 1.0);
+}
+
 @fragment
 fn fs_main(in: VertexOut) -> @location(0) vec4f {
   // Textures are stored premultiplied.
   let texel = textureSample(spriteTexture, spriteSampler, in.uv);
   let a = in.color.a;
+  let cov = msdfCoverage(texel.rgb) * a;
+  if ((in.flags & MSDF) != 0u) {
+    return vec4f(in.color.rgb * cov, cov);
+  }
   let tinted = vec4f(texel.rgb * in.color.rgb * a, texel.a * a);
   let alphaOnly = vec4f(in.color.rgb * texel.a * a, texel.a * a);
   return select(tinted, alphaOnly, (in.flags & ALPHA_ONLY) != 0u);
@@ -72,7 +87,9 @@ fn fs_main(in: VertexOut) -> @location(0) vec4f {
 fn fs_pick(in: VertexOut) -> @location(0) vec4u {
   let texel = textureSample(spriteTexture, spriteSampler, in.uv);
   let id = in.flags >> PICK_SHIFT;
-  if (id == 0u || texel.a * in.color.a < PICK_ALPHA_THRESHOLD) {
+  // A distance-field page is opaque, so glyphs pick by coverage, not by alpha.
+  let cov = select(texel.a, msdfCoverage(texel.rgb), (in.flags & MSDF) != 0u);
+  if (id == 0u || cov * in.color.a < PICK_ALPHA_THRESHOLD) {
     discard;
   }
   return vec4u(id, 0u, 0u, 0u);

@@ -89,6 +89,7 @@ function flagConsts(renderFlags: number): string {
     `const bool RF_SHRINK = ${flag(SwarmRenderFlag.SHRINK)};`,
     `const bool RF_ALIGN = ${flag(SwarmRenderFlag.ALIGN_TO_VELOCITY)};`,
     `const bool RF_CIRCLE = ${flag(SwarmRenderFlag.CIRCLE)};`,
+    `const bool RF_CURVES = ${flag(SwarmRenderFlag.CURVES)};`,
   ].join('\n');
 }
 

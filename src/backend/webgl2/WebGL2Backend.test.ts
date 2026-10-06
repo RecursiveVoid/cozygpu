@@ -130,6 +130,7 @@ describe('webgl2 utils + tables', () => {
       baseInstance: false,
       floatRenderTargets: true,
       integerRenderTargets: true,
+      stencil: true,
       maxSampledTextures: 16,
       maxTextureSize: 8192,
       canvasFormat: 'rgba8unorm',

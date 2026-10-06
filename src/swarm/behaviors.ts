@@ -10,6 +10,7 @@
  * sits untransformed at the stage root).
  */
 import { validateBehavior } from './composer';
+import { velocityBehavior } from './velocity';
 import type { BehaviorDefinition, BuiltinBehaviors, ParamSpec } from './types';
 
 /** Identity helper that validates the definition and gives type inference for custom behaviors. */
@@ -60,19 +61,7 @@ const BOUNDS_GLSL = {
 } as const;
 
 export const behaviors: BuiltinBehaviors = {
-  velocity: options => ({
-    name: options?.name ?? 'velocity',
-    params: {},
-    defaults: {},
-    update: /* wgsl */ `
-    p.pos += p.vel * sim.dt;
-    p.rot += p.angVel * sim.dt;`,
-    glsl: {
-      update: /* glsl */ `
-    p.pos += p.vel * sim.dt;
-    p.rot += p.angVel * sim.dt;`,
-    },
-  }),
+  velocity: velocityBehavior,
 
   acceleration: options =>
     defineBehavior({

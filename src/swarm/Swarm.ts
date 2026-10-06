@@ -94,6 +94,16 @@ function validateOptions(options: SwarmOptions): SwarmOptions {
   return options;
 }
 
+/**
+ * Internal options (`Particles`, ARCHITECTURE §24.4): `curves` compiles the
+ * over-life curve lookup into the render shader (SwarmRenderFlag.CURVES) and
+ * makes SWARM_SET_CURVES take effect. Not part of the public SwarmOptions.
+ * @internal
+ */
+export interface SwarmCurveOptions extends SwarmOptions {
+  readonly curves?: boolean;
+}
+
 type ShaderLanguage = 'wgsl' | 'glsl300es';
 
 /** GLSL composer loading state (shared by every Swarm in this heap). */
@@ -249,6 +259,7 @@ export class Swarm extends NodeBase implements SwarmNode, CustomDrawable {
     if (render?.shrink) flags |= SwarmRenderFlag.SHRINK;
     if (render?.alignToVelocity) flags |= SwarmRenderFlag.ALIGN_TO_VELOCITY;
     if (shape === 'circle') flags |= SwarmRenderFlag.CIRCLE;
+    if ((options as SwarmCurveOptions).curves) flags |= SwarmRenderFlag.CURVES;
     if (render?.cull) flags |= SwarmInternalRenderFlag.CULL;
     if (this.allocation === 'gpu') flags |= SwarmInternalRenderFlag.GPU_ALLOC;
     this.renderFlags = flags;
@@ -622,12 +633,24 @@ export class Swarm extends NodeBase implements SwarmNode, CustomDrawable {
         this.cursor = 0;
         this._activeCount = 0;
         this.allocator?.reset();
+        // The core dropped every external registration together with the
+        // device (ARCHITECTURE §19.4), so the source went with it. Dropping
+        // it here too puts the swarm back on its own buffers, which is what
+        // lets `onRestore` refill them: a draw-only source (hot only) still
+        // reads colour, frame and user id from the swarm's own cold records,
+        // and those are empty again after a restore, so a swarm that only
+        // re-registered its hot buffer would draw fully transparent quads.
+        // The caller recreates and re-registers its buffers on the new device
+        // and calls setSource() again; the stale handles are invalid, so a
+        // re-registration that was missed throws instead of drawing nothing.
+        this.source = null;
+        this.sourceCount = 0;
         this.onRestore?.(this);
       }
-      // A new core-side swarm (device loss, other renderer) starts on its own
-      // buffers. After a loss the old registrations are gone: the swarm draws
-      // nothing until the caller sets a source registered on the new device.
-      if (recreated && this.source) this.enqueueSource();
+      // Moved to another renderer: re-send the source there. After a restore
+      // the source was dropped above, and setSource() enqueues its own
+      // command if onRestore set a new one.
+      if (recreated && !restored && this.source) this.enqueueSource();
     } else if (this.pipelineDirty || language !== this.language) {
       this.pipelineDirty = false;
       this.language = language;

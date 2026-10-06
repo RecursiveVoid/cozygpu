@@ -20,6 +20,12 @@ export function createDefaultCoreSystems(): CoreSystem[] {
   return [
     createSpriteCoreSystem(),
     new LazyCoreSystem(OpcodeRange.SWARM, 'swarm'),
+    // M3. Masks and filters are lazy in BOTH modes: their front modules
+    // register the factory when `Group` pulls their chunk in (main thread),
+    // and `src/worker/entry.ts` registers a loader for worker mode. Programs
+    // without a Group never load either (ARCHITECTURE §21.6).
+    new LazyCoreSystem(OpcodeRange.MASK, 'mask'),
+    new LazyCoreSystem(OpcodeRange.FILTER, 'filter'),
   ];
 }
 

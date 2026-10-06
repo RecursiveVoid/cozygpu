@@ -100,6 +100,12 @@ export interface NodeStore {
   touch: number;
   /** Live slot count (debug/tests). */
   live: number;
+  /**
+   * M3. Live `Group` nodes (ARCHITECTURE §21.4). A group is a batch
+   * boundary with children, which the incremental structure pass cannot
+   * splice, so the packer takes full rebuilds while any group exists.
+   */
+  groups: number;
 }
 
 export const nodeStore: NodeStore = {
@@ -118,6 +124,7 @@ export const nodeStore: NodeStore = {
   structureVersion: 1,
   touch: 0,
   live: 0,
+  groups: 0,
 };
 
 const freeSlots: number[] = [];

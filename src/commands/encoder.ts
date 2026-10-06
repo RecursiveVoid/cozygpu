@@ -39,6 +39,8 @@ export class CommandEncoderImpl implements CommandEncoder {
   private buffer!: ArrayBuffer | SharedArrayBuffer;
   /** `buffer` is a SharedArrayBuffer (ring slot): not transferable. */
   private shared = false;
+  /** Scratch for utf8() on a shared slot (see there). Grows, never shrinks. */
+  private utf8Scratch: Uint8Array | null = null;
   /** transferList[0] is the packet buffer. */
   private listHasBuffer = true;
   /** High-water capacity: recycled buffers smaller than this are dropped. */
@@ -148,12 +150,32 @@ export class CommandEncoderImpl implements CommandEncoder {
   utf8(text: string): number {
     const c = this.cursor;
     const room = this.reservedEnd - c;
-    const result = sharedTextEncoder().encodeInto(
-      text,
-      this.u8.subarray(c, c + room),
-    );
-    if ((result.read ?? 0) < text.length) this.overflow(room + 1);
-    const written = result.written ?? 0;
+    // encodeInto refuses a view over a SharedArrayBuffer ("must not be
+    // shared"), which is exactly what a command-ring slot is. Encode into a
+    // plain scratch buffer and copy. The scratch is kept and only grows, so
+    // it costs at most one allocation per size, never one per frame.
+    let written: number;
+    if (this.shared) {
+      let scratch = this.utf8Scratch;
+      if (scratch === null || scratch.length < room) {
+        scratch = new Uint8Array(room);
+        this.utf8Scratch = scratch;
+      }
+      const result = sharedTextEncoder().encodeInto(
+        text,
+        room === scratch.length ? scratch : scratch.subarray(0, room),
+      );
+      if ((result.read ?? 0) < text.length) this.overflow(room + 1);
+      written = result.written ?? 0;
+      if (written > 0) this.u8.set(scratch.subarray(0, written), c);
+    } else {
+      const result = sharedTextEncoder().encodeInto(
+        text,
+        this.u8.subarray(c, c + room),
+      );
+      if ((result.read ?? 0) < text.length) this.overflow(room + 1);
+      written = result.written ?? 0;
+    }
     const padded = align4(written);
     this.zero(c + written, c + padded);
     this.cursor = c + padded;

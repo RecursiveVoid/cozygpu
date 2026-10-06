@@ -45,6 +45,7 @@ import type { CozyGPUErrorCode } from '../types/errors';
 import {
   PICK_TARGET_FORMAT,
   SWARM_COLD_BYTES,
+  SWARM_CURVE_BYTES,
   SWARM_DRAW_BYTES,
   SWARM_HOT_BYTES,
   SWARM_SIM_BYTES,
@@ -135,6 +136,8 @@ interface GlSwarm {
   readonly cold: RhiBuffer;
   readonly frames: RhiBuffer;
   readonly draw: RhiBuffer;
+  /** Over-life curves (SWARM_SET_CURVES, 64 B); zeroed until one arrives. */
+  readonly curves: RhiBuffer;
   arena: RhiBuffer;
   arenaEntries: number;
   pickBuffer: RhiBuffer | null;
@@ -212,6 +215,7 @@ export function createGlSwarmCore(): SwarmCoreSystem {
       entries: [
         uniform(2, SWARM_GL_FRAMES_BYTES),
         uniform(3, SWARM_DRAW_BYTES),
+        uniform(6, SWARM_CURVE_BYTES),
       ],
     });
     pickLayout = b.createBindGroupLayout({
@@ -220,6 +224,7 @@ export function createGlSwarmCore(): SwarmCoreSystem {
         uniform(2, SWARM_GL_FRAMES_BYTES),
         uniform(3, SWARM_DRAW_BYTES),
         uniform(5, SWARM_PICK_UNIFORM_BYTES),
+        uniform(6, SWARM_CURVE_BYTES),
       ],
     });
   }
@@ -293,6 +298,7 @@ export function createGlSwarmCore(): SwarmCoreSystem {
       entries: [
         { binding: 2, resource: { buffer: s.frames } },
         { binding: 3, resource: { buffer: s.draw } },
+        { binding: 6, resource: { buffer: s.curves } },
       ],
     });
     p.pickGroup = s.pickBuffer
@@ -303,6 +309,7 @@ export function createGlSwarmCore(): SwarmCoreSystem {
             { binding: 2, resource: { buffer: s.frames } },
             { binding: 3, resource: { buffer: s.draw } },
             { binding: 5, resource: { buffer: s.pickBuffer } },
+            { binding: 6, resource: { buffer: s.curves } },
           ],
         })
       : null;
@@ -512,6 +519,7 @@ export function createGlSwarmCore(): SwarmCoreSystem {
     s.cold.destroy();
     s.frames.destroy();
     s.draw.destroy();
+    s.curves.destroy();
     s.arena.destroy();
     s.pickBuffer?.destroy();
     const params = s.active?.paramsBuffer;
@@ -582,6 +590,11 @@ export function createGlSwarmCore(): SwarmCoreSystem {
       draw: b.createBuffer({
         label: `swarm${id}.draw`,
         size: SWARM_DRAW_BYTES,
+        usage: BufferUsage.UNIFORM | BufferUsage.COPY_DST,
+      }),
+      curves: b.createBuffer({
+        label: `swarm${id}.curves`,
+        size: SWARM_CURVE_BYTES,
         usage: BufferUsage.UNIFORM | BufferUsage.COPY_DST,
       }),
       arena: b.createBuffer({
@@ -945,6 +958,15 @@ export function createGlSwarmCore(): SwarmCoreSystem {
         }
         case Op.SWARM_SET_FRAMES:
           setFrames(s, reader);
+          break;
+        case Op.SWARM_SET_CURVES:
+          backend.writeBuffer(
+            s.curves,
+            0,
+            reader.u8,
+            reader.blob(SWARM_CURVE_BYTES),
+            SWARM_CURVE_BYTES,
+          );
           break;
         case Op.SWARM_SET_PICK:
           setPick(s, reader.u32());

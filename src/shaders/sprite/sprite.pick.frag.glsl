@@ -18,6 +18,12 @@ layout(location = 0) out uvec4 pick;
 
 void main() {
   uint id = v_flags >> 8u;
-  if (id == 0u || texture(G1_B0, v_uv).a * v_color.a < 0.5) discard;
+  vec4 texel = texture(G1_B0, v_uv);
+  // MSDF: a distance-field page is opaque, so glyphs pick by coverage. The
+  // derivative needs uniform control flow, so it runs before the branch.
+  float d = max(min(texel.r, texel.g), min(max(texel.r, texel.g), texel.b)) - 0.5;
+  float sdf = clamp(d / max(fwidth(d), 1e-4) + 0.5, 0.0, 1.0);
+  float cov = (v_flags & 2u) != 0u ? sdf : texel.a;
+  if (id == 0u || cov * v_color.a < 0.5) discard;
   pick = uvec4(id, 0u, 0u, 0u);
 }

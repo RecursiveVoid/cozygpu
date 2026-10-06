@@ -34,6 +34,13 @@ export interface GLRingHost {
   readonly rings: GLReadbackRing[];
   /** Called once a watched fence signalled (RenderCore polls picking). */
   readonly onReadbackLanded: (() => void) | null;
+  /**
+   * True while a frame acknowledgement is held (ARCHITECTURE §7.1). The
+   * backend's own 1 ms catch-up timer polls these fences and answers picks
+   * when it lets the frame go, so the watch below stands down meanwhile
+   * instead of running a second timer chain over the same fences.
+   */
+  readonly frameHeld: boolean;
   bindTargetFramebuffer(texture: GLTexture, depth: GLTexture | null): void;
 }
 
@@ -226,7 +233,7 @@ export class GLReadbackRing implements RhiReadbackRing {
     for (let i = 0; i < slots; i++) {
       const pbo = gl.createBuffer();
       gl.bindBuffer(G.PIXEL_PACK_BUFFER, pbo);
-      gl.bufferData(G.PIXEL_PACK_BUFFER, size * 4, G.STREAM_READ);
+      gl.bufferData(G.PIXEL_PACK_BUFFER, size * 4, G.STREAM_COPY);
       this.pbos.push(pbo);
       this.syncs.push(null);
       const view = new Uint32Array(size >> 2);
@@ -303,8 +310,26 @@ export class GLReadbackRing implements RhiReadbackRing {
     meta[m + M_FLIP] = tex.renderTarget ? 1 : 0;
     this.frames[slot] = host.frameSerial;
     this.state[slot] = MAPPING;
-    if (host.onReadbackLanded && this.timer === 0) {
+    if (host.onReadbackLanded && this.timer === 0 && !host.frameHeld) {
       this.timer = setTimeout(this.watch, 1) as unknown as number;
+    }
+  }
+
+  /**
+   * @internal The backend let a held frame go: its catch-up timer is no
+   * longer polling these fences, so pick the watch up again if a slot is
+   * still in flight. Allocation-free when there is nothing to watch.
+   */
+  resumeWatch(): void {
+    const host = this.host;
+    if (this.timer !== 0 || !host.onReadbackLanded || host.lost) return;
+    if (host.epoch !== this.epoch) return;
+    const state = this.state;
+    for (let i = 0; i < state.length; i++) {
+      if (state[i] === MAPPING) {
+        this.timer = setTimeout(this.watch, 1) as unknown as number;
+        return;
+      }
     }
   }
 
@@ -329,7 +354,10 @@ export class GLReadbackRing implements RhiReadbackRing {
       }
     }
     if (landed) host.onReadbackLanded?.();
-    if (waiting && this.timer === 0) {
+    // While a frame is held the backend polls the same fences on its own
+    // timer, so standing down here saves a setTimeout per millisecond of the
+    // hold; `resumeWatch` picks it up when the frame goes.
+    if (waiting && this.timer === 0 && !host.frameHeld) {
       this.timer = setTimeout(this.watch, 1) as unknown as number;
     }
   };

@@ -4,10 +4,11 @@
 import * as GPU from 'cozygpu';
 ```
 
-This covers the **M1** and **M2** surface (implemented; M2 items are
-marked **M2**) and the **M2.5** integration hooks (implemented; marked **M2.5**, see [Integration hooks](#integration-hooks-m25)).
-Everything exported in `src/index.ts` is listed here. The sketches under
-[Later](#later-milestones-sketches) are M3 and may change.
+This covers the **M1** and **M2** surface (M2 items are marked **M2**),
+the **M2.5** integration hooks (marked **M2.5**, see
+[Integration hooks](#integration-hooks-m25)) and the **M3** visual
+features — masks, filters, text and particles. All of it is implemented.
+Everything exported in `src/index.ts` is listed here.
 
 Everything is in stage pixels (CSS pixels, origin top-left, y down),
 angles are radians, time is in seconds, and colors are `0xRRGGBB` numbers
@@ -430,6 +431,12 @@ const ui = await assets.load<GPU.SpritesheetAsset>('ui/ui.json');
 new GPU.Sprite({ texture: ui.value.frames['button_up.png'] });
 const level = await assets.load<{ spawns: number[] }>('data/level1.json');
 
+// M3: MSDF fonts for GPU.Text (atlas JSON + its page image, cached as one asset)
+const font = await assets.load<GPU.FontAsset>({
+  url: 'fonts/inter.json',
+  kind: 'font',
+});
+
 // Bundles with progress and cancellation
 assets.addBundle('level1', {
   bg: 'img/bg.webp',
@@ -618,7 +625,13 @@ if (interop.backend === 'webgpu') {
   reject with `UNSUPPORTED` when a buffer lacks COPY_SRC or was released or
   lost.
 - After `deviceRestored`, read `interop.device` again, recreate your
-  buffers, register them and call `setSource` again.
+  buffers, register them and call `setSource` again. A device loss also
+  drops the Swarm's source, so `onRestore` runs on the Swarm's own (empty)
+  buffers and can `spawn` / `write` into them; a draw-only source still
+  reads colour, frame and user id from those cold records, so refill them
+  there or the swarm draws fully transparent quads. The pre-loss handles
+  are invalid (`valid` is false), so a re-registration you miss throws
+  instead of silently drawing nothing.
 
 ## Worker mode
 
@@ -677,38 +690,217 @@ report it), and M2's `ABORTED` and `LOAD_FAILED` (assets).
 
 ---
 
-## Later milestones (sketches)
+## Visual features (M3)
 
-These are **not implemented** (M3) and their API may change.
+Masks, filters, text and particles. Each one arrives as its own lazily
+imported chunk the first time you use it, so a program that never touches
+them bundles none of their code. Design: `docs/ARCHITECTURE.md` §21–§24;
+the limits each feature still has are listed with it below.
 
-### Masks and filters (M3)
+### Group: masks and filters (M3)
+
+Effects live on `Group`, a Container that can carry a mask and a filter
+chain. They are not on every Container on purpose: a group is a batch
+boundary and may cost a render target, and a program that never imports
+`Group` ships none of the mask or filter code.
 
 ```ts
-panel.mask = new GPU.Graphics().rect(0, 0, 300, 200);
+const panel = new GPU.Group({ x: 40, y: 40 });
+panel.addChild(photo, caption);
+stage.addChild(panel);
+
+panel.mask = { x: 0, y: 0, width: 300, height: 200 }; // rect
+panel.mask = shapeSprite; // any node's pixels
+panel.mask = { source: shapeSprite, invert: true, mode: 'stencil' };
+panel.mask = null;
+
+await panel.ready; // the effect chunks have loaded
+await GPU.loadEffects(); // or preload both up front
+```
+
+- The mask source is a `SceneNode` (its drawn pixels) or a rect in the
+  group's parent space. A mask node need not be in the scene tree; if it
+  is, it also draws normally.
+- `mode` defaults to `'auto'`, which picks the cheapest correct
+  implementation: **scissor** for an axis-aligned rect or an unrotated
+  sprite, **stencil** for other shapes, **alpha** (render to texture) when
+  the backend cannot clip with the stencil buffer.
+- `'auto'` reads geometry, not texels, so **a soft-edged mask needs
+  `mode: 'alpha'` by name** — an unrotated sprite would otherwise clip to a
+  hard rectangle.
+- On WebGPU, `'auto'` does not pick stencil and an explicit
+  `mode: 'stencil'` falls back to alpha: a WebGPU pipeline carries its own
+  stencil state, so the sprite pipelines would all have to declare one.
+  WebGL2 uses stencil as described.
+- `invert` keeps what is outside; `threshold` (default 0.5) decides what
+  counts as opaque for the binary modes.
+- Masks nest (up to 8 levels) and combine with filters on the same group.
+- **Until the effect chunk is loaded the group's subtree is not drawn**, so
+  a mask never flashes unclipped content. `group.ready` resolves when it is
+  drawable.
+
+```ts
+const world = new GPU.Group();
 world.filters = [
-  GPU.filters.blur({ strength: 4 }),
-  GPU.filters.colorMatrix().saturate(0.5),
+  GPU.filters.blur({ strength: 4, quality: 'fast' }),
+  GPU.filters.colorMatrix().saturate(0.5).hue(15),
 ];
+world.filterOptions = { resolution: 0.5, blendMode: 'normal' };
+world.filters = null; // remove
 ```
 
-### MSDF text (M3)
+Built-ins: `blur`, `colorMatrix`, `displacement`, `outline`, `glow`.
+A chain applies to the group's whole subtree; wrap the scene in a group for
+a full-screen effect.
+
+**Cheap chains never allocate.** `colorMatrix` (and `outline` on MSDF text)
+compile into the sprite batch's shader instead of a render target, so tint,
+saturation, hue, contrast and grayscale cost one uniform and no extra pass.
+Mixing is fine: the cheap prefix folds into the batch and the rest takes a
+target. Targets are pooled by size and reused across frames and groups, so
+a steady-state frame allocates nothing.
+
+`filterOptions`: `resolution` (relative to DPR, default 1), `area` (the
+captured rect, default the group's bounds plus the chain's padding),
+`blendMode` of the composite, `keepTarget` for feedback effects.
+
+A chain of only cheap filters (`colorMatrix` and its helpers) takes no
+render target at all: it is folded into the sprite batch. A mixed chain
+folds its cheap prefix and gives the rest a target. `outline` is not
+folded even on text today, so it costs a pass. With `antialias: true`,
+`keepTarget` starts each frame cleared rather than loading the previous
+one.
+
+Custom filters mirror `defineBehavior`:
 
 ```ts
-const label = new GPU.Text({
-  text: 'Score: 0',
-  font: assets.font('font'),
-  size: 24,
-  tint: 0xffffff,
+const pixelate = GPU.defineFilter({
+  name: 'pixelate',
+  params: { size: 'f32' },
+  defaults: { size: 8 },
+  wgsl: `...`, // fs_main over the captured target
+  glsl: `...`, // the WebGL2 variant
+  padding: 0,
 });
+world.filters = [pixelate()];
 ```
 
-### Particles on Swarm (M3)
+A filter without a shader for the renderer's backend is skipped and
+reports `UNSUPPORTED` once; the rest of the chain still runs. In the shader
+body, read the source through `cozySample(uv)` (it handles the GL v-flip),
+reach the pass uniform as `fpass` and your params as `$params.<name>`; a
+param may not be called `texel`, `size`, `area`, `time`, `passIndex` or
+`unit`. `defineFilter` throws `INVALID_ARGUMENT` for those and for a
+definition with neither `wgsl` nor `glsl`.
+
+### Text (M3)
+
+```ts
+const handle = await renderer.assets.load<GPU.FontAsset>({
+  url: 'fonts/inter.json',
+  kind: 'font', // MSDF atlas JSON + its page image
+});
+
+const label = new GPU.Text('Score: 0', {
+  font: handle.value,
+  size: 24,
+  fill: 0xffffff,
+  align: 'left',
+  maxWidth: 320,
+  wrap: 'word',
+  letterSpacing: 0,
+  lineHeight: 1.2,
+});
+stage.addChild(label);
+await label.ready;
+
+label.text = 'Score: 1'; // re-lays out from the first changed glyph only
+label.setStyle({ size: 32 });
+label.metrics; // { width, height, lines, firstBaseline, glyphs }
+```
+
+- MSDF is the default: one atlas page per font, crisp at any size and
+  rotation.
+- A `Text` **is a Container** whose children are its glyph sprites, so
+  glyphs batch with the sprites around them and picking, `userId`, masks
+  and filters work on text with no extra code. Do not add or remove its
+  children yourself.
+- For system fonts and emoji, pass a font descriptor instead; glyphs are
+  rasterised on demand into an atlas page:
+
+  ```ts
+  new GPU.Text('emoji 🎉', {
+    font: { family: 'Menlo', weight: 600, atlasSize: 64 },
+    size: 18,
+  });
+  ```
+
+- Layout runs on the front in both renderer modes and uses no DOM, so
+  worker mode needs nothing extra.
+- Style: `font`, `size`, `fill`, `align` (`left | center | right |
+justify`), `baseline`, `lineHeight`, `letterSpacing`, `wordSpacing`,
+  `maxWidth`, `wrap` (`word | char | none`), `maxLines`, `ellipsis`,
+  `pixelSnap`.
+
+### Particles (M3)
 
 ```ts
 const fx = new GPU.Particles({
   capacity: 200_000,
-  emitter: { rate: 5000, shape: { disc: 20 } },
-  over: { color: ['#fff', '#f80', '#0000'], size: [4, 0] },
+  texture: spark,
+  emitter: {
+    rate: 5000,
+    shape: { disc: { radius: 20 } },
+    speed: [40, 120],
+    life: [0.4, 1.2],
+    size: [2, 6],
+  },
+  over: {
+    color: ['#ffffff', '#ff8800', '#00000000'],
+    size: [1, 0],
+  },
 });
-fx.emitter.moveTo(x, y);
+stage.addChild(fx);
+
+fx.emitter().moveTo(pointer.x, pointer.y);
+fx.emitter().burst(200);
+fx.pause();
+fx.swarm.aliveCount().then(n => console.log(n));
 ```
+
+- `Particles` owns a `Swarm` (`fx.swarm`) and compiles emitters and curves
+  into spawn commands, behaviors and a small curve block. Per frame the CPU
+  does work **per emitter, not per particle**, so a million particles cost
+  the same as a thousand.
+- Emitter shapes: `{ point: true }`, `{ disc: { radius, inner } }`,
+  `{ rect: { width, height } }`, `{ line: { x2, y2 } }`. Several emitters
+  per node are allowed (`emitter: [...]`, `fx.emitter('sparks')`).
+- `over` curves (up to 4 stops) drive color, alpha and size in the render
+  shader — no simulation cost; `rotation` and `drag` curves compile to
+  behaviors.
+- Presets: `GPU.particlePresets.fire()`, `.smoke()`, `.sparks()`,
+  `.rain()`, `.confetti()` return full options you can spread and edit.
+- WebGL2: ring allocation, finite `life`, capacity within the Swarm
+  WebGL2 ceiling; everything else is identical.
+
+---
+
+## Later milestones (sketches)
+
+These are **not implemented** and their API may change: a `Graphics` node
+(vector shapes), a public render-to-texture API, custom blend factors, a
+camera API, and bounds readback.
+
+Known limits of the M3 features:
+
+- Picking ignores masks and filters: a pick inside a masked group hits the
+  unclipped geometry.
+- `mode: 'stencil'` is WebGL2-only (see [Group](#group-masks-and-filters-m3)).
+- A container mask carries one texture, so a mask built from sprites with
+  different texture sources only clips with the first source's sprites.
+- A filter's capture target is canvas-sized rather than area-sized;
+  every group at one resolution shares two or three pooled textures.
+- `TextStyle` has no `stroke`, so `SpriteInstanceFlag.SDF_OUTLINE` is not
+  driven yet; `GPU.filters.outline()` covers the same ground with a pass.
+- A scene holding a `Group` takes full structure rebuilds in the packer
+  instead of incremental ones.

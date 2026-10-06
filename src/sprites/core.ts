@@ -29,7 +29,12 @@ import {
 } from '../renderer/pickingPipelines';
 import type { RhiBindGroup } from '../backend/types';
 import type { CoreContext, CoreFrameState, CoreSystem } from '../types/core';
-import { PICK_TARGET_FORMAT, SPRITE_INSTANCE_BYTES } from '../types/layouts';
+import {
+  PICK_TARGET_FORMAT,
+  SPRITE_EFFECT_BYTES,
+  SPRITE_INSTANCE_BYTES,
+} from '../types/layouts';
+import type { SpriteEffects } from './effects';
 import { SPRITE_BLEND_MODES, SPRITE_VERTEX_LAYOUT } from './pipeline';
 
 const QUAD_VERTICES = 4;
@@ -69,6 +74,18 @@ export class SpriteCoreSystem implements CoreSystem {
   private pickPipeline: RhiRenderPipeline | null = null;
   /** Pick pipeline creation started for the current epoch. */
   private pickRequested = false;
+  /**
+   * M3 cheap in-batch effects (ARCHITECTURE §22.7). Everything except these
+   * five fields lives in the lazily imported ./effects chunk, so a program
+   * without a filtered Group carries neither the effect shaders nor the
+   * uniform. `fxData` retains the blocks (indexed by effect id) for the chunk
+   * that is still loading and for a device restore.
+   */
+  private fx: SpriteEffects | null = null;
+  private fxLoad: Promise<void> | null = null;
+  private fxCurrent = 0;
+  private fxData: Uint8Array[] | null = null;
+  private readonly fxOffset = new Uint32Array(1);
 
   async init(ctx: CoreContext): Promise<void> {
     this.ctx = ctx;
@@ -81,7 +98,12 @@ export class SpriteCoreSystem implements CoreSystem {
     this.sharedSource.length = 0;
     this.sharedViews.length = 0;
     this.ctx = ctx;
+    this.fx?.dispose();
+    this.fx = null;
+    this.fxLoad = null;
+    this.fxCurrent = 0;
     await this.createPipelines(ctx);
+    if (this.fxData) this.loadEffects(ctx);
   }
 
   private async createPipelines(ctx: CoreContext): Promise<void> {
@@ -200,6 +222,19 @@ export class SpriteCoreSystem implements CoreSystem {
         ctx.backend.writeBuffer(buffer, dst, view, start, bytes);
         return;
       }
+      case Op.SPRITE_DEFINE_EFFECT: {
+        const id = reader.u32();
+        const at = reader.blob(SPRITE_EFFECT_BYTES);
+        // Retained per id: the chunk below may still be loading, and a device
+        // restore re-uploads from here. Rare command, so a copy is fine.
+        (this.fxData ??= [])[id] = reader.u8.slice(
+          at,
+          at + SPRITE_EFFECT_BYTES,
+        );
+        if (this.fx) this.fx.define(id, this.fxData[id], 0);
+        else this.loadEffects(ctx);
+        return;
+      }
       default:
         return;
     }
@@ -207,19 +242,76 @@ export class SpriteCoreSystem implements CoreSystem {
 
   draw(reader: CommandReader, pass: RenderPass, _frame: CoreFrameState): void {
     const ctx = this.ctx;
-    if (!ctx || reader.opcode !== Op.SPRITE_DRAW) return;
+    if (!ctx) return;
+    if (reader.opcode === Op.SPRITE_SET_EFFECT) {
+      this.fxCurrent = reader.u32();
+      return;
+    }
+    if (reader.opcode !== Op.SPRITE_DRAW) return;
     const buffer = this.buffers[reader.u32()];
     const first = reader.u32();
     const count = reader.u32();
     const texId = reader.u32();
-    const pipeline = this.pipelines[reader.u32()];
+    const blendId = reader.u32();
+    // A bound cheap effect swaps in the effect variant of the same pipeline
+    // and binds its block with a dynamic offset (ARCHITECTURE §22.7).
+    const fx = this.fxCurrent !== 0 ? this.fx : null;
+    const effectAt = fx ? fx.offset(this.fxCurrent) : -1;
+    const variant = effectAt >= 0 ? fx!.pipeline(blendId) : null;
+    const pipeline = variant ?? this.pipelines[blendId];
     if (!buffer || !pipeline || count === 0) return;
     if (!this.fits(buffer, first, count)) return;
     pass.setPipeline(pipeline);
     pass.setBindGroup(0, ctx.viewBindGroup);
     pass.setBindGroup(1, ctx.getTexture(texId).bindGroup);
+    if (variant) {
+      this.fxOffset[0] = effectAt;
+      pass.setBindGroup(2, fx!.group, this.fxOffset);
+    }
     pass.setVertexBuffer(0, buffer);
     pass.draw(QUAD_VERTICES, count, 0, first);
+  }
+
+  endFrame(_frame: CoreFrameState): void {
+    // Every packet starts at effect 0 (ARCHITECTURE §22.7).
+    this.fxCurrent = 0;
+  }
+
+  /** Loads the cheap-effect chunk and builds its pipelines (once). */
+  private loadEffects(ctx: CoreContext): void {
+    const shader = this.shader;
+    if (this.fxLoad || !shader) return;
+    const epoch = this.epoch;
+    this.fxLoad = import('./effects')
+      .then(async module => {
+        const glsl = this.sources.glsl;
+        const effects = await module.createSpriteEffects(
+          ctx,
+          ctx.backend.createShaderModule({
+            label: 'cozygpu.sprite.effect',
+            wgsl:
+              this.sources.wgsl &&
+              `${this.sources.wgsl}
+${module.EFFECT_WGSL}`,
+            glsl: glsl && { vertex: glsl.vertex, fragment: module.EFFECT_GLSL },
+          }),
+        );
+        if (epoch !== this.epoch) return effects.dispose();
+        this.fx = effects;
+        const data = this.fxData;
+        if (!data) return;
+        for (let id = 0; id < data.length; id++) {
+          if (data[id]) effects.define(id, data[id], 0);
+        }
+      })
+      .catch(() => {
+        this.fxLoad = null;
+        ctx.post({
+          type: 'error',
+          code: 'INTERNAL',
+          message: 'sprite effects',
+        });
+      });
   }
 
   drawPick(
@@ -294,6 +386,9 @@ export class SpriteCoreSystem implements CoreSystem {
 
   destroy(): void {
     this.epoch++;
+    this.fx?.dispose();
+    this.fx = null;
+    this.fxData = null;
     this.pickPipeline?.destroy();
     this.pickShader?.destroy();
     this.pickPipeline = null;

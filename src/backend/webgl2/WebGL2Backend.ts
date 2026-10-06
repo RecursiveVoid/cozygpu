@@ -90,7 +90,7 @@ import {
   GLVertexArray,
   type GLProgram,
 } from './resources';
-import { GLState } from './state';
+import { GLState, toGLStencil } from './state';
 
 /**
  * Readback pacing (see backlogged). Chrome's getBufferSubData waits for
@@ -103,6 +103,31 @@ import { GLState } from './state';
  * display tick, so RenderCore answers picks when it releases a held frame.
  */
 const PACE_FRAMES = 3;
+
+/**
+ * Queue-depth pacing, the other half of the same problem (ARCHITECTURE §7.1).
+ * PACE_FRAMES only runs while a readback is in flight, so an uncapped loop
+ * that has never read anything still queues as deep as the driver lets it —
+ * and then the FIRST pick waits behind all of it. Measured at 100k sprites
+ * plus a 200k swarm, vsync off, after a 6 s no-readback phase: the first pick
+ * took 1.7 s, while later picks, which PACE_FRAMES already covers, took 19 ms.
+ *
+ * So the backend also holds when the GPU is more than QUEUE_FRAMES frames
+ * behind, readback or not. The depth is measured by one fence at a time,
+ * armed once the queue looks deep (QUEUE_PROBE). GL has no completion
+ * callback, so the fence is both armed and polled in `backlogged()`, which
+ * the core calls once per frame after submitting it and then on the 1 ms
+ * timer that re-checks a held frame. A display-paced loop, where the GPU is
+ * never more than a frame or two behind, arms one fence every QUEUE_PROBE
+ * frames at most and never holds.
+ *
+ * The tradeoff is the WebGPU one: an uncapped loop is capped at roughly
+ * QUEUE_FRAMES frames of queued work, so its throughput becomes GPU-bound and
+ * `stats.skippedFrames` rises. Those frames were never displayed.
+ */
+const QUEUE_FRAMES = 16;
+const QUEUE_PROBE = 8;
+
 const RESTORE_DELAYS_MS = [0, 500, 2000] as const;
 /** ImageBitmap scratch canvases up to this size stay allocated between uploads. */
 const SCRATCH_KEEP_TEXELS = 1024 * 1024;
@@ -134,6 +159,11 @@ export class WebGL2Backend implements Backend, GLCommandHost {
   /** @internal beginCommands() count, and its value when the oldest readback began. */
   frameSerial = 0;
   private readFrame = 0;
+  /** Queue-depth probe (see QUEUE_FRAMES): frames the GPU has finished. */
+  private gpuDone = 0;
+  /** The outstanding probe's fence and the frame serial it covers. */
+  private probeSync: WebGLSync | null = null;
+  private probeAt = 0;
   /** @internal Live readback rings (pacing looks at their fences). */
   readonly rings: GLReadbackRing[] = [];
   /**
@@ -188,7 +218,10 @@ export class WebGL2Backend implements Backend, GLCommandHost {
       premultipliedAlpha: true,
       antialias: false,
       depth: false,
-      stencil: false,
+      // M3 (masks, ARCHITECTURE §21.3): the default framebuffer needs a
+      // stencil buffer, because the canvas is the main pass' color target
+      // whenever MSAA is off.
+      stencil: true,
       preserveDrawingBuffer: false,
       powerPreference: options.powerPreference ?? 'default',
     }) as WebGL2RenderingContext | null;
@@ -643,6 +676,13 @@ export class WebGL2Backend implements Backend, GLCommandHost {
    * during a readback, frameDone waits and the front skips frames instead.
    */
   backlogged(): boolean {
+    this.pollProbe();
+    // Called once per frame from the acknowledgement, after the frame's
+    // commands were submitted, and again on the timer that re-checks a held
+    // frame: the one place the depth is measured and acted on.
+    const depth = this.frameSerial - this.gpuDone;
+    if (depth >= QUEUE_PROBE) this.probeQueue();
+    if (depth >= QUEUE_FRAMES) return true;
     const serial = this.frameSerial - PACE_FRAMES;
     if (this.readsInFlight > 0 && this.readFrame <= serial) return true;
     const rings = this.rings;
@@ -652,6 +692,38 @@ export class WebGL2Backend implements Backend, GLCommandHost {
     return false;
   }
 
+  /** Arms the queue-depth fence unless one is already outstanding. */
+  private probeQueue(): void {
+    if (this.probeSync !== null || this.lost || this.destroyed) return;
+    const gl = this.gl;
+    const sync = gl.fenceSync(G.SYNC_GPU_COMMANDS_COMPLETE, 0);
+    if (!sync) {
+      // Nothing can measure the depth here, so never hold on it.
+      this.gpuDone = this.frameSerial;
+      return;
+    }
+    gl.flush();
+    this.probeSync = sync;
+    this.probeAt = this.frameSerial;
+  }
+
+  /** Polls the outstanding fence. One GL call, wherever the depth is read. */
+  private pollProbe(): void {
+    const sync = this.probeSync;
+    if (sync === null) return;
+    const gl = this.gl;
+    // A lost context never answers again, and neither does a failed wait:
+    // either way stop holding on the depth. (markLost and restore drop the
+    // fence themselves, so this only catches a loss GL has not reported yet.)
+    const dead = this.lost || gl.isContextLost();
+    const status = dead ? G.WAIT_FAILED : gl.clientWaitSync(sync, 0, 0);
+    if (status === G.TIMEOUT_EXPIRED) return;
+    this.probeSync = null;
+    if (!dead) gl.deleteSync(sync);
+    if (status === G.WAIT_FAILED) this.gpuDone = this.frameSerial;
+    else if (this.probeAt > this.gpuDone) this.gpuDone = this.probeAt;
+  }
+
   /**
    * @internal Calls `callback` once the backlog is gone (or now). Ring
    * fences are re-checked on a 1 ms timer while a frame is held (no packet
@@ -659,7 +731,16 @@ export class WebGL2Backend implements Backend, GLCommandHost {
    */
   whenCaughtUp(callback: () => void): void {
     this.caughtUp = callback;
+    // No fence is armed here: `backlogged()` arms one when the DEPTH is what
+    // holds the frame, and a readback hold already watches its own. Arming
+    // one per held frame would cost a WebGLSync per frame, which the pick
+    // allocation budget (§10) does not have room for.
     this.checkCaughtUp();
+  }
+
+  /** @internal GLRingHost: an acknowledgement is held (see whenCaughtUp). */
+  get frameHeld(): boolean {
+    return this.caughtUp !== null;
   }
 
   private readonly checkCaughtUp = (): void => {
@@ -671,6 +752,9 @@ export class WebGL2Backend implements Backend, GLCommandHost {
     }
     this.caughtUp = null;
     callback();
+    // The rings' own fence watch stood down while the frame was held.
+    const rings = this.rings;
+    for (let i = 0; i < rings.length; i++) rings[i].resumeWatch();
   };
 
   /** @internal A readback starts (readBuffer, readTexture): pacing counts it. */
@@ -842,8 +926,12 @@ export class WebGL2Backend implements Backend, GLCommandHost {
       this.vertexArray(program, desc.vertexBuffers),
       GL_TOPOLOGY[desc.topology ?? 'triangle-list'],
       blend,
-      desc.depthFormat !== undefined,
+      // M3: a stencil pipeline attaches a depth/stencil buffer but keeps
+      // depth testing off (cozygpu is 2D).
+      desc.depthFormat !== undefined && desc.stencil === undefined,
       desc.label,
+      desc.stencil ? toGLStencil(desc.stencil) : null,
+      desc.colorWriteDisabled === true,
     );
   }
 
@@ -1002,6 +1090,9 @@ export class WebGL2Backend implements Backend, GLCommandHost {
     this.lost = true;
     this.epoch++;
     this.list.abandon();
+    // The fence belongs to the dead context and never signals again.
+    this.probeSync = null;
+    this.gpuDone = this.frameSerial;
     const held = this.caughtUp; // releases a held frame
     this.caughtUp = null;
     held?.();
@@ -1047,6 +1138,8 @@ export class WebGL2Backend implements Backend, GLCommandHost {
         this.programIds.clear();
         this.caps = this.initContext();
         this.list.abandon();
+        this.probeSync = null;
+        this.gpuDone = this.frameSerial;
         this.lost = false;
         return;
       }
@@ -1079,7 +1172,10 @@ export class WebGL2Backend implements Backend, GLCommandHost {
     target.removeEventListener('webglcontextrestored', this.onRestored);
     this.onRestored();
     const gl = this.gl;
+    const probe = this.probeSync;
+    this.probeSync = null;
     if (!gl.isContextLost()) {
+      if (probe) gl.deleteSync(probe);
       this.programs.forEach(p =>
         p.then(
           info => gl.deleteProgram(info.program),

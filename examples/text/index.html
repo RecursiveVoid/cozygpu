@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="data:," />
+    <title>cozygpu · text</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #101420;
+        color: #c8d4f0;
+        font: 13px monospace;
+      }
+      canvas {
+        display: block;
+        width: 100vw;
+        height: 100vh;
+      }
+      #hud {
+        position: fixed;
+        right: 8px;
+        top: 8px;
+        text-align: right;
+        white-space: pre;
+        pointer-events: none;
+        opacity: 0.8;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="view"></canvas>
+    <div id="hud">text</div>
+    <script type="module" src="/build/examples/text/main.js"></script>
+  </body>
+</html>

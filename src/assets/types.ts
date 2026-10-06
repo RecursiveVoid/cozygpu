@@ -41,7 +41,9 @@ export type AssetKind =
   | 'json'
   | 'text'
   /** ArrayBuffer kept in memory. */
-  | 'binary';
+  | 'binary'
+  /** M3. MSDF font: atlas JSON + page image (value: FontAsset, src/text/types.ts). */
+  | 'font';
 
 /** Compressed / uncompressed targets a transcoder may emit. */
 export type TranscodeTarget =
@@ -91,6 +93,19 @@ export interface AssetDescriptor {
   alias?: string;
   /** Override detection (e.g. extension-less URLs). */
   kind?: AssetKind;
+  texture?: TextureAssetOptions;
+  /** M3. Options for `kind: 'font'`. */
+  font?: FontAssetOptions;
+}
+
+/** M3. How a font atlas page is loaded (ARCHITECTURE §23.3). */
+export interface FontAssetOptions {
+  /**
+   * Page image URL. Default: the atlas JSON's own `pages[0]`, resolved
+   * against the JSON's URL.
+   */
+  page?: string;
+  /** Texture options for the page. Default: linear, no mipmaps, not atlased. */
   texture?: TextureAssetOptions;
 }
 
