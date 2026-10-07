@@ -294,7 +294,7 @@ asks the owning system which pass to open next.
 | 0x0611 | GFX_MESH_UPLOAD_SHARED       |                 | M4. u32 meshId, vertexCount, indexCount, flags, sharedId, vertexByteOffset, indexByteOffset                                                   |
 | 0x0612 | GFX_MESH_DESTROY             |                 | M4. u32 meshId                                                                                                                                |
 | 0x0613 | GFX_SET_TRANSFORM            |                 | M5. u32 transformId, f32 a, b, c, d, tx, ty, f32 alpha (static containers, §27.5)                                                             |
-| 0x0614 | GFX_SET_TEXTURE_SLOTS        |                 | M5. u32 slotsId, count, u32[count] texIds                                                                                                     |
+| 0x0614 | GFX_SET_TEXTURE_SLOTS        |                 | M5. u32 slotsId, count, u32[count] texIds; count 0 releases the table (the id may be reused)                                                  |
 | 0x0620 | GFX_DRAW_SHAPES              | DRAW            | M4. u32 bufferId, first, count, blendModeId, flags (GfxDrawFlag)                                                                              |
 | 0x0621 | GFX_DRAW_MESH                | DRAW            | M4. u32 meshId, firstIndex, indexCount, nodeBufferId, firstNode, nodeCount, texId, blendModeId, flags, f32[6] uv matrix                       |
 | 0x0622 | GFX_DRAW_UNIFIED             | DRAW            | M5. u32 itemPoolId, firstIndex, indexCount, shapeBufferId, vertexPoolId, nodeBufferId, spritePoolId, slotsId, transformId, blendModeId, flags |

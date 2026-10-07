@@ -136,6 +136,12 @@ const SCRATCH_KEEP_TEXELS = 1024 * 1024;
 
 type LoseContext = { loseContext(): void; restoreContext(): void };
 
+/**
+ * Contexts released by destroy() (browsers cap live WebGL contexts): a new
+ * backend on the same canvas restores them.
+ */
+const released = new WeakMap<WebGL2RenderingContext, LoseContext>();
+
 function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -236,10 +242,16 @@ export class WebGL2Backend implements Backend, GLCommandHost {
         'no WebGL2 context (unsupported, or the canvas has another one)',
       );
     }
-    if (gl.isContextLost()) {
+    if (gl.isContextLost() && !released.get(gl)) {
       throw new CozyGPUError('UNSUPPORTED', 'the WebGL2 context is lost');
     }
-    return new WebGL2Backend(canvas, gl, options);
+    const backend = new WebGL2Backend(canvas, gl, options);
+    if (gl.isContextLost()) {
+      // Released by an earlier backend: restore it like a simulated loss.
+      backend.simulated = true;
+      await backend.restore();
+    }
+    return backend;
   }
 
   // ─── Context setup ─────────────────────────────────────────────────────────
@@ -255,7 +267,9 @@ export class WebGL2Backend implements Backend, GLCommandHost {
     this.baseInstance = gl.getExtension(
       'WEBGL_draw_instanced_base_vertex_base_instance',
     );
-    this.loseExt = gl.getExtension('WEBGL_lose_context') as LoseContext | null;
+    // Lost on creation: the extension kept when destroy() released it.
+    this.loseExt = (gl.getExtension('WEBGL_lose_context') ??
+      released.get(gl)) as LoseContext | null;
     this.parallelCompile = available.has('KHR_parallel_shader_compile');
     this.state.reset(gl);
     this.transformFeedback = gl.createTransformFeedback();
@@ -1194,6 +1208,7 @@ export class WebGL2Backend implements Backend, GLCommandHost {
     const gl = this.gl;
     const probe = this.probeSync;
     this.probeSync = null;
+    const ext = this.loseExt;
     if (!gl.isContextLost()) {
       if (probe) gl.deleteSync(probe);
       this.programs.forEach(p =>
@@ -1204,6 +1219,16 @@ export class WebGL2Backend implements Backend, GLCommandHost {
       );
       this.vertexArrays.forEach(va => gl.deleteVertexArray(va.vao));
       gl.deleteTransformFeedback(this.transformFeedback);
+      if (ext) {
+        // Free the context now rather than at GC (browsers cap live
+        // contexts, and the context keeps the canvas alive). Preventing the
+        // default of its lost event keeps it restorable.
+        target.addEventListener('webglcontextlost', e => e.preventDefault(), {
+          once: true,
+        });
+        released.set(gl, ext);
+        ext.loseContext();
+      }
     }
     this.programs.clear();
     this.vertexArrays.clear();

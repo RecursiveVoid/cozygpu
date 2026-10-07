@@ -826,6 +826,37 @@ describe('WebGL2Backend (fake context)', () => {
     expect(fake.calls.filter(c => c.startsWith('linkProgram'))).toHaveLength(1);
 
     backend.destroy();
+    // Only the one-off listener of the context release is left.
+    expect(fake.listeners.get('webglcontextlost')).toHaveLength(1);
+    fake.fire('webglcontextlost');
     expect(fake.listeners.get('webglcontextlost')).toHaveLength(0);
+  });
+
+  it('destroy() releases the context; a backend on the same canvas restores it', async () => {
+    const { fake, backend } = await makeBackend();
+    backend.destroy();
+    expect(fake.lost.value).toBe(true);
+    const canvas = fake.canvas as unknown as OffscreenCanvas;
+    const creating = WebGL2Backend.create(canvas, { preference: 'webgl2' });
+    // The release's lost event arrives; its default is prevented.
+    await tick();
+    fake.fire('webglcontextlost');
+    expect(fake.calls).toContain('preventDefault(webglcontextlost)');
+    expect(fake.lost.value).toBe(false); // restoreContext() was called
+    fake.fire('webglcontextrestored');
+    const next = await creating;
+    expect(next.caps.maxTextureSize).toBeGreaterThan(0);
+    expect(fake.lost.value).toBe(false);
+    expect(next.lost).toBe(false);
+    next.destroy();
+    fake.fire('webglcontextlost');
+    // A context lost by someone else is still refused.
+    const other = createFakeGL();
+    other.lost.value = true;
+    await expect(
+      WebGL2Backend.create(other.canvas as unknown as OffscreenCanvas, {
+        preference: 'webgl2',
+      }),
+    ).rejects.toMatchObject({ code: 'UNSUPPORTED' });
   });
 });

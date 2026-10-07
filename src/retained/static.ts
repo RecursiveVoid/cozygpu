@@ -178,6 +178,10 @@ class RendererBakes implements FrontFrameHook {
   private readonly freeTransforms: number[] = [];
   /** Segment ids of dropped bakes, freed at the end of the next frame. */
   readonly dead: number[] = [];
+  /** Slot table ids of dropped bakes, released at the end of the next frame. */
+  readonly deadSlots: number[] = [];
+  /** Released slot table ids, reused before new ones are taken. */
+  readonly freeSlots: number[] = [];
   remove: (() => void) | null = null;
 
   constructor(readonly rid: number) {}
@@ -196,9 +200,19 @@ class RendererBakes implements FrontFrameHook {
   encodeFrameEnd(frame: FrontFrame): void {
     // Re-armed bakes take effect on the next frame's structure pass.
     if (failedBakes.length > 0) retryFailed();
+    const enc = frame.encoder;
+    const slots = this.deadSlots;
+    for (let i = 0; i < slots.length; i++) {
+      // A count of 0 drops the core's table (and its bind group).
+      enc.begin(GfxOp.GFX_SET_TEXTURE_SLOTS, 8);
+      enc.u32(slots[i]);
+      enc.u32(0);
+      enc.end();
+      this.freeSlots.push(slots[i]);
+    }
+    slots.length = 0;
     const dead = this.dead;
     if (dead.length === 0) return;
-    const enc = frame.encoder;
     for (let i = 0; i < dead.length; i++) {
       enc.begin(RetainOp.RETAIN_DESTROY, RETAIN_DESTROY_BYTES);
       enc.u32(dead[i]);
@@ -214,6 +228,7 @@ class RendererBakes implements FrontFrameHook {
     // The core died with the renderer: only the ids go back.
     for (let k = 0; k < this.dead.length; k++) freeSegmentId(this.dead[k]);
     this.dead.length = 0;
+    this.deadSlots.length = 0;
   }
 }
 
@@ -603,6 +618,7 @@ class StaticBake implements StaticBinding {
     r.bakeKey = st.key;
     r.transform = st.transform;
     r.slots = 0;
+    const bakes = bakesFor(frame);
     let tableCount = 0;
     let tables = 0;
     let rec = st.spriteFirst;
@@ -631,7 +647,7 @@ class StaticBake implements StaticBinding {
         if (slot < 0) {
           if (tableCount === GFX_MAX_TEXTURE_SLOTS || r.slots === 0) {
             if (r.slots !== 0) sendSlots(enc, r.slots, tableCount);
-            r.slots = tableId(st, r, tables++);
+            r.slots = tableId(st, r, bakes, tables++);
             tableCount = 0;
           }
           slot = tableCount;
@@ -685,7 +701,6 @@ class StaticBake implements StaticBinding {
     }
     if (open) this.closePart(st, enc, retain, partStart);
     // Segments of a bake with more parts than this one.
-    const bakes = bakesFor(frame);
     for (let p = st.nParts; p < st.partId.length; p++) {
       if (st.partId[p] !== 0) {
         bakes.dead.push(st.partId[p]);
@@ -877,6 +892,9 @@ class StaticBake implements StaticBinding {
           for (let p = 0; p < st.partId.length; p++) {
             if (st.partId[p] !== 0) bakes.dead.push(st.partId[p]);
           }
+          for (let t = 0; t < st.nTables; t++)
+            bakes.deadSlots.push(st.tables[t]);
+          st.nTables = 0;
         }
         r = findGfxRenderer(g, st.rid);
       }
@@ -974,7 +992,12 @@ function growParts(st: BakeState, n: number): void {
 }
 
 /** The bake's `k`-th slot table id (allocated on first use, then kept). */
-function tableId(st: BakeState, r: GfxRenderer, k: number): number {
+function tableId(
+  st: BakeState,
+  r: GfxRenderer,
+  bakes: RendererBakes,
+  k: number,
+): number {
   if (k < st.nTables) return st.tables[k];
   if (k >= st.tables.length) {
     const t = new Uint32Array(k * 2);
@@ -982,7 +1005,8 @@ function tableId(st: BakeState, r: GfxRenderer, k: number): number {
     st.tables = t;
   }
   st.nTables = k + 1;
-  return (st.tables[k] = r.nextSlots++);
+  const free = bakes.freeSlots;
+  return (st.tables[k] = free.length > 0 ? free.pop()! : r.nextSlots++);
 }
 
 function addLive(st: BakeState, texture: TextureHandle, texId: number): void {

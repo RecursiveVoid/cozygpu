@@ -20,7 +20,11 @@ export interface FakeGL {
     width: number;
     height: number;
     getContext(): unknown;
-    addEventListener(t: string, f: (e: Event) => void): void;
+    addEventListener(
+      t: string,
+      f: (e: Event) => void,
+      o?: { once?: boolean },
+    ): void;
     removeEventListener(t: string, f: (e: Event) => void): void;
   };
   clear(): void;
@@ -126,9 +130,17 @@ export function createFakeGL(options: { extensions?: string[] } = {}): FakeGL {
     width: 300,
     height: 150,
     getContext: (): unknown => gl,
-    addEventListener(type: string, fn: (e: Event) => void): void {
+    addEventListener(
+      type: string,
+      fn: (e: Event) => void,
+      options?: { once?: boolean },
+    ): void {
       const list = listeners.get(type) ?? [];
-      list.push(fn);
+      const once = (e: Event): void => {
+        canvas.removeEventListener(type, once);
+        fn(e);
+      };
+      list.push(options?.once ? once : fn);
       listeners.set(type, list);
     },
     removeEventListener(type: string, fn: (e: Event) => void): void {

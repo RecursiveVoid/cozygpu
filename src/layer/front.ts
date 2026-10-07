@@ -76,6 +76,8 @@ type FrameWithEmit = FrontFrame & {
 /** What one renderer's core holds for a layer. */
 class State {
   rid = -1;
+  /** Its renderer clears `pending` when destroyed (it has frame hooks). */
+  hooked = false;
   gen = -1;
   /** Capacity, LayerFlag and blend id of the last LAYER_CREATE (-1: none). */
   cap = -1;
@@ -144,10 +146,19 @@ function flush(frame: FrontFrame): void {
   pending.length = w;
 }
 
+/**
+ * Queues `S` to be freed on its renderer, unless that renderer is already
+ * destroyed (its core went with it, and no frame would ever flush `S`).
+ */
+function retire(S: State): void {
+  if (S.rid >= 0 && (!S.hooked || hooked.indexOf(S.rid) >= 0)) pending.push(S);
+}
+
 /** One hook per renderer: flushes destroys before the scene is packed. */
-function hook(frame: FrontFrame): void {
+function hook(frame: FrontFrame): boolean {
   const rid = frame.rendererId;
-  if (!frame._addFrameHook || hooked.indexOf(rid) >= 0) return;
+  if (!frame._addFrameHook) return false;
+  if (hooked.indexOf(rid) >= 0) return true;
   hooked.push(rid);
   frame._addFrameHook({
     encodeFrame: flush,
@@ -159,12 +170,13 @@ function hook(frame: FrontFrame): void {
       }
     },
   });
+  return true;
 }
 
 /** The layer is destroyed: free its GPU side on the next frame. */
 export function releaseLayer(layer: SpriteLayer): void {
   const S = layer._state as State | null;
-  if (S && S.rid >= 0) pending.push(S);
+  if (S) retire(S);
   layer._state = null;
 }
 
@@ -194,7 +206,7 @@ export function emitLayer(
   let S = L._state as State | null;
   if (!S || (S.rid >= 0 && S.rid !== frame.rendererId)) {
     // Moved to another renderer: the old one frees its state.
-    if (S) pending.push(S);
+    if (S) retire(S);
     L._state = S = new State(id);
   }
   if (S.rid !== frame.rendererId || S.gen !== frame.generation) {
@@ -207,7 +219,7 @@ export function emitLayer(
         L._sourceVersion++;
       }
     }
-    hook(frame);
+    S.hooked = hook(frame);
     S.rid = frame.rendererId;
     S.gen = frame.generation;
     S.cap = S.framesVersion = -1;

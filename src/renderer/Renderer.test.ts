@@ -380,6 +380,25 @@ describe('Renderer', () => {
     expect(transport.packets).toHaveLength(0);
   });
 
+  it('destroy() destroys the stage before the frame hooks see it go', () => {
+    const transport = new FakeTransport();
+    const renderer = new RendererImpl(transport, config());
+    const order: string[] = [];
+    renderer._addFrameHook({
+      encodeFrame() {},
+      onRendererDestroyed: () => order.push('hook'),
+    });
+    const stage = renderer.stage as unknown as { destroy(): void };
+    const destroy = stage.destroy.bind(stage);
+    stage.destroy = () => {
+      // A node queueing a release here relies on the hook to drop it.
+      order.push('stage');
+      destroy();
+    };
+    renderer.destroy();
+    expect(order).toEqual(['stage', 'hook']);
+  });
+
   it('destroy() releases textures uploaded to it, so their ids are freed', () => {
     const transport = new FakeTransport();
     const renderer = new RendererImpl(transport, config());

@@ -594,6 +594,24 @@ describe('Assets: concurrency and abort', () => {
     void assets;
   });
 
+  it('resolves a relative baseUrl against the page', async () => {
+    const g = globalThis as { location?: unknown };
+    const saved = Object.getOwnPropertyDescriptor(g, 'location');
+    Object.defineProperty(g, 'location', {
+      value: { href: 'https://cdn.test/demo/index.html' },
+      configurable: true,
+    });
+    try {
+      const { server, assets } = setup({ baseUrl: '/data/' });
+      serve(server, 'data/r.json', '{"x":1}');
+      const handle = await assets.load('r.json');
+      expect(handle.key).toBe(BASE + 'data/r.json');
+    } finally {
+      if (saved) Object.defineProperty(g, 'location', saved);
+      else delete g.location;
+    }
+  });
+
   it('preload fetches in the background and load reuses the bytes', async () => {
     const { server, assets } = setup();
     serve(server, 'p.json', '{"x":1}');

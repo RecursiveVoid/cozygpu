@@ -407,6 +407,23 @@ describe('frame commands', () => {
     expect(frame.end()).toEqual([]);
   });
 
+  it('does not queue a layer destroyed after its renderer', () => {
+    const layer = make({ count: 1 });
+    const a = new TestFrame();
+    emit(layer, a);
+    const id = layer.id;
+    for (const h of a.hooks.slice()) h.onRendererDestroyed?.();
+    layer.destroy();
+    // Same renderer id seen again: nothing of the old layer was kept.
+    const b = new TestFrame();
+    b.rendererId = a.rendererId;
+    const other = make({ count: 1 });
+    const out = emit(other, b);
+    expect(
+      out.filter(c => c.opcode === LayerOp.LAYER_DESTROY).map(c => c.words[0]),
+    ).not.toContain(id);
+  });
+
   it('frees the old renderer when moved', () => {
     const layer = make({ count: 1 });
     const a = new TestFrame();

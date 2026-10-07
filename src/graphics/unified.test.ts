@@ -515,6 +515,26 @@ describe('unified core', () => {
     expect(slots[0].entries.length).toBe(9);
   });
 
+  it('a slot table set with count 0 is released, and its id can come back', async () => {
+    const { core: c } = await core();
+    const tables = (c as unknown as { slotTables: unknown[] }).slotTables;
+    let enc = encoder();
+    words(enc, GfxOp.GFX_SET_TEXTURE_SLOTS, [4, 2, 11, 12]);
+    run(c, enc);
+    expect(tables[4]).toBeTruthy();
+    enc = encoder();
+    words(enc, GfxOp.GFX_SET_TEXTURE_SLOTS, [4, 0]);
+    // An id the core never saw: nothing happens.
+    words(enc, GfxOp.GFX_SET_TEXTURE_SLOTS, [40, 0]);
+    run(c, enc);
+    expect(tables[4]).toBeNull();
+    expect(tables.length).toBe(5);
+    enc = encoder();
+    words(enc, GfxOp.GFX_SET_TEXTURE_SLOTS, [4, 1, 13]);
+    run(c, enc);
+    expect(tables[4]).toBeTruthy();
+  });
+
   it('WebGL2: sources are rgba32uint data textures written by row', async () => {
     const { backend, core: c } = await core(true);
     const enc = encoder();

@@ -418,11 +418,13 @@ export class RendererImpl implements Renderer, RendererHost {
     this.pendingReadbacks.length = 0;
     this.pickClient?.rejectAll('DESTROYED', 'renderer was destroyed');
     try {
+      // First: destroying nodes queues their releases on this renderer,
+      // which the hooks below drop (no frame will ever flush them).
+      this.stage.destroy({ children: true });
       const hooks = this.frameHooks.slice();
       for (let i = 0; i < hooks.length; i++) hooks[i].onRendererDestroyed?.();
       this.frameHooks.length = 0;
       this.assetsApi?.destroy();
-      this.stage.destroy({ children: true });
     } finally {
       this.packer.destroy();
       dropSwarmDestroys(this.frame.rendererId);

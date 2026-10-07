@@ -649,6 +649,11 @@ export class GraphicsCoreSystem implements CoreSystem {
         const id = reader.u32();
         const count = Math.min(reader.u32(), GFX_MAX_TEXTURE_SLOTS);
         if (id === 0) return;
+        if (count === 0) {
+          // Released (the static bake was dropped); the id may come back.
+          if (id < this.slotTables.length) this.slotTables[id] = null;
+          return;
+        }
         const table = (this.slotTables[id] ??= new SlotTable());
         table.texIds.fill(NO_ID);
         for (let i = 0; i < count; i++) table.texIds[i] = reader.u32();

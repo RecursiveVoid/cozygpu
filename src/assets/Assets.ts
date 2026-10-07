@@ -351,7 +351,10 @@ export class Assets implements AssetsApi, FrontFrameHook {
     this.rendererId = host._rendererId;
     this.queue = new JobQueue(options.concurrency ?? 6);
     this.budgetBytes = Math.max(0, options.gpuBudgetMB ?? 512) * MIB;
-    this.baseUrl = options.baseUrl ?? defaultBaseUrl();
+    // A relative baseUrl ('/assets/') resolves against the page.
+    const base = defaultBaseUrl();
+    this.baseUrl =
+      options.baseUrl !== undefined ? resolveUrl(options.baseUrl, base) : base;
     if (options.atlas === false) {
       this.atlas = null;
     } else {

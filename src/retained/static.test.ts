@@ -283,6 +283,36 @@ describe('static containers', () => {
     expect(s.map._sbLeaf).toBe(false);
   });
 
+  it('a destroyed bake releases its slot tables and the ids are reused', async () => {
+    const s = await scene();
+    const first = s.pack();
+    const ids = only(first, GfxOp.GFX_SET_TEXTURE_SLOTS).map(c => c.words[0]);
+    expect(ids.length).toBe(1);
+    s.map.destroy({ children: true });
+    await tick(); // the static chunk drops the bake
+    const out = s.pack();
+    // Released with a count of 0, once.
+    expect(
+      only(out, GfxOp.GFX_SET_TEXTURE_SLOTS).map(c => c.words.slice(0, 2)),
+    ).toEqual([[ids[0], 0]]);
+    expect(only(s.pack(), GfxOp.GFX_SET_TEXTURE_SLOTS)).toEqual([]);
+    // Many rounds: the same id comes back, the table count stays flat.
+    for (let round = 0; round < 20; round++) {
+      const map = new Container({ static: true });
+      const tex = Texture.fromPixels(4, 4, pixels());
+      map.addChild(new Sprite({ texture: tex }));
+      s.stage.addChild(map);
+      await baked(map);
+      const set = only(s.pack(), GfxOp.GFX_SET_TEXTURE_SLOTS);
+      expect(set.map(c => c.words[0])).toEqual([ids[0]]);
+      map.destroy({ children: true });
+      tex.destroy();
+      await tick();
+      const rel = only(s.pack(), GfxOp.GFX_SET_TEXTURE_SLOTS);
+      expect(rel.map(c => c.words.slice(0, 2))).toEqual([[ids[0], 0]]);
+    }
+  });
+
   it('a static container inside another folds into it', async () => {
     const stage = new Container();
     const outer = new Container({ static: true });
