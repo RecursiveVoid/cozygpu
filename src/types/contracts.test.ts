@@ -13,6 +13,8 @@ import {
   TextureFormatId,
 } from '../commands/opcodes';
 import { GfxOp } from '../commands/gfxOpcodes';
+import { LayerOp } from '../commands/layerOpcodes';
+import { RetainOp } from '../commands/retainOpcodes';
 import { SPRITE_BLEND_MODES } from '../sprites/pipeline';
 import { BLEND_MODES, SwarmReadbackKind } from '../swarm/constants';
 
@@ -38,8 +40,15 @@ describe('ARCHITECTURE §3.4 opcode table ↔ src/commands/opcodes.ts', () => {
   it('lists every opcode exactly once with the same value', () => {
     // M3: masks and filters keep their own tables so an unused one is
     // tree-shaken (ARCHITECTURE §21.6); the doc table lists them together.
-    // M4: graphics likewise (§26).
-    const all = { ...Op, ...MaskOp, ...FilterOp, ...GfxOp };
+    // M4: graphics likewise (§26). M5: retain and sprite layer (§27, §28).
+    const all = {
+      ...Op,
+      ...MaskOp,
+      ...FilterOp,
+      ...GfxOp,
+      ...RetainOp,
+      ...LayerOp,
+    };
     expect(rows.length).toBe(Object.keys(all).length);
     const table = all as Record<string, number>;
     for (const row of rows)
@@ -58,16 +67,22 @@ describe('ARCHITECTURE §3.4 opcode table ↔ src/commands/opcodes.ts', () => {
       'FILTER_END',
       'GFX_DRAW_MESH',
       'GFX_DRAW_SHAPES',
+      'GFX_DRAW_UNIFIED',
+      'LAYER_DRAW',
       'MASK_GEOMETRY_END',
       'MASK_POP',
       'MASK_PUSH_ALPHA',
       'MASK_PUSH_SCISSOR',
       'MASK_PUSH_STENCIL',
+      'RETAIN_BEGIN',
+      'RETAIN_DRAW',
+      'RETAIN_END',
       'SPRITE_DRAW',
       'SPRITE_SET_EFFECT',
       'SWARM_DRAW',
     ]);
     expect(withFlag('COMPUTE')).toEqual([
+      'LAYER_CULL',
       'SWARM_KILL_LIST',
       'SWARM_KILL_RANGE',
       'SWARM_SPAWN',

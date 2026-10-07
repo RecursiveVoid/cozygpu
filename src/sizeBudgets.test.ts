@@ -92,8 +92,8 @@ function loadGrowthRows(): { growthRows: GrowthRows; slack: number } {
   return { growthRows, slack };
 }
 
-describe('size budgets (decided 2026-09-18, minimal re-measured at the end of M3)', () => {
-  it('fixture budgets: 44 KB WebGPU, 46 KB WebGL2, workers 25/26 KB, graphics 65 KB, all-exports reported only', () => {
+describe('size budgets (decided 2026-09-18, re-measured at the end of M3 and M5)', () => {
+  it('fixture budgets: 44.5 KB WebGPU, 46.8 KB WebGL2, workers 25/26.5 KB, graphics 72.5 KB, all-exports reported only', () => {
     const byId = Object.fromEntries(tables.fixtures.map(f => [f.id, f]));
     // End of M3: the four features cost the minimal program about 2.6 KB —
     // roughly half real code on the minimal path (the cheap-effect routing in
@@ -101,12 +101,16 @@ describe('size budgets (decided 2026-09-18, minimal re-measured at the end of M3
     // the chunk-splitting overhead of four more lazy roots. Measured
     // breakdown in ARCHITECTURE §10; the no-growth check is what actually
     // holds the line from here.
-    expect(byId['minimal-webgpu'].budget).toBe(44_000);
-    expect(byId['minimal-webgl2'].budget).toBe(46_000);
+    // M5: the retained-rendering seams on the minimal path (packer emitter
+    // and static leaf, RenderCore drawSpan, Container.static, two lazy
+    // placeholders, render-bundle loaders, time-gated pacing) cost ~0.7 KB.
+    expect(byId['minimal-webgpu'].budget).toBe(44_500);
+    expect(byId['minimal-webgl2'].budget).toBe(46_800);
     expect(byId['worker-webgpu'].budget).toBe(25_000);
-    expect(byId['worker-webgl2'].budget).toBe(26_000);
-    // M4: the minimal WebGPU program plus Graphics and every graphics chunk.
-    expect(byId['graphics-webgpu'].budget).toBe(65_000);
+    expect(byId['worker-webgl2'].budget).toBe(26_500);
+    // M4: the minimal WebGPU program plus Graphics and every graphics chunk;
+    // M5 added the unified batch.
+    expect(byId['graphics-webgpu'].budget).toBe(72_500);
     expect(byId['all-exports'].budget).toBeNull();
     // The all-exports build is where the feature chunks are measured.
     expect(byId['all-exports'].dynamic).toBe('all');

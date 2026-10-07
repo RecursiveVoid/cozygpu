@@ -30,7 +30,7 @@ import {
   fullMipLevelCount,
   textureByteLength,
 } from '../backend/utils';
-import type { CoreTexture } from '../types/core';
+import type { CoreTexture, RetainHooks } from '../types/core';
 
 /** TEXTURE_CREATE.formatId → RHI format, indexed by id (built once). */
 const FORMATS_BY_ID: (TextureFormat | undefined)[] = [];
@@ -78,6 +78,8 @@ export class TextureEntry implements CoreTexture {
 export interface TextureRegistryHost {
   readonly backend: Backend;
   readonly textureLayout: RhiBindGroupLayout;
+  /** M5 (ARCHITECTURE §27.3): told when a texture recorded draws use dies. */
+  readonly retain?: RetainHooks;
   warn(message: string): void;
 }
 
@@ -337,6 +339,7 @@ export class TextureRegistry {
     if (!entry) return;
     this.entries.delete(texId);
     entry.texture.destroy();
+    this.host.retain?.invalidate();
     entry.retainedPixels = null;
     entry.retainedImage = null;
   }

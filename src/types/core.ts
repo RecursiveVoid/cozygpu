@@ -67,6 +67,13 @@ export interface FrontFrame {
   readonly generation: number;
   /** Emits SHARED_REGISTER once per (buffer, generation); returns the sharedId. */
   registerShared(buffer: ArrayBuffer | SharedArrayBuffer): number;
+  /**
+   * M5. Emits SHARED_RELEASE for a buffer registered with `registerShared`
+   * and forgets it: registering it again sends a new SHARED_REGISTER. For
+   * buffers a front module may register again later (caller-owned columns).
+   * Optional: test frames need not implement it.
+   */
+  _releaseShared?(buffer: ArrayBuffer | SharedArrayBuffer): void;
   /** Allocates a requestId, emits READBACK, resolves with the bytes. */
   readback(
     srcKind: number,
@@ -92,6 +99,14 @@ export interface FrontFrame {
    * test frames need not implement it.
    */
   _addFrameHook?(hook: FrontFrameHook): () => void;
+  /**
+   * M5 (ARCHITECTURE §27.2). Id of the retained segment whose DRAW commands
+   * are being encoded (between RETAIN_BEGIN and RETAIN_END), 0 otherwise.
+   * Written by the scene packer only. A drawable that keeps per-draw data
+   * outside the command (the Graphics item stream) files it under this id,
+   * so a replayed segment's data stays where its recorded draws point.
+   */
+  retainSegment?: number;
 }
 
 /**
@@ -159,6 +174,44 @@ export function isCustomDrawable(node: unknown): node is CustomDrawable {
     typeof node === 'object' &&
     node !== null &&
     typeof (node as { _emitDraw?: unknown })._emitDraw === 'function'
+  );
+}
+
+/**
+ * M5 (ARCHITECTURE §27.2). A CustomDrawable whose DRAW commands may be
+ * recorded into a retained segment and replayed while `_drawVersion` is
+ * unchanged. Implemented by `Graphics`. A CustomDrawable without these
+ * members (Swarm, SpriteLayer) is a volatile entry: it is called every frame
+ * and ends the segment before it.
+ */
+export interface RetainableDrawable extends CustomDrawable {
+  /**
+   * @internal Bumped whenever the DRAW commands `_emitDraw` would emit (or
+   * the per-draw data they point at, such as item ranges) change: context
+   * edits, blend, chunk readiness, a texture re-created. NOT bumped when
+   * only instance data changes (world, alpha, tint): those are uploads.
+   */
+  readonly _drawVersion: number;
+  /**
+   * @internal Called instead of `_emitDraw` while the node's segment is
+   * replayed: bring the node's GPU records up to date for this world
+   * transform and alpha (queue uploads; emit no DRAW command). Must be
+   * allocation-free and cheap when nothing changed.
+   */
+  _syncDraw(
+    frame: FrontFrame,
+    world: Float32Array,
+    worldOffset: number,
+    worldAlpha: number,
+  ): void;
+}
+
+export function isRetainableDrawable(
+  node: unknown,
+): node is RetainableDrawable {
+  return (
+    isCustomDrawable(node) &&
+    typeof (node as { _syncDraw?: unknown })._syncDraw === 'function'
   );
 }
 
@@ -296,7 +349,57 @@ export interface CoreContext {
    * provide it; RenderCore always does.
    */
   pickPipelinePending?(delta: 1 | -1): void;
+  /**
+   * M5 (ARCHITECTURE §27.3). The system owning opcode range `range` (lazy
+   * placeholders included), or undefined. The retain core replays stored
+   * commands through it. Optional so test contexts need not provide it;
+   * RenderCore always does.
+   */
+  systemFor?(range: number): CoreSystem | undefined;
+  /**
+   * M5 (ARCHITECTURE §27.3). Installed by the retain core system when it
+   * loads; undefined before. Systems call it so recorded segments never
+   * point at stale GPU objects or miss a draw.
+   */
+  retain?: RetainHooks;
   post(message: CoreMessage, transfer?: Transferable[]): void;
+}
+
+/**
+ * M5 (ARCHITECTURE §27.3). What every system that can be recorded into a
+ * retained segment reports to the retain core (through `ctx.retain?.`).
+ */
+export interface RetainHooks {
+  /**
+   * A GPU object a recorded draw may reference was replaced or destroyed:
+   * a buffer re-allocated (growth, ALLOC), a bind group rebuilt, a texture
+   * re-created, a pipeline swapped. Every bundle is re-recorded from its
+   * stored commands before its next use. Rare; never per frame.
+   */
+  invalidate(): void;
+  /**
+   * The system skipped a DRAW command it was asked to draw (pipeline still
+   * compiling, buffer missing or too small). The segment being recorded is
+   * kept as commands but gets no bundle, and is re-recorded on its next use.
+   */
+  skipped(): void;
+}
+
+/**
+ * M5 (ARCHITECTURE §27.3). Handed to `CoreSystem.drawSpan` while the core
+ * replays the DRAW commands of a packet. Reused object; valid only during
+ * that call.
+ */
+export interface DrawSpan {
+  /** DRAW commands in this packet. */
+  readonly count: number;
+  /** Index of the DRAW command whose system got `drawSpan`. */
+  readonly index: number;
+  /**
+   * Positions the packet decoder at DRAW command `i` (index < i < count)
+   * and returns its reader (the same object every call).
+   */
+  seek(i: number): CommandReader;
 }
 
 export interface CoreFrameState {
@@ -328,6 +431,20 @@ export interface CoreSystem {
   execute(reader: CommandReader, frame: CoreFrameState): void;
   compute?(list: CommandList, frame: CoreFrameState): void;
   draw(reader: CommandReader, pass: RenderPass, frame: CoreFrameState): void;
+  /**
+   * M5 (ARCHITECTURE §27.3). When present, the core calls this instead of
+   * `draw` for this system's DRAW commands. The system may draw the
+   * following DRAW commands of the packet itself (through `span.seek` and
+   * `ctx.systemFor(range).draw`), e.g. into a bundle encoder, and returns
+   * how many of them it consumed; the core continues after them. Only the
+   * retain core implements it.
+   */
+  drawSpan?(
+    reader: CommandReader,
+    pass: RenderPass,
+    frame: CoreFrameState,
+    span: DrawSpan,
+  ): number;
   endFrame?(frame: CoreFrameState): void;
   /**
    * READBACK hook. Returns undefined when (srcKind, srcId) is not this

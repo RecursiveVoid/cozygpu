@@ -32,6 +32,7 @@
  */
 import { toPackedColor } from '../math/color';
 import type { ColorSource } from '../math/types';
+import { nodeStore } from '../scene/store';
 import type { TextureHandle } from '../scene/types';
 import type {
   FillStyle,
@@ -100,6 +101,11 @@ export class GraphicsContext implements GraphicsContextApi {
   _tex: TextureHandle[] = [];
   /** @internal Compiled state, owned by the `graphics` chunk. */
   _c: { dispose(): void } | null = null;
+  /**
+   * @internal Live Graphics nodes drawing this context (the `graphics`
+   * chunk counts them: widely shared contexts keep the instanced mesh draw).
+   */
+  _users = 0;
   /** @internal Set by the last compile / tessellation (GraphicsInfo). */
   _ns = 0;
   _nv = 0;
@@ -177,7 +183,7 @@ export class GraphicsContext implements GraphicsContextApi {
     }
     this._o[this._on++] = op;
     this._an = at + n;
-    this._version++;
+    this._edited();
     return at;
   }
 
@@ -552,8 +558,17 @@ export class GraphicsContext implements GraphicsContextApi {
     this._mDirty = true;
     empty(this._b);
     empty(this._p);
-    this._version++;
+    this._edited();
     return this;
+  }
+
+  /**
+   * The recording changed: a new version, and a new draw epoch so a retained
+   * frame (ARCHITECTURE §27.2) re-checks the nodes that draw this context.
+   */
+  private _edited(): void {
+    this._version++;
+    nodeStore.drawEpoch = (nodeStore.drawEpoch + 1) | 0;
   }
 
   destroy(): void {

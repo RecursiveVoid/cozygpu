@@ -8,10 +8,11 @@ import { BlendModeId } from '../backend/types';
 import meshFrag from '../shaders/graphics/mesh.frag.glsl';
 import meshVert from '../shaders/graphics/mesh.vert.glsl';
 import meshWGSL from '../shaders/graphics/mesh.wgsl';
-import shapeFrag from '../shaders/graphics/shape.frag.glsl';
-import shapeVert from '../shaders/graphics/shape.vert.glsl';
 import shapeWGSL from '../shaders/graphics/shape.wgsl';
-import { SI_PICK_SHIFT } from '../types/layouts';
+import unifiedFrag from '../shaders/graphics/unified.frag.glsl';
+import unifiedVert from '../shaders/graphics/unified.vert.glsl';
+import unifiedWGSL from '../shaders/graphics/unified.wgsl';
+import { SI_PICK_SHIFT, SpriteInstanceFlag } from '../types/layouts';
 import {
   GFX_AA_PX,
   GFX_KIND_MASK,
@@ -36,7 +37,11 @@ import {
   GS_STROKE_IN,
   GS_STROKE_OUT,
   GS_TX,
+  GFX_ITEM_INDEX_MASK,
+  GFX_SPRITE_SLOT_SHIFT,
+  GfxItemKind,
 } from '../types/gfxLayouts';
+import { DATA_TEXTURE_WIDTH } from './dataTexture';
 import {
   GFX_BLEND_MODES,
   GFX_MESH_LAYOUTS,
@@ -114,7 +119,6 @@ describe('graphics vertex layouts', () => {
   it('match the locations the WGSL and GLSL shaders declare', () => {
     const shape = GFX_SHAPE_LAYOUT.attributes.map(a => a.location);
     expect(wgslLocations(shapeWGSL, 'Shape')).toEqual(shape);
-    expect(glslInputs(shapeVert)).toEqual(shape);
     const mesh = GFX_MESH_LAYOUTS.flatMap(l =>
       l.attributes.map(a => a.location),
     );
@@ -134,18 +138,40 @@ describe('graphics vertex layouts', () => {
     expect(shapeWGSL).toContain(`AA_PX: f32 = ${GFX_AA_PX.toFixed(1)}`);
     expect(shapeWGSL).toContain(`PICK_SHIFT: u32 = ${SI_PICK_SHIFT}u`);
     expect(meshWGSL).toContain(`PICK_SHIFT: u32 = ${SI_PICK_SHIFT}u`);
-    expect(shapeVert).toContain(`a_flags & ${GFX_KIND_MASK}u`);
-    expect(shapeFrag).toContain(`v_flags & ${GfxShapeFlag.PIXEL_LINE}u`);
-    expect(shapeFrag).toContain(`v_flags >> ${SI_PICK_SHIFT}u`);
     expect(meshFrag).toContain(`v_flags >> ${SI_PICK_SHIFT}u`);
+    // Unified batch (§27.4).
+    expect(unifiedWGSL).toContain(`K_VERTEX: u32 = ${GfxItemKind.VERTEX}u`);
+    expect(unifiedWGSL).toContain(`K_SHAPE: u32 = ${GfxItemKind.SHAPE}u`);
+    expect(unifiedWGSL).toContain(
+      `INDEX_MASK: u32 = 0x${GFX_ITEM_INDEX_MASK.toString(16)}u`,
+    );
+    expect(unifiedWGSL).toContain(`KIND_MASK: u32 = ${GFX_KIND_MASK}u`);
+    expect(unifiedWGSL).toContain(`PIXEL: u32 = ${GfxShapeFlag.PIXEL_LINE}u`);
+    expect(unifiedWGSL).toContain(`FILL: u32 = ${GfxShapeFlag.FILL}u`);
+    expect(unifiedWGSL).toContain(
+      `ALPHA_ONLY: u32 = ${SpriteInstanceFlag.ALPHA_ONLY}u`,
+    );
+    expect(unifiedWGSL).toContain(`MSDF: u32 = ${SpriteInstanceFlag.MSDF}u`);
+    expect(unifiedWGSL).toContain(
+      `SLOT_SHIFT: u32 = ${GFX_SPRITE_SLOT_SHIFT}u`,
+    );
+    expect(unifiedWGSL).toContain(`PICK_SHIFT: u32 = ${SI_PICK_SHIFT}u`);
+    expect(unifiedVert).toContain(
+      `item & 0x${GFX_ITEM_INDEX_MASK.toString(16)}u`,
+    );
+    expect(unifiedVert).toContain(`i & ${DATA_TEXTURE_WIDTH - 1}u`);
+    expect(unifiedVert).toContain(`i >> ${Math.log2(DATA_TEXTURE_WIDTH)}u`);
+    expect(unifiedFrag).toContain(`v_flags & ${GfxShapeFlag.PIXEL_LINE}u`);
+    expect(unifiedFrag).toContain(`v_flags >> ${GFX_SPRITE_SLOT_SHIFT}u) & 7u`);
+    expect(unifiedFrag).toContain(`v_flags >> ${SI_PICK_SHIFT}u`);
   });
 
   it('GLSL sources start with the version line (defines go after it)', () => {
-    for (const source of [shapeVert, shapeFrag, meshVert, meshFrag]) {
+    for (const source of [unifiedVert, unifiedFrag, meshVert, meshFrag]) {
       expect(source.split('\n')[0]).toBe('#version 300 es');
     }
-    expect(shapeFrag).toContain('#ifdef PICK');
-    expect(shapeFrag).toContain('defined(MASK)');
+    expect(unifiedFrag).toContain('#ifdef PICK');
+    expect(unifiedFrag).toContain('defined(MASK)');
     expect(meshFrag).toContain('#ifdef PICK');
   });
 
@@ -155,6 +181,18 @@ describe('graphics vertex layouts', () => {
     expect(fn).toContain('dpdx(g)');
     expect(fn).not.toContain('discard');
     expect(fn.indexOf('dpdx(g)')).toBeLessThan(fn.indexOf('arc('));
+    // Unified: every derivative in covers(), which each entry point calls
+    // first; textures are read with explicit gradients.
+    const u = unifiedWGSL.slice(unifiedWGSL.indexOf('fn covers('));
+    const covers = u.slice(0, u.indexOf('\n}\n'));
+    expect(covers).toContain('dpdx(g)');
+    expect(covers).toContain('fwidth(md)');
+    expect(covers).not.toContain('discard');
+    expect(unifiedWGSL).not.toMatch(/textureSample\(/);
+    for (const entry of ['fs_main', 'fs_pick', 'fs_mask']) {
+      const body = unifiedWGSL.slice(unifiedWGSL.indexOf(`fn ${entry}(`));
+      expect(body.split('\n')[1].trim()).toBe('let c = covers(in);');
+    }
   });
 });
 

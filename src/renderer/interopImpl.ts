@@ -18,6 +18,8 @@ import type {
   RendererInterop,
 } from '../types/interop';
 import { SWARM_COLD_BYTES, SWARM_HOT_BYTES } from '../types/layouts';
+// Not '../types/layerLayouts': see src/layer/format.ts.
+import { INDIRECT_BYTES, STREAM_BYTES } from '../layer/format';
 
 export { createCoreInterop } from './coreInterop';
 
@@ -28,9 +30,21 @@ export interface InteropOwner {
   readonly _caps: { readonly storageBuffers: boolean };
 }
 
+/** By LayerStream. */
+const LAYER_LAYOUTS: ExternalLayout[] = [
+  'layer-position',
+  'layer-xform',
+  'layer-color',
+  'layer-user',
+];
+
 function recordBytes(layout: ExternalLayout): number {
   if (layout === 'swarm-hot') return SWARM_HOT_BYTES;
   if (layout === 'swarm-cold') return SWARM_COLD_BYTES;
+  // M5 SpriteLayer streams and the GPU-written draw count (§28.5).
+  const stream = LAYER_LAYOUTS.indexOf(layout);
+  if (stream >= 0) return STREAM_BYTES[stream];
+  if (layout === 'draw-indirect') return INDIRECT_BYTES;
   throw new CozyGPUError(
     layout === 'sprite-instance' ? 'UNSUPPORTED' : 'INVALID_ARGUMENT',
     `registerInstanceBuffer: layout '${String(layout)}' is not supported`,
@@ -101,15 +115,24 @@ class Interop implements RendererInterop {
         'registerInstanceBuffer(buffer, { layout, capacity }): need a native buffer and an integer capacity >= 1',
       );
     }
+    const indirect = desc.layout === 'draw-indirect';
+    if (indirect && !owner._caps.storageBuffers) {
+      throw new CozyGPUError(
+        'UNSUPPORTED',
+        "registerInstanceBuffer: 'draw-indirect' needs the WebGPU backend",
+      );
+    }
     const core = this.core;
     const epoch = core.lossEpoch;
     const id = ids.external.alloc();
     core.registerBuffer(id, buffer, {
       label: desc.label,
       size: capacity * record,
-      usage: owner._caps.storageBuffers
-        ? BufferUsage.STORAGE
-        : BufferUsage.VERTEX,
+      usage: indirect
+        ? BufferUsage.INDIRECT
+        : owner._caps.storageBuffers
+          ? BufferUsage.STORAGE
+          : BufferUsage.VERTEX,
     });
     return new ExternalBuffer(core, owner, id, desc.layout, capacity, epoch);
   }

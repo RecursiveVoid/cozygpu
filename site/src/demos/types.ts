@@ -14,6 +14,8 @@ export interface DemoContext {
   assetBase: string;
   /** Slider value (object count or intensity); demos without one ignore it. */
   count: number;
+  /** Selected mode id, for demos that declare modes; '' otherwise. */
+  mode: string;
   /** Called once per frame by the demo's ticker (feeds the HUD). */
   tick: () => void;
 }
@@ -26,6 +28,10 @@ export interface DemoHandle {
   objects(): number;
   /** Applies a new slider value without restarting, when the demo can. */
   setCount?(value: number): void;
+  /** Switches the mode without restarting, when the demo can. */
+  setMode?(mode: string): void;
+  /** Largest count this device can take (the slider stops there). */
+  maxCount?: number;
   destroy(): void;
 }
 

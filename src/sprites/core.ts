@@ -164,6 +164,8 @@ export class SpriteCoreSystem implements CoreSystem {
         const id = reader.u32();
         const capacity = reader.u32();
         this.buffers[id]?.destroy();
+        // Recorded segments may still bind the old buffer (§27.3).
+        ctx.retain?.invalidate();
         this.buffers[id] = ctx.backend.createBuffer({
           label: `cozygpu.sprite.instances#${id}`,
           size: Math.max(1, capacity) * SPRITE_INSTANCE_BYTES,
@@ -175,6 +177,7 @@ export class SpriteCoreSystem implements CoreSystem {
         const id = reader.u32();
         this.buffers[id]?.destroy();
         this.buffers[id] = null;
+        ctx.retain?.invalidate();
         return;
       }
       case Op.SPRITE_UPLOAD: {
@@ -260,8 +263,12 @@ export class SpriteCoreSystem implements CoreSystem {
     const effectAt = fx ? fx.offset(this.fxCurrent) : -1;
     const variant = effectAt >= 0 ? fx!.pipeline(blendId) : null;
     const pipeline = variant ?? this.pipelines[blendId];
-    if (!buffer || !pipeline || count === 0) return;
-    if (!this.fits(buffer, first, count)) return;
+    if (count === 0) return;
+    if (!buffer || !pipeline || !this.fits(buffer, first, count)) {
+      // A recorded segment must not keep this draw out (§27.3).
+      ctx.retain?.skipped();
+      return;
+    }
     pass.setPipeline(pipeline);
     pass.setBindGroup(0, ctx.viewBindGroup);
     pass.setBindGroup(1, ctx.getTexture(texId).bindGroup);

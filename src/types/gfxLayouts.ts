@@ -107,3 +107,75 @@ export const GN_TY = 20;
 export const GN_COLOR = 24;
 /** u32: bits 0–7 reserved, 8–31 pick id. */
 export const GN_FLAGS = 28;
+
+// ─── Unified batch (M5, ARCHITECTURE §27.4) ───────────────────────────────────
+/**
+ * Item: one u32 per vertex of a GFX_DRAW_UNIFIED triangle list. The vertex
+ * shader receives it as the index value (`vertex_index` / `gl_VertexID` of an
+ * indexed draw) and pulls the record it names:
+ *   bits 30–31  GfxItemKind
+ *   VERTEX:     bits 0–29 = unified vertex index (GFX_UVERTEX_BYTES records)
+ *   SHAPE:      bits 2–29 = SDF shape record (GFX_SHAPE_BYTES, the shape
+ *               buffer), bits 0–1 = quad corner (x = bit 0, y = bit 1)
+ *   SPRITE:     bits 2–29 = baked sprite record (SPRITE_INSTANCE_BYTES),
+ *               bits 0–1 = quad corner
+ * A quad is six items (corners 0, 1, 2, 2, 1, 3). Records stay where they
+ * are; only the item stream encodes draw order, so a run of mixed shapes,
+ * paths and sprites is one draw.
+ */
+export const GFX_ITEM_BYTES = 4;
+export const GFX_ITEM_KIND_SHIFT = 30;
+export const GFX_ITEM_INDEX_MASK = 0x3fffffff;
+export const GFX_ITEM_CORNER_BITS = 2;
+export const GFX_ITEM_CORNER_MASK = 0x3;
+export const GfxItemKind = {
+  VERTEX: 0,
+  SHAPE: 1,
+  SPRITE: 2,
+  // 3 reserved
+} as const;
+/** Largest record index a SHAPE or SPRITE item can address (2^28 − 1). */
+export const GFX_ITEM_MAX_RECORD = GFX_ITEM_INDEX_MASK >>> GFX_ITEM_CORNER_BITS;
+
+/**
+ * Unified mesh vertex — 16 B. Like GFX_MESH_VERTEX_BYTES plus the node
+ * record that places it, so meshes of different contexts and nodes share
+ * one non-instanced draw. Positions stay in context space: moving a node
+ * rewrites its 32-byte node record only.
+ */
+export const GFX_UVERTEX_BYTES = 16;
+export const GUV_X = 0; // f32, context space
+export const GUV_Y = 4; // f32
+/** u32 packed RGBA8, straight alpha (paint colour × paint alpha). */
+export const GUV_COLOR = 8;
+/** u32 node record index in the draw's node buffer (GFX_NODE_BYTES). */
+export const GUV_NODE = 12;
+
+/**
+ * Transform table slot — 32 B (GFX_SET_TRANSFORM). A unified draw maps
+ * every record through `table[transformId]` after its own affine: static
+ * containers bake their subtree relative to themselves and put their world
+ * affine and alpha here.
+ */
+export const GFX_TRANSFORM_BYTES = 32;
+export const GT_A = 0; // f32
+export const GT_B = 4;
+export const GT_C = 8;
+export const GT_D = 12;
+export const GT_TX = 16;
+export const GT_TY = 20;
+/** f32 alpha multiplier. */
+export const GT_ALPHA = 24;
+/** u32 reserved, written 0. */
+export const GT_RESERVED = 28;
+/** Slots per renderer (WebGL2: one 16 KiB uniform block). */
+export const GFX_MAX_TRANSFORMS = 512;
+
+/** Textures one unified draw can sample (GFX_SET_TEXTURE_SLOTS). */
+export const GFX_MAX_TEXTURE_SLOTS = 8;
+/**
+ * Baked sprite records keep the §4.1 layout; SI_FLAGS bits 3–5 (free in
+ * SpriteInstanceFlag) carry the texture slot.
+ */
+export const GFX_SPRITE_SLOT_SHIFT = 3;
+export const GFX_SPRITE_SLOT_MASK = 0x7;

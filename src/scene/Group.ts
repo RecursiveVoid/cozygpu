@@ -17,6 +17,7 @@ import type { MaskBinding, MaskTarget } from '../masks/types';
 import type { FrontFrame, RenderGroup } from '../types/core';
 import type { GroupNode, GroupOptions } from './types';
 import { Container } from './Container';
+import { CozyGPUError } from '../types/errors';
 import { nodeStore } from './store';
 
 /** Resolved once each; the chunks are shared by every Group in the page. */
@@ -57,6 +58,14 @@ export class Group extends Container implements GroupNode, RenderGroup {
   }
 
   set mask(target: MaskTarget) {
+    const t = target as { kind?: string; source?: { kind?: string } } | null;
+    if (t && (t.kind ?? t.source?.kind) === 'layer') {
+      // ARCHITECTURE §28.6: a SpriteLayer cannot be a mask source.
+      throw new CozyGPUError(
+        'INVALID_ARGUMENT',
+        'Group.mask: a SpriteLayer cannot be a mask source',
+      );
+    }
     this._mask = target;
     if (this._maskBinding) {
       this._maskBinding.update(target);

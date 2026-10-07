@@ -4,6 +4,7 @@
 import * as GPU from 'cozygpu';
 import { installGfx } from './stress-gfx.js';
 import { installM3 } from './stress-m3.js';
+import { installM5 } from './stress-m5.js';
 
 const S = globalThis.__stress;
 // Marks where the stress page's own code starts in the bundle (after the
@@ -52,6 +53,7 @@ async function createCtx(opts = {}) {
     debug: !!opts.debug,
     autoResize: opts.autoResize,
     assets: opts.assets,
+    retained: opts.retained,
     onDeviceLost: info => {
       events.lost.push(info);
       if (log) log.push({ name: 'cb:lost', payload: { willRestore: info.willRestore }, t: performance.now() });
@@ -2970,4 +2972,6 @@ Object.assign(
 );
 // Graphics scenarios.
 Object.assign(globalThis.stress, installGfx({ createCtx, startLoop, stopLoop, registerCtx, getCtx, settle, sleep, raf, errText, phase }));
+// Rendering at scale: retained, static containers, SpriteLayer.
+Object.assign(globalThis.stress, installM5({ createCtx, startLoop, stopLoop, registerCtx, getCtx, settle, sleep, raf, errText, phase }));
 globalThis.__stressReady = true;

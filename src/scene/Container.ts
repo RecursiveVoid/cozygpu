@@ -1,4 +1,5 @@
 /** Container. Groups nodes; children draw in array order. */
+import type { StaticBinding } from '../retained/static';
 import { CozyGPUError } from '../types/errors';
 import { ChildBulk, ColumnBindingImpl } from './bulk';
 import { NodeBase, computeLocalAffine, computeWorld } from './Node';
@@ -16,6 +17,8 @@ import type {
 
 export interface ContainerOptions extends NodeOptions {
   children?: SceneNode[];
+  /** M5. See ContainerNode.static. */
+  static?: boolean;
 }
 
 /**
@@ -44,6 +47,14 @@ export class Container extends NodeBase implements ContainerNode {
   _bulk: ChildBulk | null = null;
   /** @internal Lazily created column binding (M2.5). */
   _cols: ColumnBindingImpl | null = null;
+  /** @internal M5 (§27.5): `static` is on. */
+  _static = false;
+  /** @internal The bake (src/retained/static.ts), once its chunk landed. */
+  declare _sb?: StaticBinding | null;
+  /** @internal The scene packer draws this container through `_sb`. */
+  declare _sbLeaf?: boolean;
+  /** @internal Static scope id of this container (store.ts scopeTouch). */
+  declare _scopeId?: number;
 
   constructor(options?: ContainerOptions) {
     super(options);
@@ -51,6 +62,18 @@ export class Container extends NodeBase implements ContainerNode {
     if (children) {
       for (let i = 0; i < children.length; i++) this.addChild(children[i]);
     }
+    if (options?.static) this.static = true;
+  }
+
+  /** M5 static container (ARCHITECTURE §27.5); see ContainerNode.static. */
+  get static(): boolean {
+    return this._static;
+  }
+  set static(value: boolean) {
+    if (value === this._static) return;
+    this._static = value;
+    // The static chunk creates or drops the bake (src/retained/static.ts).
+    void import('../retained/static').then(m => m.setStatic(this));
   }
 
   /** `Group` (M3) narrows this to 'group'; every other subclass keeps it. */
@@ -213,6 +236,7 @@ export class Container extends NodeBase implements ContainerNode {
     }
     this._bulk = null;
     this._cols?.unbind();
+    this.static = false;
     super.destroy(options);
   }
 }

@@ -1,48 +1,82 @@
 /**
- * Graphics core system (ARCHITECTURE §26.5), range OpcodeRange.GRAPHICS,
- * chunk `graphics-core`. DOM-free: it runs in the worker in worker mode.
+ * Graphics core system (ARCHITECTURE §26.5, §27.4), range
+ * OpcodeRange.GRAPHICS, chunk `graphics-core`. DOM-free: it runs in the
+ * worker in worker mode.
  *
- * Owns the shape-instance and node-record buffers, the mesh table (vertex +
- * index buffers per meshId), the SDF shape and mesh pipelines (one per blend
- * mode, plus the stencil-write variants for masks and the pick pipelines),
- * WGSL and GLSL alike. Keeps no CPU copies: after a device loss `restore`
- * rebuilds pipelines and the front re-sends every buffer and mesh.
+ * Owns the shape-record and node-record buffers, the record pools of the
+ * unified batch (item streams, unified mesh vertices, baked sprites), the
+ * mesh table (vertex + index buffers per meshId), the transform table and
+ * texture slot tables, and three pipeline families (SDF shapes, instanced
+ * meshes, unified), each one per blend mode plus the stencil-write and pick
+ * variants, WGSL and GLSL alike. Keeps no CPU copies on WebGPU: after a
+ * device loss `restore` rebuilds pipelines and the front re-sends
+ * everything. On WebGL2 the unified sources are mirrored in data textures
+ * (dataTexture.ts).
  *
- *  - Pipelines are created async: the 'normal' and pick variants of both
- *    kinds at `init` / `restore`, every other variant on its first draw. A
- *    draw whose pipeline is not ready is skipped.
- *  - Shapes: triangle-strip, draw(4, count, 0, first) over the shape buffer.
+ *  - Pipelines are created async: the 'normal' and pick variants at `init`
+ *    / `restore` (unified, plus shapes on WebGPU without vertex storage and
+ *    meshes), every other variant on its first draw. A draw whose pipeline
+ *    is not ready is skipped (and reported to the retain core).
+ *  - Unified: drawIndexed(count, 1, first) of an item stream bound as a u32
+ *    index buffer; records are pulled by the vertex shader (§27.4).
+ *  - Shapes (M4 split path): draw(4, count, 0, first) over the shape buffer.
  *  - Meshes: drawIndexed(indexCount, nodeCount, firstIndex, 0, firstNode)
  *    with the mesh as buffer 0 and the node records as buffer 1. A textured
- *    draw writes its uv matrix to a 256-byte slot of a uniform buffer bound
- *    with a dynamic offset (slot 0 serves untextured draws, which sample the
- *    white texture).
- *  - Picking: `drawPick` replays both draw kinds with the pick variants;
+ *    draw binds its uv matrix from a 256-byte slot of a uniform buffer with a
+ *    dynamic offset; slots are content-addressed and keep their contents, so
+ *    recorded segments stay valid (slot 0 serves untextured draws).
+ *  - Retained rendering (§27.3): every GPU object a recorded draw may
+ *    reference that is replaced calls `ctx.retain.invalidate()`, every
+ *    skipped draw `ctx.retain.skipped()`; each draw binds everything it uses.
+ *  - Picking: `drawPick` replays every draw kind with the pick variants;
  *    mask geometry is not pickable.
  */
 import { BufferUsage, ShaderStage } from '../backend/types';
 import type {
+  BindGroupDesc,
+  BindGroupLayoutEntry,
   RenderPass,
   RhiBindGroup,
   RhiBindGroupLayout,
   RhiBuffer,
   RhiRenderPipeline,
+  RhiResource,
+  RhiSampler,
   RhiShaderModule,
+  RhiTexture,
+  VertexBufferLayout,
 } from '../backend/types';
 import { OpcodeRange } from '../commands/opcodes';
 import { GfxDrawFlag, GfxMeshFlag, GfxOp } from '../commands/gfxOpcodes';
 import type { CommandReader } from '../commands/types';
-import type { CoreContext, CoreFrameState, CoreSystem } from '../types/core';
-import { MASK_STENCIL_FORMAT, PICK_TARGET_FORMAT } from '../types/layouts';
+import type {
+  CoreContext,
+  CoreFrameState,
+  CoreSystem,
+  CoreTexture,
+} from '../types/core';
+import { NO_ID } from '../types/ids';
 import {
+  MASK_STENCIL_FORMAT,
+  PICK_TARGET_FORMAT,
+  SPRITE_INSTANCE_BYTES,
+} from '../types/layouts';
+import {
+  GFX_ITEM_BYTES,
+  GFX_MAX_TEXTURE_SLOTS,
+  GFX_MAX_TRANSFORMS,
   GFX_MESH_VERTEX_BYTES,
   GFX_NODE_BYTES,
   GFX_SHAPE_BYTES,
+  GFX_TRANSFORM_BYTES,
+  GFX_UVERTEX_BYTES,
 } from '../types/gfxLayouts';
+import { DataTexture } from './dataTexture';
 import {
   GFX_BLEND_MODES,
   GFX_KIND_MESH,
   GFX_KIND_SHAPES,
+  GFX_KIND_UNIFIED,
   GFX_MASK_STENCIL,
   GFX_MESH_LAYOUTS,
   GFX_SHAPE_LAYOUT,
@@ -53,15 +87,24 @@ import {
 } from './pipelines';
 
 const QUAD_VERTICES = 4;
-/** Two draw kinds (shapes, mesh) × GFX_VARIANTS. */
-const PIPELINE_SLOTS = 2 * GFX_VARIANTS;
-/** Dynamic uniform offset alignment (WebGPU minimum) and the uv block size. */
-const UV_STRIDE = 256;
+const KINDS = 3;
+const PIPELINE_SLOTS = KINDS * GFX_VARIANTS;
+/** Dynamic uniform offset alignment (WebGPU minimum): uv and transform slots. */
+const SLOT_STRIDE = 256;
 const UV_BYTES = 32;
 const UV_INITIAL_SLOTS = 16;
-const KIND_NAMES = ['shape', 'mesh'];
+/** Distinct uv matrices kept before the table is reset (and segments re-recorded). */
+const UV_MAX_SLOTS = 4096;
+const KIND_NAMES = ['shape', 'mesh', 'unified'];
 const FRAGMENT_ENTRIES = ['fs_main', 'fs_pick', 'fs_mask'];
 const DEFINES = ['', 'PICK', 'MASK'];
+const NO_LAYOUTS: VertexBufferLayout[] = [];
+/** Record bytes per GfxPoolKind (ITEMS, VERTICES, SPRITES). */
+const POOL_STRIDE = [GFX_ITEM_BYTES, GFX_UVERTEX_BYTES, SPRITE_INSTANCE_BYTES];
+const POOL_NAMES = ['items', 'vertices', 'sprites'];
+const POOL_KINDS = 3;
+/** Unified sources: shapes, nodes, vertices, sprites. */
+const SOURCES = 4;
 
 /** Shader sources for the backend's language, loaded once per process. */
 let wgslSources: Promise<readonly string[]> | null = null;
@@ -72,6 +115,24 @@ function withDefine(source: string, name: string): string {
   return name ? source.replace('\n', `\n#define ${name}\n`) : source;
 }
 
+/** FNV-1a over the six matrix words at `at`. */
+function uvHash(bits: Uint32Array, at: number): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < 6; i++) h = Math.imul(h ^ bits[at + i], 0x01000193);
+  return h;
+}
+
+/** A texture slot table (GFX_SET_TEXTURE_SLOTS) and its bind group. */
+class SlotTable {
+  readonly texIds = new Uint32Array(GFX_MAX_TEXTURE_SLOTS).fill(NO_ID);
+  readonly bound: (CoreTexture | null)[] = [];
+  group: RhiBindGroup | null = null;
+
+  constructor() {
+    for (let i = 0; i < GFX_MAX_TEXTURE_SLOTS; i++) this.bound.push(null);
+  }
+}
+
 export class GraphicsCoreSystem implements CoreSystem {
   readonly name = 'graphics';
   readonly range = OpcodeRange.GRAPHICS;
@@ -79,6 +140,8 @@ export class GraphicsCoreSystem implements CoreSystem {
   private ctx: CoreContext | null = null;
   /** Bumped on restore/destroy so late promises are dropped. */
   private epoch = 0;
+  /** WebGL2: unified sources are data textures. */
+  private gl = false;
   private wgsl: readonly string[] | null = null;
   private glsl: readonly string[] | null = null;
   /** kind * 3 + fragment variant (main, pick, mask). */
@@ -95,9 +158,14 @@ export class GraphicsCoreSystem implements CoreSystem {
   /** Per pipeline slot: 1 once requested (compiling, built or failed). */
   private readonly requested = new Uint8Array(PIPELINE_SLOTS);
 
-  /** Index = bufferId. */
+  /** Index = bufferId. Shape buffers are WebGPU-only (data textures on WebGL2). */
   private readonly shapes: (RhiBuffer | null)[] = [];
   private readonly nodes: (RhiBuffer | null)[] = [];
+  private readonly shapeTex: (DataTexture | null)[] = [];
+  private readonly nodeTex: (DataTexture | null)[] = [];
+  /** [GfxPoolKind][poolId]. Items are index buffers on both backends. */
+  private readonly pools: (RhiBuffer | null)[][] = [[], [], []];
+  private readonly poolTex: (DataTexture | null)[][] = [[], [], []];
   /** Index = meshId. */
   private readonly meshVertices: (RhiBuffer | null)[] = [];
   private readonly meshIndices: (RhiBuffer | null)[] = [];
@@ -108,16 +176,36 @@ export class GraphicsCoreSystem implements CoreSystem {
     [];
   private readonly sharedViews: (Uint8Array | null)[] = [];
 
+  // ── uv slots (textured meshes)
   private uvLayout: RhiBindGroupLayout | null = null;
   private uvBuffer: RhiBuffer | null = null;
   private uvGroup: RhiBindGroup | null = null;
   private uvSlots = 0;
-  /** Next free uv slot this frame (slot 0 is never written). */
-  private uvCursor = 1;
-  private readonly uvData = new Float32Array(UV_BYTES / 4);
+  /** Slots in use (slot 0 is never written). */
+  private uvCount = 1;
+  /** Open-addressing table: hash → slot + 1. */
+  private uvHash = new Int32Array(64);
+  private uvData = new Float32Array(UV_INITIAL_SLOTS * 8);
+  private readonly uvScratch = new Float32Array(UV_BYTES / 4);
+  private readonly uvBits = new Uint32Array(this.uvScratch.buffer);
   private readonly uvOffset = new Uint32Array(1);
-  /** Uniform buffers outgrown this frame, destroyed after the submit. */
-  private readonly retired: RhiBuffer[] = [];
+
+  // ── unified batch
+  private srcLayout: RhiBindGroupLayout | null = null;
+  private slotLayout: RhiBindGroupLayout | null = null;
+  private xfLayout: RhiBindGroupLayout | null = null;
+  private srcGroup: RhiBindGroup | null = null;
+  private readonly srcKey: (RhiResource | null)[] = [null, null, null, null];
+  private readonly srcNow: (RhiResource | null)[] = [null, null, null, null];
+  /** Stands in for a missing source (WebGPU buffer, WebGL2 texture). */
+  private dummy: RhiResource | null = null;
+  private nearest: RhiSampler | null = null;
+  private readonly slotTables: (SlotTable | null)[] = [];
+  private defaultSlots: SlotTable | null = null;
+  private xfBuffer: RhiBuffer | null = null;
+  private xfGroup: RhiBindGroup | null = null;
+  private readonly xfData = new Float32Array(GFX_TRANSFORM_BYTES / 4);
+  private readonly xfOffset = new Uint32Array(1);
 
   async init(ctx: CoreContext): Promise<void> {
     this.ctx = ctx;
@@ -129,13 +217,19 @@ export class GraphicsCoreSystem implements CoreSystem {
     // The front re-allocates and re-uploads on the generation bump.
     this.shapes.length = 0;
     this.nodes.length = 0;
+    this.shapeTex.length = 0;
+    this.nodeTex.length = 0;
+    for (let k = 0; k < POOL_KINDS; k++) {
+      this.pools[k].length = 0;
+      this.poolTex[k].length = 0;
+    }
     this.meshVertices.length = 0;
     this.meshIndices.length = 0;
     this.meshIndexCount.length = 0;
     this.meshWide.length = 0;
     this.sharedSource.length = 0;
     this.sharedViews.length = 0;
-    this.retired.length = 0;
+    this.slotTables.length = 0;
     this.uvBuffer = null;
     this.uvGroup = null;
     this.ctx = ctx;
@@ -148,6 +242,7 @@ export class GraphicsCoreSystem implements CoreSystem {
     this.pipelines.fill(null);
     this.requested.fill(0);
     const backend = ctx.backend;
+    const gl = (this.gl = backend.caps.shaderLanguage !== 'wgsl');
     this.uvLayout = backend.createBindGroupLayout({
       label: 'cozygpu.graphics.uv',
       entries: [
@@ -162,9 +257,12 @@ export class GraphicsCoreSystem implements CoreSystem {
         },
       ],
     });
+    this.uvCount = 1;
+    this.uvHash.fill(0);
     this.allocUv(ctx, UV_INITIAL_SLOTS);
+    this.buildUnified(ctx, gl);
     // One language per backend: the other never loads.
-    if (backend.caps.shaderLanguage === 'wgsl') {
+    if (!gl) {
       this.wgsl = await (wgslSources ??= import('./shadersWGSL').then(
         m => m.wgsl,
       ));
@@ -174,13 +272,126 @@ export class GraphicsCoreSystem implements CoreSystem {
       ));
     }
     if (epoch !== this.epoch) return;
-    // The two pipelines nearly every program draws with, and the pick
-    // variants: built now. A pick issued while a pick variant still compiles
-    // waits for it (ctx.pickPipelinePending).
-    for (let kind = 0; kind < 2; kind++) {
+    // The pipelines nearly every program draws with, and the pick variants:
+    // built now. A pick issued while a pick variant still compiles waits for
+    // it (ctx.pickPipelinePending).
+    const first = gl || backend.caps.vertexStorage ? 1 : 0;
+    for (let kind = first; kind < KINDS; kind++) {
       this.pipeline(kind, 0);
       this.pipeline(kind, GFX_VARIANT_PICK);
     }
+  }
+
+  /** Layouts, the dummy source, the transform table and the default slots. */
+  private buildUnified(ctx: CoreContext, gl: boolean): void {
+    const backend = ctx.backend;
+    const src: BindGroupLayoutEntry[] = [];
+    for (let i = 0; i < SOURCES; i++) {
+      if (gl) {
+        src.push(
+          {
+            binding: 2 * i,
+            visibility: ShaderStage.VERTEX,
+            type: { kind: 'texture', sampleType: 'uint' },
+          },
+          {
+            binding: 2 * i + 1,
+            visibility: ShaderStage.VERTEX,
+            type: { kind: 'sampler', filtering: false },
+          },
+        );
+      } else {
+        src.push({
+          binding: i,
+          visibility: ShaderStage.VERTEX,
+          type: { kind: 'storage', readOnly: true },
+        });
+      }
+    }
+    this.srcLayout = backend.createBindGroupLayout({
+      label: 'cozygpu.graphics.sources',
+      entries: src,
+    });
+    const slots: BindGroupLayoutEntry[] = [];
+    for (let i = 0; i < GFX_MAX_TEXTURE_SLOTS; i++) {
+      slots.push({
+        binding: gl ? 2 * i : i,
+        visibility: ShaderStage.FRAGMENT,
+        type: { kind: 'texture' },
+      });
+      if (gl) {
+        slots.push({
+          binding: 2 * i + 1,
+          visibility: ShaderStage.FRAGMENT,
+          type: { kind: 'sampler' },
+        });
+      }
+    }
+    if (!gl) {
+      slots.push({
+        binding: GFX_MAX_TEXTURE_SLOTS,
+        visibility: ShaderStage.FRAGMENT,
+        type: { kind: 'sampler' },
+      });
+    }
+    this.slotLayout = backend.createBindGroupLayout({
+      label: 'cozygpu.graphics.slots',
+      entries: slots,
+    });
+    this.xfLayout = backend.createBindGroupLayout({
+      label: 'cozygpu.graphics.transforms',
+      entries: [
+        {
+          binding: 0,
+          visibility: ShaderStage.VERTEX,
+          type: {
+            kind: 'uniform',
+            hasDynamicOffset: true,
+            minBindingSize: GFX_TRANSFORM_BYTES,
+          },
+        },
+      ],
+    });
+    this.nearest = gl
+      ? backend.createSampler({
+          label: 'cozygpu.graphics.nearest',
+          minFilter: 'nearest',
+          magFilter: 'nearest',
+        })
+      : null;
+    this.dummy = gl
+      ? new DataTexture(backend, 16, 'cozygpu.graphics.none').texture
+      : backend.createBuffer({
+          label: 'cozygpu.graphics.none',
+          size: GFX_SHAPE_BYTES,
+          usage: BufferUsage.STORAGE | BufferUsage.COPY_DST,
+        });
+    this.srcGroup = null;
+    this.srcKey.fill(null);
+    this.xfBuffer = backend.createBuffer({
+      label: 'cozygpu.graphics.transforms',
+      size: GFX_MAX_TRANSFORMS * SLOT_STRIDE,
+      usage: BufferUsage.UNIFORM | BufferUsage.COPY_DST,
+    });
+    const identity = this.xfData;
+    identity.fill(0);
+    identity[0] = identity[3] = identity[6] = 1;
+    backend.writeBuffer(this.xfBuffer, 0, identity, 0, GFX_TRANSFORM_BYTES);
+    this.xfGroup = backend.createBindGroup({
+      label: 'cozygpu.graphics.transforms',
+      layout: this.xfLayout,
+      entries: [
+        {
+          binding: 0,
+          resource: {
+            buffer: this.xfBuffer,
+            offset: 0,
+            size: GFX_TRANSFORM_BYTES,
+          },
+        },
+      ],
+    });
+    this.defaultSlots = new SlotTable();
   }
 
   // ── pipelines ──────────────────────────────────────────────────────────────
@@ -190,15 +401,17 @@ export class GraphicsCoreSystem implements CoreSystem {
     const glsl = this.glsl;
     if (!this.ctx || (!wgsl && !glsl)) return null;
     // WGSL: one module per kind with every entry point; GLSL: one program
-    // source per fragment variant.
+    // source per fragment variant, (vertex, fragment) pairs for the mesh and
+    // unified kinds (WebGL2 always draws shapes through the unified batch).
     const index = kind * 3 + (wgsl ? 0 : fragment);
+    const pair = kind === GFX_KIND_MESH ? 0 : 2;
     return (this.modules[index] ??= this.ctx.backend.createShaderModule({
       label: `cozygpu.graphics.${KIND_NAMES[kind]}`,
       wgsl: wgsl ? wgsl[kind] : undefined,
       glsl: glsl
         ? {
-            vertex: glsl[kind * 2],
-            fragment: withDefine(glsl[kind * 2 + 1], DEFINES[fragment]),
+            vertex: glsl[pair],
+            fragment: withDefine(glsl[pair + 1], DEFINES[fragment]),
           }
         : undefined,
     }));
@@ -228,18 +441,23 @@ export class GraphicsCoreSystem implements CoreSystem {
     const caps = ctx.backend.caps;
     const pick = variant === GFX_VARIANT_PICK;
     const mask = variant === GFX_VARIANT_MASK;
-    if ((pick && !caps.integerRenderTargets) || (mask && !caps.stencil)) {
+    if (
+      (pick && !caps.integerRenderTargets) ||
+      (mask && !caps.stencil) ||
+      (kind === GFX_KIND_SHAPES && this.gl)
+    ) {
       // Unsupported on this device: these draws stay skipped.
       this.requested[index] = 1;
       return;
     }
     // Mesh mask geometry needs no discard: every triangle counts.
-    const fragment = pick ? 1 : mask && kind === GFX_KIND_SHAPES ? 2 : 0;
+    const fragment = pick ? 1 : mask && kind !== GFX_KIND_MESH ? 2 : 0;
     const shader = this.module(kind, fragment);
     if (!shader) return;
     this.requested[index] = 1;
     const epoch = this.epoch;
     const mesh = kind === GFX_KIND_MESH;
+    const unified = kind === GFX_KIND_UNIFIED;
     // Picks wait for a pick pipeline that is still compiling (§16.3).
     if (pick) ctx.pickPipelinePending?.(1);
     ctx.backend
@@ -248,11 +466,17 @@ export class GraphicsCoreSystem implements CoreSystem {
         shader,
         vertexEntry: 'vs_main',
         fragmentEntry: FRAGMENT_ENTRIES[fragment],
-        bindGroupLayouts: mesh
-          ? [ctx.viewLayout, ctx.textureLayout, this.uvLayout!]
-          : [ctx.viewLayout],
-        vertexBuffers: mesh ? GFX_MESH_LAYOUTS : [GFX_SHAPE_LAYOUT],
-        topology: mesh ? 'triangle-list' : 'triangle-strip',
+        bindGroupLayouts: unified
+          ? [ctx.viewLayout, this.srcLayout!, this.slotLayout!, this.xfLayout!]
+          : mesh
+            ? [ctx.viewLayout, ctx.textureLayout, this.uvLayout!]
+            : [ctx.viewLayout],
+        vertexBuffers: unified
+          ? NO_LAYOUTS
+          : mesh
+            ? GFX_MESH_LAYOUTS
+            : [GFX_SHAPE_LAYOUT],
+        topology: kind === GFX_KIND_SHAPES ? 'triangle-strip' : 'triangle-list',
         colorFormat: pick ? PICK_TARGET_FORMAT : undefined,
         blend: pick || mask ? 'none' : GFX_BLEND_MODES[variant],
         sampleCount: pick ? 1 : ctx.sampleCount,
@@ -286,29 +510,50 @@ export class GraphicsCoreSystem implements CoreSystem {
     const ctx = this.ctx;
     if (!ctx) return;
     const op = reader.opcode;
+    const gl = this.gl;
     switch (op) {
       case GfxOp.GFX_SHAPE_BUFFER_ALLOC:
       case GfxOp.GFX_NODE_BUFFER_ALLOC: {
         const node = op === GfxOp.GFX_NODE_BUFFER_ALLOC;
-        const list = node ? this.nodes : this.shapes;
         const id = reader.u32();
-        const capacity = reader.u32();
+        const capacity = Math.max(1, reader.u32());
+        const stride = node ? GFX_NODE_BYTES : GFX_SHAPE_BYTES;
+        const list = node ? this.nodes : this.shapes;
         list[id]?.destroy();
-        list[id] = ctx.backend.createBuffer({
-          label: `cozygpu.graphics.${node ? 'nodes' : 'shapes'}#${id}`,
-          size:
-            Math.max(1, capacity) * (node ? GFX_NODE_BYTES : GFX_SHAPE_BYTES),
-          usage: BufferUsage.VERTEX | BufferUsage.COPY_DST,
-        });
+        list[id] = null;
+        if (node || !gl) {
+          list[id] = ctx.backend.createBuffer({
+            label: `cozygpu.graphics.${node ? 'nodes' : 'shapes'}#${id}`,
+            size: capacity * stride,
+            usage:
+              BufferUsage.VERTEX |
+              BufferUsage.COPY_DST |
+              (gl ? 0 : BufferUsage.STORAGE),
+          });
+        }
+        if (gl) {
+          const tex = node ? this.nodeTex : this.shapeTex;
+          tex[id]?.destroy();
+          tex[id] = new DataTexture(
+            ctx.backend,
+            capacity * stride,
+            `cozygpu.graphics.${node ? 'nodes' : 'shapes'}#${id}`,
+          );
+        }
+        this.replaced();
         return;
       }
       case GfxOp.GFX_SHAPE_BUFFER_DESTROY:
       case GfxOp.GFX_NODE_BUFFER_DESTROY: {
-        const list =
-          op === GfxOp.GFX_NODE_BUFFER_DESTROY ? this.nodes : this.shapes;
+        const node = op === GfxOp.GFX_NODE_BUFFER_DESTROY;
         const id = reader.u32();
+        const list = node ? this.nodes : this.shapes;
         list[id]?.destroy();
         list[id] = null;
+        const tex = node ? this.nodeTex : this.shapeTex;
+        tex[id]?.destroy();
+        tex[id] = null;
+        this.replaced();
         return;
       }
       case GfxOp.GFX_SHAPE_UPLOAD:
@@ -318,23 +563,97 @@ export class GraphicsCoreSystem implements CoreSystem {
         const node =
           op === GfxOp.GFX_NODE_UPLOAD || op === GfxOp.GFX_NODE_UPLOAD_SHARED;
         const stride = node ? GFX_NODE_BYTES : GFX_SHAPE_BYTES;
-        const buffer = (node ? this.nodes : this.shapes)[reader.u32()];
-        const first = reader.u32();
-        const count = reader.u32();
-        const bytes = count * stride;
-        const dst = first * stride;
-        let src: Uint8Array | null = reader.u8;
-        let at: number;
-        if (op === GfxOp.GFX_SHAPE_UPLOAD || op === GfxOp.GFX_NODE_UPLOAD) {
-          at = reader.blob(bytes);
+        const id = reader.u32();
+        const shared =
+          op === GfxOp.GFX_SHAPE_UPLOAD_SHARED ||
+          op === GfxOp.GFX_NODE_UPLOAD_SHARED;
+        this.upload(
+          ctx,
+          reader,
+          shared,
+          stride,
+          (node ? this.nodes : this.shapes)[id] ?? null,
+          (node ? this.nodeTex : this.shapeTex)[id] ?? null,
+        );
+        return;
+      }
+      case GfxOp.GFX_POOL_ALLOC: {
+        const kind = reader.u32();
+        const id = reader.u32();
+        const capacity = Math.max(1, reader.u32());
+        if (kind >= POOL_KINDS) return;
+        const stride = POOL_STRIDE[kind];
+        const label = `cozygpu.graphics.${POOL_NAMES[kind]}#${id}`;
+        const list = this.pools[kind];
+        list[id]?.destroy();
+        list[id] = null;
+        const tex = this.poolTex[kind];
+        tex[id]?.destroy();
+        tex[id] = null;
+        if (kind === 0 || !gl) {
+          list[id] = ctx.backend.createBuffer({
+            label,
+            size: (capacity * stride + 3) & ~3,
+            usage:
+              (kind === 0 ? BufferUsage.INDEX : BufferUsage.STORAGE) |
+              BufferUsage.COPY_DST,
+          });
         } else {
-          src = this.sharedView(ctx, reader.u32());
-          // byteOffset locates slot 0 of the store, as for sprites.
-          at = reader.u32() + dst;
-          if (src && at + bytes > src.byteLength) src = null;
+          tex[id] = new DataTexture(ctx.backend, capacity * stride, label);
         }
-        if (!buffer || !src || dst + bytes > buffer.size) return;
-        ctx.backend.writeBuffer(buffer, dst, src, at, bytes);
+        this.replaced();
+        return;
+      }
+      case GfxOp.GFX_POOL_DESTROY: {
+        const kind = reader.u32();
+        const id = reader.u32();
+        if (kind >= POOL_KINDS) return;
+        this.pools[kind][id]?.destroy();
+        this.pools[kind][id] = null;
+        this.poolTex[kind][id]?.destroy();
+        this.poolTex[kind][id] = null;
+        this.replaced();
+        return;
+      }
+      case GfxOp.GFX_POOL_UPLOAD:
+      case GfxOp.GFX_POOL_UPLOAD_SHARED: {
+        const kind = reader.u32();
+        const id = reader.u32();
+        if (kind >= POOL_KINDS) return;
+        this.upload(
+          ctx,
+          reader,
+          op === GfxOp.GFX_POOL_UPLOAD_SHARED,
+          POOL_STRIDE[kind],
+          this.pools[kind][id] ?? null,
+          this.poolTex[kind][id] ?? null,
+        );
+        return;
+      }
+      case GfxOp.GFX_SET_TRANSFORM: {
+        const id = reader.u32();
+        const data = this.xfData;
+        for (let i = 0; i < 7; i++) data[i] = reader.f32();
+        data[7] = 0;
+        if (id === 0 || id >= GFX_MAX_TRANSFORMS || !this.xfBuffer) return;
+        ctx.backend.writeBuffer(
+          this.xfBuffer,
+          id * SLOT_STRIDE,
+          data,
+          0,
+          GFX_TRANSFORM_BYTES,
+        );
+        return;
+      }
+      case GfxOp.GFX_SET_TEXTURE_SLOTS: {
+        const id = reader.u32();
+        const count = Math.min(reader.u32(), GFX_MAX_TEXTURE_SLOTS);
+        if (id === 0) return;
+        const table = (this.slotTables[id] ??= new SlotTable());
+        table.texIds.fill(NO_ID);
+        for (let i = 0; i < count; i++) table.texIds[i] = reader.u32();
+        // Rebuilt on its next draw.
+        table.bound.fill(null);
         return;
       }
       case GfxOp.GFX_MESH_UPLOAD:
@@ -398,11 +717,51 @@ export class GraphicsCoreSystem implements CoreSystem {
         this.meshVertices[id] = null;
         this.meshIndices[id] = null;
         this.meshIndexCount[id] = 0;
+        this.replaced();
         return;
       }
       default:
         return;
     }
+  }
+
+  /**
+   * One record upload: u32 first, u32 count, then the bytes (inline) or
+   * u32 sharedId, u32 byteOffset (byteOffset locates record 0, as for
+   * sprites). Writes the buffer and, on WebGL2, its data texture.
+   */
+  private upload(
+    ctx: CoreContext,
+    reader: CommandReader,
+    shared: boolean,
+    stride: number,
+    buffer: RhiBuffer | null,
+    tex: DataTexture | null,
+  ): void {
+    const first = reader.u32();
+    const count = reader.u32();
+    const bytes = count * stride;
+    const dst = first * stride;
+    let src: Uint8Array | null = reader.u8;
+    let at: number;
+    if (!shared) {
+      at = reader.blob(bytes);
+    } else {
+      src = this.sharedView(ctx, reader.u32());
+      at = reader.u32() + dst;
+      if (src && at + bytes > src.byteLength) src = null;
+    }
+    if (!src || bytes === 0) return;
+    if (buffer && dst + bytes <= buffer.size) {
+      // writeBuffer sizes are multiples of 4 (items and records are).
+      ctx.backend.writeBuffer(buffer, dst, src, at, bytes);
+    }
+    if (tex) tex.write(ctx.backend, dst, src, at, bytes);
+  }
+
+  /** A GPU object recorded draws may reference was replaced (§27.3). */
+  private replaced(): void {
+    this.ctx?.retain?.invalidate();
   }
 
   /** The buffer when it holds `bytes`, else a new one grown ×1.5 (never shrunk). */
@@ -416,6 +775,7 @@ export class GraphicsCoreSystem implements CoreSystem {
     if (buffer && buffer.size >= bytes) return buffer;
     const grown = buffer ? Math.ceil(buffer.size * 1.5) : 0;
     buffer?.destroy();
+    if (buffer) this.replaced();
     return ctx.backend.createBuffer({
       label,
       size: (Math.max(bytes, grown, 4) + 3) & ~3,
@@ -449,6 +809,11 @@ export class GraphicsCoreSystem implements CoreSystem {
     this.replay(reader, pass, view);
   }
 
+  /** A draw this core was asked for and cannot make (§27.3). */
+  private skip(pick: boolean): void {
+    if (!pick) this.ctx?.retain?.skipped();
+  }
+
   /** One GFX_DRAW_* command; `pickView` set = the pick pass. */
   private replay(
     reader: CommandReader,
@@ -458,7 +823,13 @@ export class GraphicsCoreSystem implements CoreSystem {
     const ctx = this.ctx;
     if (!ctx) return;
     const view = pickView ?? ctx.viewBindGroup;
-    if (reader.opcode === GfxOp.GFX_DRAW_SHAPES) {
+    const pick = pickView !== null;
+    const opcode = reader.opcode;
+    if (opcode === GfxOp.GFX_DRAW_UNIFIED) {
+      this.replayUnified(ctx, reader, pass, view, pick);
+      return;
+    }
+    if (opcode === GfxOp.GFX_DRAW_SHAPES) {
       const buffer = this.shapes[reader.u32()];
       const first = reader.u32();
       const count = reader.u32();
@@ -467,19 +838,25 @@ export class GraphicsCoreSystem implements CoreSystem {
       const variant = gfxVariant(
         blendId,
         (flags & GfxDrawFlag.MASK_WRITE) !== 0,
-        pickView !== null,
+        pick,
       );
-      if (!buffer || count === 0 || variant < 0) return;
-      if ((first + count) * GFX_SHAPE_BYTES > buffer.size) return;
+      if (count === 0 || variant < 0) return;
       const pipeline = this.pipeline(GFX_KIND_SHAPES, variant);
-      if (!pipeline) return;
+      if (
+        !buffer ||
+        (first + count) * GFX_SHAPE_BYTES > buffer.size ||
+        !pipeline
+      ) {
+        this.skip(pick);
+        return;
+      }
       pass.setPipeline(pipeline);
       pass.setBindGroup(0, view);
       pass.setVertexBuffer(0, buffer);
       pass.draw(QUAD_VERTICES, count, 0, first);
       return;
     }
-    if (reader.opcode !== GfxOp.GFX_DRAW_MESH) return;
+    if (opcode !== GfxOp.GFX_DRAW_MESH) return;
     const meshId = reader.u32();
     const firstIndex = reader.u32();
     const indexCount = reader.u32();
@@ -492,26 +869,26 @@ export class GraphicsCoreSystem implements CoreSystem {
     const variant = gfxVariant(
       blendId,
       (flags & GfxDrawFlag.MASK_WRITE) !== 0,
-      pickView !== null,
+      pick,
     );
+    if (variant < 0 || indexCount === 0 || nodeCount === 0) return;
     const vertices = this.meshVertices[meshId];
     const indices = this.meshIndices[meshId];
+    const pipeline = this.pipeline(GFX_KIND_MESH, variant);
+    const group = this.uvGroup;
     if (
       !vertices ||
       !indices ||
       !nodes ||
-      variant < 0 ||
-      indexCount === 0 ||
-      nodeCount === 0 ||
+      !pipeline ||
+      !group ||
       firstIndex + indexCount > this.meshIndexCount[meshId] ||
       (firstNode + nodeCount) * GFX_NODE_BYTES > nodes.size
     ) {
+      this.skip(pick);
       return;
     }
-    const pipeline = this.pipeline(GFX_KIND_MESH, variant);
-    const group = this.uvGroup;
-    if (!pipeline || !group) return;
-    const textured = (flags & GfxDrawFlag.TEXTURED) !== 0 && pickView === null;
+    const textured = (flags & GfxDrawFlag.TEXTURED) !== 0 && !pick;
     this.uvOffset[0] = textured ? this.uvSlot(ctx, reader) : 0;
     pass.setPipeline(pipeline);
     pass.setBindGroup(0, view);
@@ -526,43 +903,252 @@ export class GraphicsCoreSystem implements CoreSystem {
     pass.drawIndexed(indexCount, nodeCount, firstIndex, 0, firstNode);
   }
 
-  /**
-   * Writes the draw's uv matrix (the reader sits on it) to the next uniform
-   * slot and returns its byte offset; a matrix equal to the previous slot's
-   * reuses it.
-   */
-  private uvSlot(ctx: CoreContext, reader: CommandReader): number {
-    const data = this.uvData;
-    let same = this.uvCursor > 1;
-    for (let i = 0; i < 6; i++) {
-      // vec4 ad, vec4 t: [a, b, c, d, tx, ty, 0, 0]
-      const value = reader.f32();
-      if (data[i] !== value) {
-        data[i] = value;
-        same = false;
-      }
+  /** GFX_DRAW_UNIFIED (§27.4). */
+  private replayUnified(
+    ctx: CoreContext,
+    reader: CommandReader,
+    pass: RenderPass,
+    view: RhiBindGroup,
+    pick: boolean,
+  ): void {
+    const items = this.pools[0][reader.u32()];
+    const first = reader.u32();
+    const count = reader.u32();
+    const shapeId = reader.u32();
+    const vertexId = reader.u32();
+    const nodeId = reader.u32();
+    const spriteId = reader.u32();
+    const slotsId = reader.u32();
+    const transformId = reader.u32();
+    const blendId = reader.u32();
+    const flags = reader.u32();
+    const variant = gfxVariant(
+      blendId,
+      (flags & GfxDrawFlag.MASK_WRITE) !== 0,
+      pick,
+    );
+    if (count === 0 || variant < 0) return;
+    const pipeline = this.pipeline(GFX_KIND_UNIFIED, variant);
+    const sources = this.sources(ctx, shapeId, nodeId, vertexId, spriteId);
+    const slots = this.slots(ctx, slotsId);
+    if (
+      !items ||
+      (first + count) * GFX_ITEM_BYTES > items.size ||
+      !pipeline ||
+      !sources ||
+      !slots ||
+      transformId >= GFX_MAX_TRANSFORMS
+    ) {
+      this.skip(pick);
+      return;
     }
-    if (same) return (this.uvCursor - 1) * UV_STRIDE;
-    if (this.uvCursor >= this.uvSlots) {
-      // Earlier draws of this frame still read the old buffer: it is
-      // destroyed after the submit.
-      if (this.uvBuffer) this.retired.push(this.uvBuffer);
-      this.uvBuffer = null;
-      this.allocUv(ctx, this.uvSlots * 2);
-    }
-    const offset = this.uvCursor++ * UV_STRIDE;
-    ctx.backend.writeBuffer(this.uvBuffer!, offset, data, 0, UV_BYTES);
-    return offset;
+    this.xfOffset[0] = transformId * SLOT_STRIDE;
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(0, view);
+    pass.setBindGroup(1, sources);
+    pass.setBindGroup(2, slots);
+    pass.setBindGroup(3, this.xfGroup!, this.xfOffset);
+    pass.setIndexBuffer(items, 'uint32');
+    pass.drawIndexed(count, 1, first, 0, 0);
   }
 
+  /** The source bind group for these ids (rebuilt when a source changed). */
+  private sources(
+    ctx: CoreContext,
+    shapeId: number,
+    nodeId: number,
+    vertexId: number,
+    spriteId: number,
+  ): RhiBindGroup | null {
+    const now = this.srcNow;
+    const dummy = this.dummy;
+    if (!dummy || !this.srcLayout) return null;
+    if (this.gl) {
+      now[0] = this.shapeTex[shapeId]?.texture ?? dummy;
+      now[1] = this.nodeTex[nodeId]?.texture ?? dummy;
+      now[2] = this.poolTex[1][vertexId]?.texture ?? dummy;
+      now[3] = this.poolTex[2][spriteId]?.texture ?? dummy;
+    } else {
+      now[0] = this.shapes[shapeId] ?? dummy;
+      now[1] = this.nodes[nodeId] ?? dummy;
+      now[2] = this.pools[1][vertexId] ?? dummy;
+      now[3] = this.pools[2][spriteId] ?? dummy;
+    }
+    const key = this.srcKey;
+    if (
+      this.srcGroup !== null &&
+      key[0] === now[0] &&
+      key[1] === now[1] &&
+      key[2] === now[2] &&
+      key[3] === now[3]
+    ) {
+      return this.srcGroup;
+    }
+    if (this.srcGroup !== null) this.replaced();
+    key[0] = now[0];
+    key[1] = now[1];
+    key[2] = now[2];
+    key[3] = now[3];
+    const entries: BindGroupDesc['entries'] = [];
+    for (let i = 0; i < SOURCES; i++) {
+      if (this.gl) {
+        entries.push(
+          { binding: 2 * i, resource: { texture: now[i] as RhiTexture } },
+          { binding: 2 * i + 1, resource: { sampler: this.nearest! } },
+        );
+      } else {
+        entries.push({
+          binding: i,
+          resource: { buffer: now[i] as RhiBuffer },
+        });
+      }
+    }
+    this.srcGroup = ctx.backend.createBindGroup({
+      label: 'cozygpu.graphics.sources',
+      layout: this.srcLayout,
+      entries,
+    });
+    return this.srcGroup;
+  }
+
+  /** The bind group of slot table `id` (0: white everywhere). */
+  private slots(ctx: CoreContext, id: number): RhiBindGroup | null {
+    const table = id === 0 ? this.defaultSlots : this.slotTables[id];
+    if (!table || !this.slotLayout) return null;
+    let changed = table.group === null;
+    for (let i = 0; i < GFX_MAX_TEXTURE_SLOTS; i++) {
+      const tex = table.texIds[i];
+      const t = tex === NO_ID ? ctx.whiteTexture : ctx.getTexture(tex);
+      if (table.bound[i] !== t) {
+        table.bound[i] = t;
+        changed = true;
+      }
+    }
+    if (!changed) return table.group;
+    if (table.group !== null) this.replaced();
+    const gl = this.gl;
+    const entries: BindGroupDesc['entries'] = [];
+    for (let i = 0; i < GFX_MAX_TEXTURE_SLOTS; i++) {
+      const t = table.bound[i]!;
+      entries.push({
+        binding: gl ? 2 * i : i,
+        resource: { texture: t.texture },
+      });
+      if (gl)
+        entries.push({ binding: 2 * i + 1, resource: { sampler: t.sampler } });
+    }
+    if (!gl) {
+      entries.push({
+        binding: GFX_MAX_TEXTURE_SLOTS,
+        resource: { sampler: table.bound[0]!.sampler },
+      });
+    }
+    table.group = ctx.backend.createBindGroup({
+      label: 'cozygpu.graphics.slots',
+      layout: this.slotLayout,
+      entries,
+    });
+    return table.group;
+  }
+
+  /**
+   * The uniform slot holding the draw's uv matrix (the reader sits on it),
+   * as a byte offset. Slots are content-addressed and never rewritten, so a
+   * recorded draw keeps reading its matrix; a new matrix takes a new slot.
+   */
+  private uvSlot(ctx: CoreContext, reader: CommandReader): number {
+    const m = this.uvScratch;
+    // vec4 ad, vec4 t: [a, b, c, d, tx, ty, 0, 0]
+    for (let i = 0; i < 6; i++) m[i] = reader.f32();
+    m[6] = m[7] = 0;
+    return this.uvFind(ctx);
+  }
+
+  /** Slot of the matrix in `uvScratch` (a new one when it is not there yet). */
+  private uvFind(ctx: CoreContext): number {
+    const m = this.uvScratch;
+    const table = this.uvHash;
+    const mask = table.length - 1;
+    const data = this.uvData;
+    for (
+      let probe = uvHash(this.uvBits, 0) & mask;
+      ;
+      probe = (probe + 1) & mask
+    ) {
+      const slot = table[probe] - 1;
+      if (slot < 0) {
+        if (this.uvCount >= UV_MAX_SLOTS) {
+          // Too many distinct matrices: start over (recorded draws re-record).
+          this.uvCount = 1;
+          table.fill(0);
+          this.replaced();
+          return this.uvFind(ctx);
+        }
+        const fresh = this.uvCount++;
+        if (fresh >= this.uvSlots) this.allocUv(ctx, this.uvSlots * 2);
+        this.uvData.set(m, fresh * 8);
+        if (this.uvCount * 2 > table.length) this.rehash();
+        else table[probe] = fresh + 1;
+        ctx.backend.writeBuffer(
+          this.uvBuffer!,
+          fresh * SLOT_STRIDE,
+          m,
+          0,
+          UV_BYTES,
+        );
+        return fresh * SLOT_STRIDE;
+      }
+      const o = slot * 8;
+      if (
+        data[o] === m[0] &&
+        data[o + 1] === m[1] &&
+        data[o + 2] === m[2] &&
+        data[o + 3] === m[3] &&
+        data[o + 4] === m[4] &&
+        data[o + 5] === m[5]
+      ) {
+        return slot * SLOT_STRIDE;
+      }
+    }
+  }
+
+  /** Doubles the uv hash table and re-inserts every slot. */
+  private rehash(): void {
+    const table = new Int32Array(this.uvHash.length * 2);
+    const mask = table.length - 1;
+    const bits = new Uint32Array(this.uvData.buffer);
+    for (let slot = 1; slot < this.uvCount; slot++) {
+      let probe = uvHash(bits, slot * 8) & mask;
+      while (table[probe] !== 0) probe = (probe + 1) & mask;
+      table[probe] = slot + 1;
+    }
+    this.uvHash = table;
+  }
+
+  /** (Re)creates the uv uniform buffer with `slots` slots, keeping contents. */
   private allocUv(ctx: CoreContext, slots: number): void {
-    this.uvBuffer?.destroy();
+    const old = this.uvBuffer;
     this.uvSlots = slots;
+    if (this.uvData.length < slots * 8) {
+      const data = new Float32Array(slots * 8);
+      data.set(this.uvData);
+      this.uvData = data;
+    }
     this.uvBuffer = ctx.backend.createBuffer({
       label: 'cozygpu.graphics.uv',
-      size: slots * UV_STRIDE,
+      size: slots * SLOT_STRIDE,
       usage: BufferUsage.UNIFORM | BufferUsage.COPY_DST,
     });
+    // Re-send the slots in use (writes at 256-byte steps).
+    for (let s = 1; s < Math.min(this.uvCount, slots); s++) {
+      ctx.backend.writeBuffer(
+        this.uvBuffer,
+        s * SLOT_STRIDE,
+        this.uvData,
+        s * 8 * 4,
+        UV_BYTES,
+      );
+    }
     this.uvGroup = ctx.backend.createBindGroup({
       label: 'cozygpu.graphics.uv',
       layout: this.uvLayout!,
@@ -573,26 +1159,36 @@ export class GraphicsCoreSystem implements CoreSystem {
         },
       ],
     });
-  }
-
-  endFrame(_frame: CoreFrameState): void {
-    this.uvCursor = 1;
-    const retired = this.retired;
-    for (let i = 0; i < retired.length; i++) retired[i].destroy();
-    retired.length = 0;
+    if (old) {
+      old.destroy();
+      this.replaced();
+    }
   }
 
   destroy(): void {
     this.epoch++;
-    const lists = [
+    const lists: (RhiBuffer | null)[][] = [
       this.shapes,
       this.nodes,
       this.meshVertices,
       this.meshIndices,
-      this.retired,
+      this.pools[0],
+      this.pools[1],
+      this.pools[2],
     ];
     for (let l = 0; l < lists.length; l++) {
       const list = lists[l];
+      for (let i = 0; i < list.length; i++) list[i]?.destroy();
+      list.length = 0;
+    }
+    const texLists = [
+      this.shapeTex,
+      this.nodeTex,
+      this.poolTex[1],
+      this.poolTex[2],
+    ];
+    for (let l = 0; l < texLists.length; l++) {
+      const list = texLists[l];
       for (let i = 0; i < list.length; i++) list[i]?.destroy();
       list.length = 0;
     }
@@ -606,6 +1202,13 @@ export class GraphicsCoreSystem implements CoreSystem {
     this.uvBuffer?.destroy();
     this.uvBuffer = null;
     this.uvGroup = null;
+    this.xfBuffer?.destroy();
+    this.xfBuffer = null;
+    this.xfGroup = null;
+    this.dummy?.destroy();
+    this.dummy = null;
+    this.srcGroup = null;
+    this.slotTables.length = 0;
     this.sharedSource.length = 0;
     this.sharedViews.length = 0;
     this.ctx = null;

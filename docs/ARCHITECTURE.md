@@ -1,10 +1,10 @@
 # cozygpu architecture
 
-Status: **M4 in design** (M1–M3 are built; §13–§24 describe them as built,
-§26 is the Graphics design for M4). Sections marked _normative_ are binding;
+Status: **M5 in design** (M1–M4 are built; §13–§26 describe them as built;
+§27–§29 are the M5 design: retained rendering and SpriteLayer). Sections marked _normative_ are binding;
 code in `src/types/**`, `src/backend/types.ts`,
 `src/scene/types.ts`, `src/swarm/types.ts`, `src/assets/types.ts`,
-`src/graphics/types.ts`,
+`src/graphics/types.ts`, `src/layer/types.ts`,
 `src/commands/opcodes.ts`, and `src/commands/types.ts` mirrors them. If the
 code and this document disagree, the document is the reference; fix one of them.
 
@@ -34,6 +34,9 @@ code and this document disagree, the document is the reference; fix one of them.
 - [24. Particles (M3)](#24-particles-m3)
 - [25. M3 contract additions](#25-m3-contract-additions)
 - [26. Graphics (M4)](#26-graphics-m4)
+- [27. Retained rendering (M5)](#27-retained-rendering-m5)
+- [28. SpriteLayer (M5)](#28-spritelayer-m5)
+- [29. M5 contract additions](#29-m5-contract-additions)
 
 ---
 
@@ -210,7 +213,8 @@ op     flags  payload=20   bufferId=1   first=0      count=500    texId=3      b
 
 Ranges: `0x00` core, `0x01` texture, shared memory, readback and picking
 (all handled by RenderCore), `0x02` sprite, `0x03` swarm, `0x04` mask (M3),
-`0x05` filter (M3), `0x06` graphics (M4), `0x07–0x7F` reserved,
+`0x05` filter (M3), `0x06` graphics (M4), `0x07` retain (M5, §27.3),
+`0x08` sprite layer (M5, §28), `0x09–0x7F` reserved,
 `0x80–0xFF` extensions. Unknown
 opcodes are skipped using `payloadBytes`, with one warning per opcode.
 
@@ -218,75 +222,95 @@ The flags column lists every bit a command carries; `DRAW+PASS_BREAK`
 (M3, §21.3) means the core ends the open render pass before the command and
 asks the owning system which pass to open next.
 
-| opcode | name                         | flags           | payload                                                                                                                       |
-| ------ | ---------------------------- | --------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| 0x0000 | NOP                          |                 | —                                                                                                                             |
-| 0x0001 | FRAME_BEGIN                  |                 | f32 time, f32 dt                                                                                                              |
-| 0x0002 | RESIZE                       |                 | f32 cssWidth, f32 cssHeight, f32 resolution                                                                                   |
-| 0x0003 | SET_CLEAR_COLOR              |                 | f32 r, g, b, a (straight)                                                                                                     |
-| 0x0004 | SET_VIEW                     |                 | f32 a, b, c, d, tx, ty (stage → css px)                                                                                       |
-| 0x00FF | FRAME_END                    |                 | —                                                                                                                             |
-| 0x0100 | TEXTURE_CREATE               |                 | u32 texId, width, height, formatId, texFlags (bits 24–31: mip level count, M2)                                                |
-| 0x0101 | TEXTURE_UPLOAD_PIXELS        |                 | u32 texId, x, y, w, h, u8[w·h·4]                                                                                              |
-| 0x0102 | TEXTURE_UPLOAD_BITMAP        |                 | u32 texId, objectIndex, flipY                                                                                                 |
-| 0x0103 | TEXTURE_DESTROY              |                 | u32 texId                                                                                                                     |
-| 0x0104 | TEXTURE_UPLOAD_BITMAP_REGION |                 | M2. u32 texId, objectIndex, x, y, flipY                                                                                       |
-| 0x0105 | TEXTURE_UPLOAD_COMPRESSED    |                 | M2. u32 texId, mipLevel, width, height, objectIndex (ArrayBuffer), byteOffset, byteLength                                     |
-| 0x0106 | TEXTURE_GENERATE_MIPMAPS     |                 | M2. u32 texId                                                                                                                 |
-| 0x0110 | SHARED_REGISTER              |                 | u32 sharedId, objectIndex                                                                                                     |
-| 0x0111 | SHARED_RELEASE               |                 | u32 sharedId                                                                                                                  |
-| 0x0120 | READBACK                     |                 | u32 requestId, srcKind (0 sprite buf, 1 swarm hot, 2 swarm cold), srcId, first, count; M2: srcKind 3 = swarm alive count      |
-| 0x0121 | PICK                         |                 | M2. u32 requestId, f32 x, f32 y (css px)                                                                                      |
-| 0x0200 | SPRITE_BUFFER_ALLOC          |                 | u32 bufferId, capacity                                                                                                        |
-| 0x0201 | SPRITE_BUFFER_DESTROY        |                 | u32 bufferId                                                                                                                  |
-| 0x0202 | SPRITE_UPLOAD                |                 | u32 bufferId, first, count, u8[count·40]                                                                                      |
-| 0x0203 | SPRITE_UPLOAD_SHARED         |                 | u32 bufferId, first, count, sharedId, byteOffset                                                                              |
-| 0x0210 | SPRITE_DRAW                  | DRAW            | u32 bufferId, first, count, texId, blendModeId                                                                                |
-| 0x0211 | SPRITE_DEFINE_EFFECT         |                 | M3. u32 effectId, u8[96] sprite effect block (color matrix, outline)                                                          |
-| 0x0212 | SPRITE_DESTROY_EFFECT        |                 | M3. u32 effectId                                                                                                              |
-| 0x0213 | SPRITE_SET_EFFECT            | DRAW            | M3. u32 effectId (0 = none) for the SPRITE_DRAWs that follow in this packet                                                   |
-| 0x0300 | SWARM_CREATE                 |                 | u32 swarmId, capacity, texId, blendModeId, renderFlags, paramsBytes, computeSrcBytes, renderSrcBytes, u8[compute], u8[render] |
-| 0x0301 | SWARM_DESTROY                |                 | u32 swarmId                                                                                                                   |
-| 0x0302 | SWARM_SET_PIPELINE           |                 | like CREATE without capacity                                                                                                  |
-| 0x0303 | SWARM_WRITE_HOT              |                 | u32 swarmId, first, count, u8[count·40]                                                                                       |
-| 0x0304 | SWARM_WRITE_COLD             |                 | u32 swarmId, first, count, u8[count·16]                                                                                       |
-| 0x0305 | SWARM_SPAWN                  | COMPUTE         | u32 swarmId, u8[112] SpawnParams                                                                                              |
-| 0x0306 | SWARM_KILL_RANGE             | COMPUTE         | u32 swarmId, first, count                                                                                                     |
-| 0x0307 | SWARM_KILL_LIST              | COMPUTE         | u32 swarmId, n, u32[n]                                                                                                        |
-| 0x0308 | SWARM_SET_PARAMS             |                 | u32 swarmId, byteOffset, byteLength, u8[byteLength]                                                                           |
-| 0x0309 | SWARM_STEP                   | COMPUTE         | u32 swarmId, f32 dt, u32 substeps, u32 activeCount                                                                            |
-| 0x030A | SWARM_DRAW                   | DRAW            | u32 swarmId, f32 a, b, c, d, tx, ty, f32 alpha, u32 drawCount                                                                 |
-| 0x030B | SWARM_SET_FRAMES             |                 | u32 swarmId, count, f32[count·4] (u0, v0, u1, v1)                                                                             |
-| 0x030C | SWARM_SET_PICK               |                 | M2. u32 swarmId, pickId (Swarm node id; 0 = not pickable)                                                                     |
-| 0x030D | SWARM_SET_SOURCE             |                 | M2.5. u32 swarmId, hotExternalId (0 = own buffers), coldExternalId (0 = own), flags (SIMULATE=1)                              |
-| 0x030E | SWARM_SET_CURVES             |                 | M3. u32 swarmId, u8[64] over-life curves (stops, color, size, alpha)                                                          |
-| 0x0400 | MASK_BUFFER_ALLOC            |                 | M3. u32 bufferId, capacity (mask quads, 40 B each)                                                                            |
-| 0x0401 | MASK_BUFFER_DESTROY          |                 | M3. u32 bufferId                                                                                                              |
-| 0x0402 | MASK_UPLOAD                  |                 | M3. u32 bufferId, first, count, u8[count·40]                                                                                  |
-| 0x0403 | MASK_UPLOAD_SHARED           |                 | M3. u32 bufferId, first, count, sharedId, byteOffset                                                                          |
-| 0x0410 | MASK_PUSH_SCISSOR            | DRAW            | M3. u32 maskId, f32 x, y, width, height (css px), u32 flags                                                                   |
-| 0x0411 | MASK_PUSH_STENCIL            | DRAW+PASS_BREAK | M3. u32 maskId, bufferId, first, count, texId, flags, f32 threshold                                                           |
-| 0x0412 | MASK_PUSH_ALPHA              | DRAW+PASS_BREAK | M3. u32 maskId, bufferId, first, count, texId, flags, f32 x, y, width, height, resolution                                     |
-| 0x0418 | MASK_POP                     | DRAW+PASS_BREAK | M3. u32 maskId (PASS_BREAK only when it ends a stencil or alpha segment)                                                      |
-| 0x0419 | MASK_GEOMETRY_END            | DRAW+PASS_BREAK | M4. u32 maskId; ends external mask geometry (MaskFlag.EXTERNAL, §26.8); PASS_BREAK only for an alpha mask                     |
-| 0x0500 | FILTER_DEFINE                |                 | M3. u32 filterId, passCount, uniformBytes, flags, srcBytes, u8[srcBytes]                                                      |
-| 0x0501 | FILTER_DESTROY               |                 | M3. u32 filterId                                                                                                              |
-| 0x0502 | FILTER_SET_UNIFORMS          |                 | M3. u32 filterId, byteOffset, byteLength, u8[byteLength]                                                                      |
-| 0x0510 | FILTER_BEGIN                 | DRAW+PASS_BREAK | M3. u32 groupId, f32 x, y, width, height (css px), f32 resolution, u32 flags                                                  |
-| 0x0511 | FILTER_END                   | DRAW+PASS_BREAK | M3. u32 groupId, blendModeId, f32 alpha, u32 count, u32[count] filterIds                                                      |
-| 0x0600 | GFX_SHAPE_BUFFER_ALLOC       |                 | M4. u32 bufferId, capacity (shape instances, 64 B each)                                                                       |
-| 0x0601 | GFX_SHAPE_BUFFER_DESTROY     |                 | M4. u32 bufferId                                                                                                              |
-| 0x0602 | GFX_SHAPE_UPLOAD             |                 | M4. u32 bufferId, first, count, u8[count·64]                                                                                  |
-| 0x0603 | GFX_SHAPE_UPLOAD_SHARED      |                 | M4. u32 bufferId, first, count, sharedId, byteOffset                                                                          |
-| 0x0604 | GFX_NODE_BUFFER_ALLOC        |                 | M4. u32 bufferId, capacity (node records, 32 B each)                                                                          |
-| 0x0605 | GFX_NODE_BUFFER_DESTROY      |                 | M4. u32 bufferId                                                                                                              |
-| 0x0606 | GFX_NODE_UPLOAD              |                 | M4. u32 bufferId, first, count, u8[count·32]                                                                                  |
-| 0x0607 | GFX_NODE_UPLOAD_SHARED       |                 | M4. u32 bufferId, first, count, sharedId, byteOffset                                                                          |
-| 0x0610 | GFX_MESH_UPLOAD              |                 | M4. u32 meshId, vertexCount, indexCount, flags (U32_INDEX=1), u8[vertexCount·12], u16/u32[indexCount] (padded)                |
-| 0x0611 | GFX_MESH_UPLOAD_SHARED       |                 | M4. u32 meshId, vertexCount, indexCount, flags, sharedId, vertexByteOffset, indexByteOffset                                   |
-| 0x0612 | GFX_MESH_DESTROY             |                 | M4. u32 meshId                                                                                                                |
-| 0x0620 | GFX_DRAW_SHAPES              | DRAW            | M4. u32 bufferId, first, count, blendModeId, flags (GfxDrawFlag)                                                              |
-| 0x0621 | GFX_DRAW_MESH                | DRAW            | M4. u32 meshId, firstIndex, indexCount, nodeBufferId, firstNode, nodeCount, texId, blendModeId, flags, f32[6] uv matrix       |
+| opcode | name                         | flags           | payload                                                                                                                                       |
+| ------ | ---------------------------- | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0x0000 | NOP                          |                 | —                                                                                                                                             |
+| 0x0001 | FRAME_BEGIN                  |                 | f32 time, f32 dt                                                                                                                              |
+| 0x0002 | RESIZE                       |                 | f32 cssWidth, f32 cssHeight, f32 resolution                                                                                                   |
+| 0x0003 | SET_CLEAR_COLOR              |                 | f32 r, g, b, a (straight)                                                                                                                     |
+| 0x0004 | SET_VIEW                     |                 | f32 a, b, c, d, tx, ty (stage → css px)                                                                                                       |
+| 0x00FF | FRAME_END                    |                 | —                                                                                                                                             |
+| 0x0100 | TEXTURE_CREATE               |                 | u32 texId, width, height, formatId, texFlags (bits 24–31: mip level count, M2)                                                                |
+| 0x0101 | TEXTURE_UPLOAD_PIXELS        |                 | u32 texId, x, y, w, h, u8[w·h·4]                                                                                                              |
+| 0x0102 | TEXTURE_UPLOAD_BITMAP        |                 | u32 texId, objectIndex, flipY                                                                                                                 |
+| 0x0103 | TEXTURE_DESTROY              |                 | u32 texId                                                                                                                                     |
+| 0x0104 | TEXTURE_UPLOAD_BITMAP_REGION |                 | M2. u32 texId, objectIndex, x, y, flipY                                                                                                       |
+| 0x0105 | TEXTURE_UPLOAD_COMPRESSED    |                 | M2. u32 texId, mipLevel, width, height, objectIndex (ArrayBuffer), byteOffset, byteLength                                                     |
+| 0x0106 | TEXTURE_GENERATE_MIPMAPS     |                 | M2. u32 texId                                                                                                                                 |
+| 0x0110 | SHARED_REGISTER              |                 | u32 sharedId, objectIndex                                                                                                                     |
+| 0x0111 | SHARED_RELEASE               |                 | u32 sharedId                                                                                                                                  |
+| 0x0120 | READBACK                     |                 | u32 requestId, srcKind (0 sprite buf, 1 swarm hot, 2 swarm cold), srcId, first, count; M2: srcKind 3 = swarm alive count                      |
+| 0x0121 | PICK                         |                 | M2. u32 requestId, f32 x, f32 y (css px)                                                                                                      |
+| 0x0200 | SPRITE_BUFFER_ALLOC          |                 | u32 bufferId, capacity                                                                                                                        |
+| 0x0201 | SPRITE_BUFFER_DESTROY        |                 | u32 bufferId                                                                                                                                  |
+| 0x0202 | SPRITE_UPLOAD                |                 | u32 bufferId, first, count, u8[count·40]                                                                                                      |
+| 0x0203 | SPRITE_UPLOAD_SHARED         |                 | u32 bufferId, first, count, sharedId, byteOffset                                                                                              |
+| 0x0210 | SPRITE_DRAW                  | DRAW            | u32 bufferId, first, count, texId, blendModeId                                                                                                |
+| 0x0211 | SPRITE_DEFINE_EFFECT         |                 | M3. u32 effectId, u8[96] sprite effect block (color matrix, outline)                                                                          |
+| 0x0212 | SPRITE_DESTROY_EFFECT        |                 | M3. u32 effectId                                                                                                                              |
+| 0x0213 | SPRITE_SET_EFFECT            | DRAW            | M3. u32 effectId (0 = none) for the SPRITE_DRAWs that follow in this packet                                                                   |
+| 0x0300 | SWARM_CREATE                 |                 | u32 swarmId, capacity, texId, blendModeId, renderFlags, paramsBytes, computeSrcBytes, renderSrcBytes, u8[compute], u8[render]                 |
+| 0x0301 | SWARM_DESTROY                |                 | u32 swarmId                                                                                                                                   |
+| 0x0302 | SWARM_SET_PIPELINE           |                 | like CREATE without capacity                                                                                                                  |
+| 0x0303 | SWARM_WRITE_HOT              |                 | u32 swarmId, first, count, u8[count·40]                                                                                                       |
+| 0x0304 | SWARM_WRITE_COLD             |                 | u32 swarmId, first, count, u8[count·16]                                                                                                       |
+| 0x0305 | SWARM_SPAWN                  | COMPUTE         | u32 swarmId, u8[112] SpawnParams                                                                                                              |
+| 0x0306 | SWARM_KILL_RANGE             | COMPUTE         | u32 swarmId, first, count                                                                                                                     |
+| 0x0307 | SWARM_KILL_LIST              | COMPUTE         | u32 swarmId, n, u32[n]                                                                                                                        |
+| 0x0308 | SWARM_SET_PARAMS             |                 | u32 swarmId, byteOffset, byteLength, u8[byteLength]                                                                                           |
+| 0x0309 | SWARM_STEP                   | COMPUTE         | u32 swarmId, f32 dt, u32 substeps, u32 activeCount                                                                                            |
+| 0x030A | SWARM_DRAW                   | DRAW            | u32 swarmId, f32 a, b, c, d, tx, ty, f32 alpha, u32 drawCount                                                                                 |
+| 0x030B | SWARM_SET_FRAMES             |                 | u32 swarmId, count, f32[count·4] (u0, v0, u1, v1)                                                                                             |
+| 0x030C | SWARM_SET_PICK               |                 | M2. u32 swarmId, pickId (Swarm node id; 0 = not pickable)                                                                                     |
+| 0x030D | SWARM_SET_SOURCE             |                 | M2.5. u32 swarmId, hotExternalId (0 = own buffers), coldExternalId (0 = own), flags (SIMULATE=1)                                              |
+| 0x030E | SWARM_SET_CURVES             |                 | M3. u32 swarmId, u8[64] over-life curves (stops, color, size, alpha)                                                                          |
+| 0x0400 | MASK_BUFFER_ALLOC            |                 | M3. u32 bufferId, capacity (mask quads, 40 B each)                                                                                            |
+| 0x0401 | MASK_BUFFER_DESTROY          |                 | M3. u32 bufferId                                                                                                                              |
+| 0x0402 | MASK_UPLOAD                  |                 | M3. u32 bufferId, first, count, u8[count·40]                                                                                                  |
+| 0x0403 | MASK_UPLOAD_SHARED           |                 | M3. u32 bufferId, first, count, sharedId, byteOffset                                                                                          |
+| 0x0410 | MASK_PUSH_SCISSOR            | DRAW            | M3. u32 maskId, f32 x, y, width, height (css px), u32 flags                                                                                   |
+| 0x0411 | MASK_PUSH_STENCIL            | DRAW+PASS_BREAK | M3. u32 maskId, bufferId, first, count, texId, flags, f32 threshold                                                                           |
+| 0x0412 | MASK_PUSH_ALPHA              | DRAW+PASS_BREAK | M3. u32 maskId, bufferId, first, count, texId, flags, f32 x, y, width, height, resolution                                                     |
+| 0x0418 | MASK_POP                     | DRAW+PASS_BREAK | M3. u32 maskId (PASS_BREAK only when it ends a stencil or alpha segment)                                                                      |
+| 0x0419 | MASK_GEOMETRY_END            | DRAW+PASS_BREAK | M4. u32 maskId; ends external mask geometry (MaskFlag.EXTERNAL, §26.8); PASS_BREAK only for an alpha mask                                     |
+| 0x0500 | FILTER_DEFINE                |                 | M3. u32 filterId, passCount, uniformBytes, flags, srcBytes, u8[srcBytes]                                                                      |
+| 0x0501 | FILTER_DESTROY               |                 | M3. u32 filterId                                                                                                                              |
+| 0x0502 | FILTER_SET_UNIFORMS          |                 | M3. u32 filterId, byteOffset, byteLength, u8[byteLength]                                                                                      |
+| 0x0510 | FILTER_BEGIN                 | DRAW+PASS_BREAK | M3. u32 groupId, f32 x, y, width, height (css px), f32 resolution, u32 flags                                                                  |
+| 0x0511 | FILTER_END                   | DRAW+PASS_BREAK | M3. u32 groupId, blendModeId, f32 alpha, u32 count, u32[count] filterIds                                                                      |
+| 0x0600 | GFX_SHAPE_BUFFER_ALLOC       |                 | M4. u32 bufferId, capacity (shape instances, 64 B each)                                                                                       |
+| 0x0601 | GFX_SHAPE_BUFFER_DESTROY     |                 | M4. u32 bufferId                                                                                                                              |
+| 0x0602 | GFX_SHAPE_UPLOAD             |                 | M4. u32 bufferId, first, count, u8[count·64]                                                                                                  |
+| 0x0603 | GFX_SHAPE_UPLOAD_SHARED      |                 | M4. u32 bufferId, first, count, sharedId, byteOffset                                                                                          |
+| 0x0604 | GFX_NODE_BUFFER_ALLOC        |                 | M4. u32 bufferId, capacity (node records, 32 B each)                                                                                          |
+| 0x0605 | GFX_NODE_BUFFER_DESTROY      |                 | M4. u32 bufferId                                                                                                                              |
+| 0x0606 | GFX_NODE_UPLOAD              |                 | M4. u32 bufferId, first, count, u8[count·32]                                                                                                  |
+| 0x0607 | GFX_NODE_UPLOAD_SHARED       |                 | M4. u32 bufferId, first, count, sharedId, byteOffset                                                                                          |
+| 0x0608 | GFX_POOL_ALLOC               |                 | M5. u32 poolKind (GfxPoolKind), poolId, capacity (records)                                                                                    |
+| 0x0609 | GFX_POOL_DESTROY             |                 | M5. u32 poolKind, poolId                                                                                                                      |
+| 0x060A | GFX_POOL_UPLOAD              |                 | M5. u32 poolKind, poolId, first, count, u8[count × record bytes]                                                                              |
+| 0x060B | GFX_POOL_UPLOAD_SHARED       |                 | M5. u32 poolKind, poolId, first, count, sharedId, byteOffset                                                                                  |
+| 0x0610 | GFX_MESH_UPLOAD              |                 | M4. u32 meshId, vertexCount, indexCount, flags (U32_INDEX=1), u8[vertexCount·12], u16/u32[indexCount] (padded)                                |
+| 0x0611 | GFX_MESH_UPLOAD_SHARED       |                 | M4. u32 meshId, vertexCount, indexCount, flags, sharedId, vertexByteOffset, indexByteOffset                                                   |
+| 0x0612 | GFX_MESH_DESTROY             |                 | M4. u32 meshId                                                                                                                                |
+| 0x0613 | GFX_SET_TRANSFORM            |                 | M5. u32 transformId, f32 a, b, c, d, tx, ty, f32 alpha (static containers, §27.5)                                                             |
+| 0x0614 | GFX_SET_TEXTURE_SLOTS        |                 | M5. u32 slotsId, count, u32[count] texIds                                                                                                     |
+| 0x0620 | GFX_DRAW_SHAPES              | DRAW            | M4. u32 bufferId, first, count, blendModeId, flags (GfxDrawFlag)                                                                              |
+| 0x0621 | GFX_DRAW_MESH                | DRAW            | M4. u32 meshId, firstIndex, indexCount, nodeBufferId, firstNode, nodeCount, texId, blendModeId, flags, f32[6] uv matrix                       |
+| 0x0622 | GFX_DRAW_UNIFIED             | DRAW            | M5. u32 itemPoolId, firstIndex, indexCount, shapeBufferId, vertexPoolId, nodeBufferId, spritePoolId, slotsId, transformId, blendModeId, flags |
+| 0x0700 | RETAIN_BEGIN                 | DRAW            | M5. u32 segmentId, flags (RetainFlag); the DRAW commands up to RETAIN_END are drawn and recorded (§27.3)                                      |
+| 0x0701 | RETAIN_END                   | DRAW            | M5. u32 segmentId                                                                                                                             |
+| 0x0702 | RETAIN_DRAW                  | DRAW            | M5. u32 segmentId; replays the recorded segment                                                                                               |
+| 0x0703 | RETAIN_DESTROY               |                 | M5. u32 segmentId                                                                                                                             |
+| 0x0800 | LAYER_CREATE                 |                 | M5. u32 layerId, capacity, streams (LayerStreamBit), flags (LayerFlag), blendModeId                                                           |
+| 0x0801 | LAYER_DESTROY                |                 | M5. u32 layerId                                                                                                                               |
+| 0x0802 | LAYER_UPLOAD                 |                 | M5. u32 layerId, stream (LayerStream), first, count, u8[count × stream bytes]                                                                 |
+| 0x0803 | LAYER_UPLOAD_SHARED          |                 | M5. u32 layerId, stream, first, count, sharedId, byteOffset                                                                                   |
+| 0x0804 | LAYER_SET_FRAMES             |                 | M5. u32 layerId, count, u8[count·32] frame records                                                                                            |
+| 0x0805 | LAYER_SET_TEXTURES           |                 | M5. u32 layerId, count, u32[count] texIds (slot table)                                                                                        |
+| 0x0806 | LAYER_SET_SOURCE             |                 | M5. u32 layerId, positionExternalId, xformExternalId, colorExternalId, userExternalId, indirectExternalId (0 = own)                           |
+| 0x0810 | LAYER_CULL                   | COMPUTE         | M5. u32 layerId, count, f32 a, b, c, d, tx, ty, f32 margin (css px)                                                                           |
+| 0x0811 | LAYER_DRAW                   | DRAW            | M5. u32 layerId, f32 a, b, c, d, tx, ty, f32 alpha, u32 count, pickId, flags (LayerDrawFlag)                                                  |
 
 Format ids: `rgba8unorm`=0, `rgba8unorm-srgb`=1, `r8unorm`=2,
 `rgba16float`=3. M2 compressed format ids (names equal the RHI
@@ -356,7 +380,9 @@ owns `srcKind`), `INTERNAL` (non-cozygpu exception, also logged as
 ## 4. Memory layouts (normative)
 
 The M4 graphics layouts (shape instance, mesh vertex, node record) are in
-§26 and `src/types/layouts.ts`.
+§26 and `src/types/gfxLayouts.ts`; the M5 unified-batch layouts are in
+§27.4 (same file) and the SpriteLayer streams in §28.2
+(`src/types/layerLayouts.ts`).
 
 Code: `src/types/layouts.ts`. WGSL structs (and, M2, GLSL std140 blocks
 and attribute layouts) must match. `src/types/layouts.test.ts` asserts
@@ -876,13 +902,21 @@ and the `onReadbackLanded` callback slot (§19.6).
   RenderCore. A vsync-paced loop or a page without readbacks never holds a
   frame.
 - A device loss releases a held acknowledgement at once.
-- **Known limit:** without a readback in flight, uncapped submits can
-  outrun the GPU without bound (measured: a 2.2 s queue on WebGPU and 4.5 s
-  on WebGL2 in the A3 churn bench). The first readback after such a run
-  waits behind that queue (the A3 finish-phase `aliveCount()`, or the first
-  WebGL2 pick in A2u: one 3 s outlier in two of three runs). Always-on
-  frame limiting would fix it but holds frames with nothing read back; not
-  done.
+- **Queue depth (M3, retuned in M5).** Without a readback in flight,
+  uncapped submits could outrun the GPU without bound (measured before
+  M3: a 2.2 s queue on WebGPU and 4.5 s on WebGL2 in the A3 churn bench,
+  and a first pick of 711 ms at 100k static sprites), and the first
+  readback then waited behind all of it. Both backends therefore also hold
+  when the queue is deep: one probe at a time (`onSubmittedWorkDone()` on
+  WebGPU, a `fenceSync` polled in `backlogged()` on WebGL2), armed once
+  `QUEUE_PROBE` = 8 frames are unaccounted for. A frame is held when the
+  GPU is `QUEUE_FRAMES` = 16 frames behind **and** the outstanding probe
+  is `QUEUE_MS` = 20 ms old. The time condition is M5: a probe answers a
+  few ms after the GPU finished, so a cheap frame (0.2 ms) submitted 16
+  times inside that delay and was held for a display tick every 16 frames
+  (G1 capped near 470 fps, p99 ~19 ms, while the GPU idled). Now cheap
+  frames never hold, and a GPU-bound uncapped loop still holds, so the
+  first pick waits for at most a few ticks of queued work.
 
 ## 8. Worker mode
 
@@ -1049,13 +1083,16 @@ thresholds.
 | Command overhead                                                                                             | 8 B header; typical command ≤ 64 B                                                                                   |
 | Worker mode                                                                                                  | ≤ 1 frame latency; main-thread busy loop of 8 ms must not drop core frames; 0 allocations per frame with the ring    |
 | `createRenderer` (excluding first pipeline compile)                                                          | < 150 ms                                                                                                             |
-| Bundle (min+gzip), minimal program: createRenderer + Texture + Sprite, WebGPU, including the chunks it loads | ≤ 44 KB (end of M3)                                                                                                  |
-| Bundle, same minimal program on WebGL2                                                                       | ≤ 46 KB (end of M3)                                                                                                  |
+| Bundle (min+gzip), minimal program: createRenderer + Texture + Sprite, WebGPU, including the chunks it loads | ≤ 44.5 KB (end of M5)                                                                                                |
+| Bundle, same minimal program on WebGL2                                                                       | ≤ 46.8 KB (end of M5)                                                                                                |
 | Bundle, each lazily loaded feature chunk                                                                     | its own budget (§18.3): measured size + 0.5 KB                                                                       |
 | Bundle, no growth: every fixture and feature chunk                                                           | ≤ `scripts/size-baseline.json` + 0.5 KB                                                                              |
 | Bundle, all exports (sum of every chunk)                                                                     | reported only (no absolute budget since M2.5); no-growth checked                                                     |
-| Worker bundle: `dist/cozygpu.worker.js` + the backend chunk it loads                                         | ≤ 25 KB (WebGPU) / ≤ 26 KB (WebGL2, end of M3)                                                                       |
+| Worker bundle: `dist/cozygpu.worker.js` + the backend chunk it loads                                         | ≤ 25 KB (WebGPU) / ≤ 26.5 KB (WebGL2, end of M5)                                                                     |
 | M2.5 hooks (§19): `commit()`, events, interop, pick polling                                                  | 0 allocations per frame; no events per frame                                                                         |
+| M5 static scene, retained (§27.6): 100k sprites + 10k Graphics                                               | < 0.05 ms front CPU; packet < 1 KB; 0 bytes uploaded                                                                 |
+| M5 SpriteLayer (§28.7): 1M static instances                                                                  | ≥ 60 fps; front CPU < 0.2 ms; packet < 1 KB                                                                          |
+| M5 SpriteLayer: 1M moving, direct `xy` column                                                                | front CPU < 0.5 ms plus one 8 MB upload                                                                              |
 
 M1 measurements (Apple M4, Chrome 152 headless; see
 `benchmarks/results/m1-final.md`): Swarm 1M
@@ -1201,6 +1238,27 @@ geometry (`MaskFlag.EXTERNAL`, `MASK_GEOMETRY_END`, the Graphics-mask front
 path); its budget moved from 6.0 to 6.9 KB by the measured + 0.5 KB rule.
 The Graphics chunks are listed in §26.9.
 
+**M5 retained rendering and SpriteLayer (2026-10-07).** The seams on the
+minimal path (packer emitter and static leaf, RenderCore `drawSpan` /
+`systemFor`, `Container.static`, the RETAIN and SPRITE_LAYER placeholders,
+`drawEpoch` / scope counters in the store, the render-bundle loaders, the
+time-gated queue pacing and `RendererOptions.retained` /
+`stats.retainedSegments`) cost about 0.7 KB against the 0.25 KB target of
+§27.6; the budgets moved by the measured + headroom rule. Nothing of
+SpriteLayer is on either minimal fixture.
+
+| fixture         | M4 graphics | M5       | budget           |
+| --------------- | ----------- | -------- | ---------------- |
+| minimal-webgpu  | 43.7 KB     | 44.33 KB | 44.5 KB (was 44) |
+| minimal-webgl2  | 45.9 KB     | 46.60 KB | 46.8 KB (was 46) |
+| graphics-webgpu | 64.4 KB     | 71.95 KB | 72.5 KB (was 65) |
+| all-exports     | 168.5 KB    | 200.8 KB | —                |
+| worker-webgpu   | 23.4 KB     | 23.71 KB | 25 KB            |
+| worker-webgl2   | 25.7 KB     | 25.98 KB | 26.5 KB (was 26) |
+
+`backend-webgl2` measures 10.87 KB (budget 10.8 → 11.0 KB). The Graphics
+and M5 chunks are listed in §27.6 and §28.7.
+
 M2.5 added about 1.3 KB to the minimal path (events, userId, columns,
 picking poll, interop stub). It was recovered without API
 changes: the pick client (`picking.ts`) and the core half of interop
@@ -1252,6 +1310,9 @@ swarm    → scene/Texture.ts:ensureTextureUploaded, math/color.ts, commands, re
            types/interop.ts (ExternalInstanceBuffer), CoreContext.getExternalBuffer (core side)
 assets   → scene/Texture.ts:Texture.fromProvider, types/core.ts:RendererHost (_addFrameHook, _emit)
 worker   → renderer/RenderCore.ts:createRenderCore, renderer/systems.ts, commands
+retained → sprites/front.ts (packer seam, dynamic), graphics/emit.ts (items, bake path), scene/store.ts (drawEpoch, scope);
+           core side: CoreContext.systemFor / retain, Backend.loadRenderBundles (M5, §27)
+layer    → scene/Texture.ts:ensureTextureUploaded, renderer/lazySystems.ts, types/interop.ts (M5, §28)
 ```
 
 ## 12. M2 overview
@@ -2320,17 +2381,16 @@ particles were designed for M3: see §21–§24.
 
 - **Per-renderer dirty tracking.** Dirty bits are process-wide, so one
   node tree drawn by two renderers can miss updates.
-- **External sprite instances.** A consumer for the reserved
-  `'sprite-instance'` external layout (an instanced sprite drawable fed by
-  outside GPU code, §19.4).
+- **External sprite instances.** M5 answers this with SpriteLayer external
+  sources (§28.5); the `'sprite-instance'` layout stays reserved.
 - **Bounds readback, camera API** (`SET_VIEW` from a public camera),
   custom blend factors, a public render-to-texture API (M3 has the pooled
   targets but keeps them internal, §22.4), WebGPU compatibility-mode swarm
   fallback via transform-style ping-pong textures.
 - **Masks and filters in picking** (§21.5): the pick pass ignores both in
   M3, so a pick inside a masked group hits unclipped geometry.
-- **Graphics follow-ups** (§26): filled shapes in the sprite pipeline (a
-  shape flag in `SI_FLAGS`) so they batch with sprites; an anti-aliasing
+- **Graphics follow-ups** (§26): batching shapes with sprites is done by
+  the M5 unified batch inside static containers (§27.4, §27.5); an anti-aliasing
   fringe for meshes; the index of the hit shape in `PickHit.instance`;
   dashed strokes (`GS_RESERVED` is kept for a dash phase); gradient fills.
 - **Text shaping** beyond kerning: no bidi, no complex-script shaping and
@@ -3264,3 +3324,564 @@ options, context sharing, forwarding, chunk load, `CustomDrawable` and
 loader registration, `loadTess`, `preloadGraphics`), `src/masks/alpha.ts`
 (`beginExternal` / `endExternal` and a coverage target per level for
 Graphics soft masks).
+
+## 27. Retained rendering (M5)
+
+Files: `src/retained/**` (segment emitter, static bakes, the retain core),
+the packer seam in `src/sprites/front.ts`, the `drawSpan` loop and
+`systemFor` in `src/renderer/RenderCore.ts`, a lazily loaded bundle chunk
+in each backend, and the unified batch in `src/graphics/**` and
+`src/shaders/graphics/**`. Public API: `docs/API.md` "Retained rendering".
+
+Goal: the cost of a frame follows what changed, not what is on screen.
+Three mechanisms, each useful on its own:
+
+1. **Unified graphics batch** (§27.4): SDF shapes, tessellated meshes and
+   baked sprites share one pipeline, so a mixed tree is one draw per run
+   of (blend, texture slots) instead of one per kind change.
+2. **Retained segments** (§27.2, §27.3): runs of draw commands that did
+   not change since the last frame are recorded once by the core and
+   replayed; a static frame costs O(segments) on the front and sends a few
+   12-byte commands.
+3. **Static containers** (§27.5): a subtree baked into persistent GPU
+   records that the packer never walks; moving the container rewrites one
+   32-byte transform slot.
+
+### 27.1 Why (measured)
+
+Benchmark G1 (`benchmarks/`, 10k static mixed Graphics nodes, Apple M4,
+Chrome): cozygpu 3.69 ms per frame on WebGPU against 0.73 ms for Pixi v8.
+SDF shapes and meshes use two pipelines, so painter's order alternates
+between them and 10k nodes become ~5000 draws; and the static scene still
+re-encodes and re-sends them every frame (~240 KB per packet). The front
+pays `_emitDraw` per Graphics node (value comparison, coalescing walk),
+the core pays decoding plus pipeline, bind group and draw calls per
+command. The sprite path already skips the transform pass when nothing
+changed (§5.1) but re-emits one SPRITE_DRAW per batch every frame: cheap
+for a few batches, not for many textures or text.
+
+**As built** (`benchmarks/results/m5-final.json`, same machine, uncapped,
+median of 2 runs): G1 0.44 ms per frame on WebGPU (Pixi 0.71) and 1.23 ms
+on WebGL2 (Pixi WebGL 1.36), front CPU 0.02 ms, one draw, a 52-byte
+packet. G2 (10k animated) 2.0 ms against Pixi's 5.4 ms; G3 (1k redrawn)
+1.1 ms against 4.3 ms; S3 (100k static sprites) 0.58 ms against Pixi's
+0.71 ms. Part of the G1 gain came from the pacing change in §7.1: before
+it, the queue-depth hold capped G1 near 470 fps.
+
+### 27.2 Segments: the front (normative)
+
+- The packer's batch list (§5.2) is partitioned into **segments**: maximal
+  runs of entries that can be recorded, i.e. sprite batches and
+  `RetainableDrawable` entries (`src/types/core.ts`; Graphics implements
+  it). Every other entry is **volatile** and is emitted every frame exactly
+  as today: a `CustomDrawable` without `_syncDraw` (Swarm, Particles,
+  SpriteLayer) and the begin and end of a group (their commands carry css
+  rects and PASS_BREAKs). A volatile entry ends the segment before it.
+  The subtree of every render group (mask or filters) is emitted
+  immediately as a whole; no segment forms inside a group. (Sprite effect
+  state is per packet in the sprite core and a replayed bundle would not
+  update it; masks and filters re-open passes, which bundles cannot span.)
+- Segment ids are allocated by the front per renderer (private to the
+  retain core's table). Per frame the packer emits, for each segment in
+  order, either
+  - `RETAIN_DRAW(id)` when the segment is **clean**: recorded at the
+    current `generation`; its batch range untouched by a structure rebuild
+    or patch; every sprite batch's texId equal to the recorded one
+    (`ensureTextureUploaded` still runs per batch, so providers keep
+    uploading); every retainable drawable's `_drawVersion` equal to the
+    recorded value. Retainable drawables of a clean segment get
+    `_syncDraw` instead of `_emitDraw` (unless the frame is clean, below);
+  - or `RETAIN_BEGIN(id)`, the segment's draws exactly as the immediate
+    path emits them (with `frame.retainSegment = id`), `RETAIN_END(id)`.
+- **Clean frame.** When the structure did not change and
+  `nodeStore.touch`, `nodeStore.drawEpoch` and `generation` equal the last
+  pack's values, every segment is replayed without any `_syncDraw` call:
+  a static scene costs O(segments + volatile entries). `drawEpoch` is a
+  new store counter bumped by every change that alters draw commands or
+  Graphics instance inputs without touching a node: GraphicsContext edits,
+  texture provider readiness, a lazily loaded system becoming ready, a
+  group's mask or filters being set.
+- **Structure.** Any structure change (full rebuild or incremental patch,
+  §16.2) re-partitions the batch list. A new segment keeps the id and the
+  recording of an old one when its content is the same: the same batch
+  kinds, sprite ranges and drawables in the same order. Everything else is
+  recorded again; ids of segments that no longer exist are freed with
+  RETAIN_DESTROY in the same frame. Matching by content is simpler than
+  tracking patch spans and keeps more recordings across a patch.
+- **Uploads are not draws.** Moving sprites inside a clean segment upload
+  their dirty ranges as today and the replayed SPRITE_DRAWs read the new
+  bytes, so a segment depends on structure only, never on transforms.
+- **Loading.** The minimal-path seam is a null-checked emitter object in
+  the packer. The `retain` front chunk loads once the batch list had at
+  least `RETAIN_MIN_ENTRIES` (8) entries without a structure change for
+  `RETAIN_WARMUP_FRAMES` (2) frames and `RendererOptions.retained !==
+false`; it emits RETAIN commands only once `frame.isSystemReady(RETAIN)`.
+  Small scenes never load it, and until it is ready the immediate path
+  runs. The packer keeps its own copies of the two constants
+  (`PACKER_RETAIN_*` in `src/sprites/front.ts`, pinned by a test):
+  importing `retainOpcodes.ts` there would put a shared chunk on the
+  minimal path.
+- **Stats.** The emitter counts replayed and recorded segments per frame;
+  `RendererStats.retainedSegments` mirrors them (undefined until the chunk
+  is ready). Static bakes (§27.5) are not counted.
+- Picking needs nothing on the front (the core replays segments into the
+  pick pass). After a device loss (new `generation`) every segment is
+  re-recorded. Worker mode is identical: segments are commands.
+
+### 27.3 Segments: the core (normative)
+
+`createRetainCoreSystem` (`src/retained/core.ts`) owns range 0x07 and is
+lazy in both modes. Commands: `RetainOp` in `src/commands/retainOpcodes.ts`.
+
+- **Recording.** For RETAIN_BEGIN the core calls the system's `drawSpan`
+  instead of `draw`. It walks DRAW commands `span.index + 1, …` with
+  `span.seek(i)` up to RETAIN_END, copies each command (header and
+  payload, from `reader.u8`) into the segment's store, and draws it with
+  `ctx.systemFor(range).draw(reader, target, frame)`, where `target` is a
+  `RenderBundleEncoder` created for the open pass when the backend has
+  bundles (and `RetainFlag.NO_BUNDLE` is clear), the pass itself
+  otherwise. It then finishes the bundle, executes it in the pass and
+  returns the number of commands it consumed. Non-DRAW commands between
+  BEGIN and END ran in the decode phase as usual; they are not stored.
+- **Replay.** RETAIN_DRAW executes the segment's bundle for the open pass.
+  The segment is re-recorded from its stored commands (kept as a valid
+  packet, so `createCommandDecoder` reads them) when there is no bundle
+  for this pass (`executeBundle` returned false: a stencil-reopened main
+  pass or a filter capture target has other attachments; at most three
+  variants are kept per segment), when `ctx.retain.invalidate()` was
+  called since it was recorded, or when its recording skipped a draw.
+  Without bundle support the stored commands are drawn through their
+  systems: still no front work and no transfer.
+- **Picking.** In the pick pass RETAIN_DRAW replays the stored commands
+  through `systemFor(range).drawPick`. RETAIN_BEGIN and RETAIN_END are
+  no-ops there: the commands between them are ordinary DRAW commands of
+  the packet that the pick replay visits anyway.
+- **RenderCore seam** (minimal path): in the draw replay loop, a system
+  with `drawSpan` gets it instead of `draw` and the loop skips the
+  commands it consumed; `ctx.systemFor(range)` returns the system of a
+  range (lazy placeholders included).
+- **Duties of every recordable system** (`ctx.retain?.`, installed by the
+  retain core when it loads): call `invalidate()` when an RHI object a
+  recorded draw may reference is replaced (buffer re-ALLOC or growth,
+  bind group rebuild, texture re-created by the TextureRegistry, pipeline
+  swap) and `skipped()` when a draw is skipped (pipeline compiling, buffer
+  missing). Bind everything a draw needs in its own `draw` call: after
+  `executeBundle` the pipeline, bind groups and buffers are unset (WebGPU
+  semantics; the backends drop their bind caches there too).
+- **Bundles in the RHI** (`src/backend/types.ts`): `loadRenderBundles()`
+  loads a lazy chunk per backend and installs
+  `createRenderBundleEncoder(pass)` and `RenderPass.executeBundle`.
+  WebGPU wraps `GPURenderBundleEncoder` (formats and sample count taken
+  from the pass). WebGL2 records the RHI calls into a `Uint32Array` op
+  stream plus an object table and replays them through the backend's
+  state cache: that saves decoding and system logic, not GL calls; the
+  unified batch is what cuts GL calls. A bundle encoder's pass-state calls
+  (`setViewport`, `setScissor`, `setStencilReference`) make `finish`
+  return null; the core then keeps the segment as commands only. Scissor
+  and stencil reference are inherited from the pass, so masked segments
+  replay correctly.
+- Memory: the stored commands (28 B per sprite batch, 52 B per unified
+  draw) plus the native bundles. `restore` drops everything (the front
+  re-records).
+
+### 27.4 Unified graphics batch (normative)
+
+- One pipeline family draws `GFX_DRAW_UNIFIED`: a non-instanced
+  triangle list whose index buffer is an **item stream** (u32 per vertex,
+  `GFX_ITEM_*` in `src/types/gfxLayouts.ts`). The vertex shader receives
+  the item as its vertex index (WebGPU `vertex_index` of `drawIndexed`;
+  WebGL2 `gl_VertexID` of `drawElements` with u32 indices; kind 3 is
+  reserved, so the primitive-restart index 0xFFFFFFFF never occurs) and
+  pulls the record it names:
+  - SHAPE: an SDF shape record (`GFX_SHAPE_BYTES`, the M4 shape buffer),
+    expanded per corner exactly as §26.5;
+  - VERTEX: a unified mesh vertex (`GFX_UVERTEX_BYTES`: context-space
+    position, colour, node index) placed by its node record (§26.5);
+  - SPRITE: a baked sprite record (§4.1 layout; texture slot in
+    `SI_FLAGS` bits 3–5, `GFX_SPRITE_SLOT_*`), as the sprite shader.
+    Every position is then mapped by `transforms[transformId]`
+    (`GFX_SET_TRANSFORM`, identity for slot 0) and the View; colours are
+    multiplied by the slot's alpha.
+- Sources: WebGPU binds them as `var<storage, read>` (shape buffer, node
+  buffer, vertex pool, sprite pool; the shape and node buffers gain
+  STORAGE usage) and needs `caps.vertexStorage`; without it the graphics
+  front keeps the M4 split path. WebGL2 mirrors each source in an
+  `rgba32uint` data texture read with `texelFetch` (fixed width chosen by
+  the core; an upload of records [first, first + count) becomes a
+  `writeTexture` of the rows it covers; `src/graphics/dataTexture.ts`).
+  The wire format is the same on both backends. WebGL2 has no separate
+  SDF shape program any more: shapes always go through the unified batch
+  (`shape.vert.glsl` / `shape.frag.glsl` were removed).
+- The fragment stage branches on the kind (a flat varying): SDF coverage
+  (§26.5), flat mesh colour, or a texture sample through the slot table
+  (`GFX_SET_TEXTURE_SLOTS`, ≤ `GFX_MAX_TEXTURE_SLOTS`). Derivatives and
+  `fwidth` are taken before the branch and the texture is read with
+  explicit gradients (WGSL uniformity). On WebGPU one bind group holds the
+  8 slot textures and one sampler, slot 0's: textures of different
+  filtering in one table share it (WebGL2 keeps per-texture sampling
+  state). Baked glyph sprites keep `MSDF` and
+  `ALPHA_ONLY`; `SDF_OUTLINE` (it needs a sprite effect) is not bakeable.
+- **Front (Graphics binding).** Records become persistent: a node's shape
+  records and node record, and a context's unified vertices, are allocated
+  once (free lists per pool, grown ×1.5) and rewritten in place when their
+  inputs change; there is no per-frame cursor. Draw order lives only in
+  the item stream: a node's items are appended to the item region of
+  `frame.retainSegment` (0 = the per-frame region, rewritten every frame),
+  and consecutive Graphics with the same blend, slot table and transform
+  coalesce into one GFX_DRAW_UNIFIED (`GFX_DRAW_UNIFIED_COUNT_WORD`, as
+  §26.6). `_drawVersion` bumps when a node's items would differ;
+  `_syncDraw` rewrites records only.
+- **Meshes.** A unified vertex carries its node index, so a context drawn
+  by k nodes is stored k times in the vertex pool (positions stay in
+  context space: moving a node still rewrites only its 32-byte node
+  record). Contexts shared by 16 or more nodes, and textured meshes (their
+  uv matrix is per draw), keep the M4 instanced `GFX_DRAW_MESH`, which
+  already coalesces into one draw per run.
+- Pools: `GFX_POOL_*` with `GfxPoolKind` (ITEMS, VERTICES, SPRITES); ids
+  per kind, private to the graphics core. Picking writes
+  `vec4u(pickId, 0, 0, 0)` from the record's pick id; `MASK_WRITE` works as
+  for the M4 draws.
+- Result for G1: one or a few draws; with segments, no front work at all
+  on a static frame.
+
+### 27.5 Static containers (normative)
+
+- `container.static = true` (`ContainerNode.static`,
+  `ContainerOptions.static`) makes the container a leaf for the packer: its
+  subtree leaves the flat list (a structure change). The `static` chunk's
+  `StaticBinding.emit` draws it instead; until that chunk is ready the
+  packer walks the subtree normally, so nothing disappears.
+- **Bake** (first emit, and whenever the subtree changed): one walk of the
+  subtree with transforms relative to the container (its own world is not
+  applied); sprites become baked sprite records (SPRITES pool), Graphics
+  write their records through the Graphics binding's bake path; items go,
+  in tree order, into the bake's own item region. Consecutive sprites
+  share a texture slot table while their sources fit in 8 slots; a ninth
+  source starts a new table and a new draw.
+- **Holes.** Nodes that cannot be baked (Swarm, Particles, SpriteLayer,
+  a Graphics with a texture fill, nodes that are not `NodeBase`) are drawn
+  live in their place: the bake's draws are split around them and their
+  `_emitDraw` gets their world (container world × relative). A Group
+  anywhere in the subtree makes the container draw unbaked, with one
+  console warning, until `static` is set again: when
+  `StaticBinding.emit` returns false the container stops being a packer
+  leaf from the next frame (a structure change), and that one frame draws
+  nothing for it.
+- **Applying `static`.** The setter records the flag and imports the
+  `static` chunk; `setStatic` (`src/retained/static.ts`) then makes the
+  container a leaf, so the change is asynchronous by one chunk load.
+- **Change detection.** The node store gains a lazily allocated `scope`
+  column (0 = no static ancestor; `nodeStore.scope` and `scopeTouch` are
+  optional fields, absent until the first bake) and a `scopeTouch` counter
+  per static container. `markDirty`, structure edits inside a scoped
+  container, bulk commits (`bulkChildren`, `bindColumns`) and sprite
+  texture changes bump `scopeTouch[scope]`; the bake assigns
+  `scope` to its subtree, and an added child inherits its parent's. Per
+  frame the binding compares one counter. A static container inside
+  another folds into the outer one.
+- **Transform.** The container's world affine and world alpha go to its
+  transform slot (`GFX_SET_TRANSFORM`, `GFX_TRANSFORM_BYTES`) when they
+  change: moving, rotating or fading it costs 32 bytes and no re-bake.
+- **Draws.** The bake's draw list is one segment: RETAIN_DRAW while
+  unchanged. Without the retain core its GFX_DRAW_UNIFIED commands are
+  emitted every frame (a handful).
+- A re-bake rewrites and uploads the whole bake (incremental re-bakes are
+  a later refinement). The front keeps a CPU mirror of the baked records:
+  device-loss restore and re-uploads need it. Baked sprites pick as their
+  node (pick id = node id, `userId` from the node).
+
+### 27.6 Budgets
+
+Performance (front CPU per frame, M1-class laptop, both backends):
+
+| case                                                            | target                                                         |
+| --------------------------------------------------------------- | -------------------------------------------------------------- |
+| G1: 10k static mixed Graphics                                   | < 0.05 ms, ≤ 4 draws, packet < 512 B; frame time below Pixi v8 |
+| G2: 10k animated Graphics                                       | no regression, ≤ 4 draws                                       |
+| static scene: 100k sprites + 10k Graphics, retained             | < 0.05 ms, 0 bytes uploaded, packet < 1 KB                     |
+| static container, 100k sprites: idle / moved or faded / re-bake | 0 / < 0.02 ms / < 10 ms                                        |
+| a segment re-recorded                                           | ≤ the immediate path + 10 %                                    |
+| allocations                                                     | 0 per frame while replaying, recording, syncing and baking     |
+
+Bundle targets (min+gzip; measured and budgeted by the §10 rule):
+
+| chunk         | module                           | target                      |
+| ------------- | -------------------------------- | --------------------------- |
+| retain        | `src/retained/front.ts`          | 3.0 KB                      |
+| retain-core   | `src/retained/core.ts`           | 2.5 KB                      |
+| static        | `src/retained/static.ts`         | 3.5 KB                      |
+| bundle-webgpu | lazy chunk of the WebGPU backend | 1.0 KB                      |
+| bundle-webgl2 | lazy chunk of the WebGL2 backend | 2.0 KB                      |
+| graphics-core | `src/graphics/core.ts`           | + 1.5 KB (unified pipeline) |
+| graphics-wgsl | `src/graphics/shadersWGSL.ts`    | + 1.0 KB                    |
+| graphics-glsl | `src/graphics/shadersGLSL.ts`    | + 1.0 KB                    |
+
+Measured at the end of M5 (min+gzip) and budgeted by the §10 rule:
+
+| chunk         | measured | budget | note                                              |
+| ------------- | -------- | ------ | ------------------------------------------------- |
+| retain        | 1.97 KB  | 2.5 KB |                                                   |
+| retain-core   | 1.73 KB  | 2.3 KB |                                                   |
+| static        | 4.69 KB  | 5.2 KB | over its 3.5 KB target (bake walk, slot tables)   |
+| bundle-webgpu | 0.74 KB  | 1.3 KB |                                                   |
+| bundle-webgl2 | 1.07 KB  | 1.6 KB |                                                   |
+| graphics      | 6.04 KB  | 6.5 KB | was 3.5 KB: persistent record pools, item streams |
+| graphics-core | 5.76 KB  | 6.3 KB | was 3.2 KB: unified pipeline, data textures       |
+| graphics-wgsl | 3.39 KB  | 3.9 KB | was 2.0 KB                                        |
+| graphics-glsl | 2.79 KB  | 3.3 KB | was 1.8 KB (the separate shape program is gone)   |
+
+The seams on the minimal path were targeted at ≤ 0.25 KB and measure about
+0.7 KB (§10, "M5"). Worker bundles grew by 0.3 KB.
+
+## 28. SpriteLayer (M5)
+
+Files: `src/layer/**` (shell, front chunk, core, shaders),
+`src/types/layerLayouts.ts`, `src/commands/layerOpcodes.ts`, the layer
+record sizes in `src/renderer/interopImpl.ts`. Public API: `docs/API.md`
+"SpriteLayer".
+
+Goal: millions of sprites at the cost of one draw, with the data owned by
+the caller (an ECS, a simulation) or already on the GPU.
+
+### 28.1 Shape of the feature
+
+- A `SpriteLayer` is one leaf node (`kind: 'layer'`). Its instances are
+  rows, not nodes: no JS object, no node-store slot, no flat-list entry
+  and no per-instance CPU work per frame. Instance index = draw order.
+- Why not Sprites: a Sprite costs a JS object and store columns
+  (~200 B CPU), a 40 B CPU instance mirror, 40 B of GPU memory and its
+  share of the transform pass; a million of them is ~250 MB and
+  milliseconds per frame. Why not Swarm: a Swarm simulates on the GPU
+  (40 + 16 B per object and a compute step every frame); a layer only
+  draws what the caller wrote.
+- One layer = one draw (one `drawIndirect` when culled or GPU-counted),
+  with up to `LAYER_MAX_TEXTURES` (8) texture sources: atlas pages stay
+  in one draw.
+- Capacity is bounded by `caps.maxStorageBufferBindingSize` per stream on
+  WebGPU (128 MiB by default: 16M positions) and `maxBufferSize` on
+  WebGL2; `limits: 'max'` raises it.
+
+### 28.2 Format (normative)
+
+`src/types/layerLayouts.ts` (public as `GPU.layerLayouts`). Each field
+group is a **stream** with its own GPU buffer, so a commit that only moved
+sprites uploads positions only, and a layer created without colours or
+user ids carries no such streams:
+
+| stream   | bytes | contents                                                              | absent           |
+| -------- | ----- | --------------------------------------------------------------------- | ---------------- |
+| POSITION | 8     | f32 x, f32 y (layer space, where the anchor lands)                    | required         |
+| XFORM    | 8     | f16 scaleX, f16 scaleY, u16 rotation (turns × 65536), u16 frame index | 1, 1, 0, frame 0 |
+| COLOR    | 4     | u32 RGBA8 straight (tint × alpha); alpha 0 hides (and culls)          | opaque white     |
+| USER     | 4     | u32 user id (`PickHit.userId`)                                        | 0                |
+
+So 1M sprites take 8 MB with positions only and 24 MB with every stream
+(+4 B per instance with culling). The frame table (`LAYER_FRAME_BYTES`
+32: uv rect, size in px, anchor, texture slot; ≤ 65536 frames) and the
+slot table (`LAYER_SET_TEXTURES`) are per layer.
+
+Quad (vertex stage): corner `q ∈ [0, 1]²`;
+`local = (q − anchor) × frameSize × scale`, rotated by `rotation`, plus
+`position`; then the layer's world affine (from LAYER_DRAW) and the View.
+Colour = COLOR × layer alpha, premultiplied on output; the texture is
+sampled through the frame's slot with explicit gradients (the slot index
+is non-uniform). Half floats decode with `unpack2x16float` (WGSL) /
+`unpackHalf2x16` (GLSL), so no new vertex formats are needed: WebGL2 reads
+XFORM as `uint16x4`.
+
+### 28.3 Core (`createSpriteLayerCoreSystem`, range 0x08, lazy)
+
+- Per layer: one buffer per stream (WebGPU STORAGE | COPY_DST; WebGL2
+  VERTEX | COPY_DST), the frame table (WebGPU storage; WebGL2 an
+  `rgba32uint` data texture, two texels per frame), a slot bind group
+  (≤ 8 textures + one sampler), and a uniform slot (affine, alpha, flags;
+  dynamic offset, stride 256) written from LAYER_DRAW before the pass.
+- Pipelines per (stream mask, blend, pass layout: sample count, stencil
+  attachment, capture target), created async; a draw whose pipeline is
+  not ready is skipped. WGSL: one source specialised per stream mask;
+  GLSL: `#define`s.
+- **WebGPU: vertex pulling.** `instance_index` (through `visible[i]` when
+  culled) indexes the stream arrays; triangle strip, 4 vertices.
+  **WebGL2: instanced attributes** (divisor 1): POSITION `float32x2`,
+  XFORM `uint16x4`, COLOR `unorm8x4`, USER `uint32`; the existing
+  base-instance emulation covers `firstInstance`.
+- **Culling** (`LAYER_CULL`, compute phase, WebGPU with `caps.compute` and
+  `caps.indirectDraw`): three dispatches of `LAYER_CULL_WORKGROUP`
+  threads. (1) Each thread tests its instance's conservative bounding
+  circle (largest frame half-diagonal × largest |scale|) through the layer
+  affine and View against the viewport plus `margin`, and the workgroup
+  counts its visible instances. (2) One workgroup scans the counts.
+  (3) Each workgroup scatters its visible indices at its offset, in
+  order, and the last writes the indirect arguments (vertexCount 4,
+  instanceCount = total). Painter's order inside the layer is kept;
+  atomically appended (unordered) compaction is not used because
+  overlapping sprites would flicker.
+- **Uploads**: LAYER_UPLOAD(\_SHARED) writes `count × stride` bytes at
+  `first × stride` of the stream (the §5.3 widened-upload rule applies).
+- **Picking**: `drawPick` writes
+  `vec4u(pickId, instance + 1, user, 0)`, the original index (not the
+  culled one) and the USER value (0 without the stream); texels under
+  `PICK_ALPHA_THRESHOLD` are discarded, as for sprites.
+- **External sources** (LAYER_SET_SOURCE): `ctx.getExternalBuffer(id)`
+  replaces a stream's own buffer (draw-only); an `indirect` source drives
+  `drawIndirect` directly. WebGL2 binds external buffers as attributes and
+  has no indirect source.
+- **LAYER_CREATE on an existing layer**: with the same capacity and
+  streams the stream buffers and their contents are kept; only the blend
+  and cull flags change (the cull outputs are allocated or freed).
+  Otherwise the streams are re-created, their contents are undefined and
+  the front re-uploads. So toggling `blendMode` or `cull` never re-uploads
+  a million rows.
+- **WebGPU without `caps.vertexStorage`** (compatibility mode) is not
+  supported: the layer warns once and draws nothing. Supporting it needs
+  an instanced-attribute WGSL variant, and culling would still need
+  storage in the vertex stage.
+- **Restore**: pipelines are rebuilt; every buffer is gone and the front
+  re-creates and re-uploads (new `generation`).
+
+### 28.4 Front
+
+- **Shell** (`src/layer/SpriteLayer.ts`, in the importer's entry chunk,
+  writes are synchronous): options; own stores per stream sized to
+  `capacity` (a `SharedArrayBuffer` when `frame.useSharedArrayBuffer`);
+  `setInstance`, `markDirty` (up to 8 dirty ranges per stream, merged as
+  §5.2); column binding validation and references; chunk loading like
+  Graphics (the shell imports the `layer` chunk, which registers the core
+  loader); `CustomDrawable._emitDraw` forwarding.
+- **Front chunk** (`src/layer/front.ts`), state per renderer:
+  - LAYER_CREATE on first draw, on a capacity change and on a new
+    `generation`, followed by full uploads; LAYER_SET_FRAMES on frame
+    changes; LAYER_SET_TEXTURES when a slot's texId changes
+    (`ensureTextureUploaded` per slot each frame).
+  - Commits: a **direct** column (its memory already has the stream
+    layout: `xy`, `xform`, `color`, `userId`) is registered once per
+    buffer and generation (`frame.registerShared`) and uploaded with
+    LAYER_UPLOAD_SHARED for the committed range: no CPU work at all (main
+    thread; worker mode with a SharedArrayBuffer). Without shared memory
+    the range is copied inline into the packet. **Packed** columns are
+    converted into the own stores in one tight loop per column (f32 → f16
+    by a branch-light bit routine or `Float16Array` where present,
+    radians → u16 turns, tint × alpha → RGBA8), then the dirty ranges of
+    each stream are uploaded.
+  - Every frame: LAYER_CULL (when culling) and LAYER_DRAW, about 100 bytes.
+- `commit` only records the range; the copy happens in `render()`. Zero
+  allocations per frame.
+
+### 28.5 External GPU sources (main thread)
+
+`layer.setSource({ position, xform?, color?, user?, indirect?, count? })`
+emits LAYER_SET_SOURCE with buffers registered through
+`interop.registerInstanceBuffer` under the `'layer-*'` and
+`'draw-indirect'` layouts (§19.4). Streams not given come from the own
+stores. An ECS that simulates on the GPU writes positions into a STORAGE
+buffer, compacts its live entities and writes `instanceCount` into the
+indirect buffer: the layer then draws with zero CPU work and no readback.
+Device loss drops the registrations and the source (back to the own
+stores, `valid` false); re-register after `deviceRestored`, as for Swarm.
+Worker mode: no external sources. `renderer.interop()` already rejects in
+worker mode, so no valid handle can reach `setSource` there (FrontFrame
+has no worker flag for an explicit UNSUPPORTED). WebGL2: draw-only
+through attributes, `indirect` is UNSUPPORTED.
+
+### 28.6 Picking, masks, filters, retained rendering
+
+- Picks resolve to `{ node: layer, instance, userId }`.
+- A layer is a leaf: inside a masked or filtered Group it is ordinary
+  content (pipeline variants per pass layout, like Graphics). It cannot be
+  a mask source in M5: `Group.mask = layer` (or `{ source: layer }`)
+  throws INVALID_ARGUMENT synchronously.
+- Picking: `src/renderer/picking.ts` takes `userId` from the pick texel
+  for layers, as for Swarm.
+- It is a volatile entry for retained segments (one LAYER_DRAW per frame;
+  its command carries the world affine and count) and a hole in static
+  containers.
+- Worker mode: front work on the main thread, commands to the worker;
+  SharedArrayBuffer columns stay zero-copy.
+
+### 28.7 Budgets
+
+| case                                                     | target                                                         |
+| -------------------------------------------------------- | -------------------------------------------------------------- |
+| 1M static instances, nothing committed (8–16 px quads)   | ≥ 60 fps; front < 0.2 ms; packet < 1 KB; 0 bytes uploaded      |
+| 1M moving, direct `xy` column, main thread               | front < 0.5 ms plus one 8 MB upload; ≥ 60 fps                  |
+| 1M moving, separate `x` / `y` columns                    | front < 3 ms (packing)                                         |
+| 1M moving with rotation, scale and tint columns (packed) | front < 8 ms (direct `xform` / `color` columns avoid it)       |
+| 1M from an external GPU source with `indirect`           | front < 0.05 ms; 0 bytes uploaded                              |
+| GPU culling of 1M (WebGPU)                               | ≤ 0.15 ms GPU; painter's order kept                            |
+| WebGL2, 1M static                                        | ≥ 60 fps on an M1-class GPU (no culling)                       |
+| GPU memory per instance                                  | 8 B (positions only) to 24 B (all streams); + 4 B with culling |
+| allocations                                              | 0 per frame                                                    |
+
+Bundle targets (min+gzip):
+
+| chunk      | module                     | target                          | measured | budget |
+| ---------- | -------------------------- | ------------------------------- | -------- | ------ |
+| shell      | `src/layer/SpriteLayer.ts` | 2.5 KB, in the importer's entry | ~2.2 KB  | —      |
+| layer      | `src/layer/front.ts`       | 3.0 KB                          | 2.52 KB  | 3.0 KB |
+| layer-core | `src/layer/core.ts`        | 4.0 KB                          | 4.48 KB  | 5.0 KB |
+| layer-wgsl | `src/layer/shadersWGSL.ts` | 2.0 KB (with the cull compute)  | 1.99 KB  | 2.5 KB |
+| layer-glsl | `src/layer/shadersGLSL.ts` | 1.2 KB                          | 1.13 KB  | 1.7 KB |
+
+`layer-core` is over its target; the layer's total (~11.2 KB) is under the
+sum of the targets. Moving the cull path into a WebGPU-only chunk would
+bring the core under 4 KB.
+
+Nothing of SpriteLayer may reach the minimal program; its share of the
+seams is the lazy placeholder of range 0x08 (§27.6).
+
+**Public namespace exports and chunking.** `GPU.layerLayouts` is a public
+namespace export, so `src/types/layerLayouts.ts` is in every importer's
+module graph. A lazy chunk importing it made esbuild split it into a
+shared chunk that the minimal program loads (+170 B, and +295 B more when
+the front imported helpers from the shell). The layer chunks therefore
+read their constants from `src/layer/format.ts`, a lazy-only copy pinned
+to `layerLayouts` by `format.test.ts`, and the front gets the f16 helper
+through the layer object. The same trap applies to any module that is
+both publicly exported and imported by a lazy chunk (§18.1).
+
+**Measured (Apple M4, Chrome, `benchmarks/layer`).** Front for 1M static
+instances 0.05–0.2 ms with a 92-byte packet; 1M direct `xy` commits
+0.28 ms on WebGPU. On WebGL2 the 8 MB `bufferSubData` costs about 8.5 ms
+of main-thread time inside Chrome; worker mode with a SharedArrayBuffer
+column takes it off the main thread (~0.03 ms). GPU culling of 1M with
+~89% off screen took a panned scene from 141 to 486 fps on WebGPU (the
+harness has no timestamp queries, so the ≤ 0.15 ms GPU target is not
+measured directly). Uncapped requestAnimationFrame fps is not a reliable
+measure for WebGL backends (Pixi WebGL showed 617 fps for ~10 ms of GPU
+work per frame), so `benchmarks/layer` also reports a GPU-waited cost per
+frame (K frames, then `readPixels` / `onSubmittedWorkDone`).
+
+## 29. M5 contract additions
+
+Where an implementation is missing it is a stub that throws
+`CozyGPUError('NOT_IMPLEMENTED')`, so `tsc` and `jest` pass while
+retained rendering and SpriteLayer are built in parallel.
+
+| file                              | additions                                                                                                                                                                                                         |
+| --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/commands/opcodes.ts`         | `PROTOCOL_VERSION` 6; `OpcodeRange.RETAIN` (0x07), `OpcodeRange.SPRITE_LAYER` (0x08)                                                                                                                              |
+| `src/commands/retainOpcodes.ts`   | `RetainOp`, `RetainFlag`, `RETAIN_*_BYTES`, `RETAIN_MIN_ENTRIES`, `RETAIN_WARMUP_FRAMES`                                                                                                                          |
+| `src/commands/layerOpcodes.ts`    | `LayerOp`, `LayerFlag`, `LayerDrawFlag`, `LAYER_*_BYTES`                                                                                                                                                          |
+| `src/commands/gfxOpcodes.ts`      | `GFX_POOL_ALLOC` / `_DESTROY` / `_UPLOAD` / `_UPLOAD_SHARED`, `GFX_SET_TRANSFORM`, `GFX_SET_TEXTURE_SLOTS`, `GFX_DRAW_UNIFIED`; `GfxPoolKind`; `GFX_DRAW_UNIFIED_COUNT_WORD`, `GFX_DRAW_UNIFIED_BYTES`            |
+| `src/types/gfxLayouts.ts`         | `GFX_ITEM_*`, `GfxItemKind`; `GFX_UVERTEX_BYTES` + `GUV_*`; `GFX_TRANSFORM_BYTES` + `GT_*`, `GFX_MAX_TRANSFORMS`; `GFX_MAX_TEXTURE_SLOTS`, `GFX_SPRITE_SLOT_*`                                                    |
+| `src/types/layerLayouts.ts` (new) | `LayerStream`, `LayerStreamBit`, `LAYER_*_BYTES`, `LP_*`, `LX_*`, `LAYER_ROTATION_UNITS`, `LF_*`, `LAYER_MAX_FRAMES`, `LAYER_MAX_TEXTURES`, `LAYER_INDIRECT_BYTES`, `LAYER_VISIBLE_BYTES`, `LAYER_CULL_WORKGROUP` |
+| `src/backend/types.ts`            | `RhiRenderBundle`, `RenderBundleEncoder`; `Backend.createRenderBundleEncoder?`, `Backend.loadRenderBundles?`; `RenderPass.executeBundle?`                                                                         |
+| `src/types/core.ts`               | `FrontFrame.retainSegment?`; `RetainableDrawable`, `isRetainableDrawable`; `CoreContext.systemFor?`, `CoreContext.retain?`, `RetainHooks`; `DrawSpan`, `CoreSystem.drawSpan?`                                     |
+| `src/types/interop.ts`            | `ExternalLayout` gains `'layer-position'`, `'layer-xform'`, `'layer-color'`, `'layer-user'`, `'draw-indirect'`                                                                                                    |
+| `src/types/renderer.ts`           | `RendererOptions.retained`; `RendererStats.retainedSegments?`                                                                                                                                                     |
+| `src/scene/types.ts`              | `NodeKind` gains `'layer'`; `ContainerNode.static`                                                                                                                                                                |
+| `src/scene/Container.ts`          | `ContainerOptions.static`; the `static` accessor (stub: setting true throws)                                                                                                                                      |
+| `src/layer/types.ts` (new)        | `SpriteLayerOptions`, `SpriteLayerStreams`, `LayerColumns`, `LayerColumnOptions`, `LayerColumnBinding`, `SpriteLayerData`, `LayerExternalSource`, `SpriteLayerNode`, `SpriteLayerConstructor`                     |
+| `src/layer/SpriteLayer.ts` (new)  | `SpriteLayer`, `loadSpriteLayer` (stubs)                                                                                                                                                                          |
+| `src/layer/core.ts` (new)         | `createSpriteLayerCoreSystem` (stub)                                                                                                                                                                              |
+| `src/retained/core.ts` (new)      | `createRetainCoreSystem` (stub)                                                                                                                                                                                   |
+| `src/retained/static.ts` (new)    | `StaticBinding`, `createStaticBinding` (stub)                                                                                                                                                                     |
+| `src/index.ts`                    | values `SpriteLayer`, `loadSpriteLayer`, `layerLayouts`; the SpriteLayer types                                                                                                                                    |
+
+All of it is wired: the RETAIN and SPRITE_LAYER placeholders in
+`src/renderer/systems.ts` (the retain one, `LazySpanSystem`, also forwards
+`drawSpan`) and their worker loaders, the `drawSpan` loop and `systemFor`
+in RenderCore, the packer seam, `ContainerOptions.static`, the layer
+record sizes in `interopImpl.ts`, `RendererOptions.retained` and
+`RendererStats.retainedSegments` in the Renderer, and the size entries of
+the new chunks in `scripts/size.mjs`.

@@ -200,8 +200,10 @@ describe('WebGL2 fence watch and pacing', () => {
     ring.destroy();
   });
 
-  it('holds when the GPU is QUEUE_FRAMES frames behind, with no readback at all', async () => {
+  it('holds when the GPU is QUEUE_FRAMES frames and QUEUE_MS behind, with no readback at all', async () => {
     const { fake, backend } = await makeBackend();
+    // M5: the fence must also be QUEUE_MS (20 ms) old.
+    const now = jest.spyOn(performance, 'now').mockReturnValue(0);
     // Frames whose fence never signals: the GPU falls behind without end.
     // Well past QUEUE_IDLE_FRAMES, so the depth is measured and allowed to
     // speak (it only starts counting once the idle stretch is over).
@@ -210,7 +212,12 @@ describe('WebGL2 fence watch and pacing', () => {
       backend.beginCommands().submit();
       fake.syncResults.length = 0;
     }
-    // One probe is armed and unsignalled, so the depth is the frame count.
+    // One probe is armed and unsignalled, so the depth is the frame count;
+    // it holds only once the fence is QUEUE_MS old.
+    fake.syncResults.push(G.TIMEOUT_EXPIRED);
+    expect(backend.backlogged()).toBe(false);
+    fake.syncResults.length = 0;
+    now.mockReturnValue(1000);
     fake.syncResults.push(G.TIMEOUT_EXPIRED);
     expect(backend.backlogged()).toBe(true);
     fake.syncResults.length = 0;
@@ -224,6 +231,7 @@ describe('WebGL2 fence watch and pacing', () => {
     for (let i = 0; i < 30 && held.mock.calls.length === 0; i++) await wait(2);
     expect(held).toHaveBeenCalledTimes(1);
     expect(backend.backlogged()).toBe(false);
+    now.mockRestore();
   });
 
   it('holds frames once PACE_FRAMES frames ran during a readback', async () => {
@@ -258,16 +266,22 @@ describe('WebGL2 fence watch and pacing', () => {
 
   it('stops holding on depth when the context is lost', async () => {
     const { fake, backend } = await makeBackend();
+    const now = jest.spyOn(performance, 'now').mockReturnValue(0);
     for (let i = 0; i < 48; i++) {
       fake.syncResults.push(G.TIMEOUT_EXPIRED);
       backend.beginCommands().submit();
       fake.syncResults.length = 0;
     }
     fake.syncResults.push(G.TIMEOUT_EXPIRED);
+    expect(backend.backlogged()).toBe(false); // arms the fence at 0 ms
+    fake.syncResults.length = 0;
+    now.mockReturnValue(1000);
+    fake.syncResults.push(G.TIMEOUT_EXPIRED);
     expect(backend.backlogged()).toBe(true);
     fake.syncResults.length = 0;
     fake.fire('webglcontextlost');
     expect(backend.backlogged()).toBe(false);
+    now.mockRestore();
   });
 
   it('a context loss stops pacing on the old ring', async () => {

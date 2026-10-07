@@ -13,7 +13,15 @@ import {
   GFX_SHAPE_BYTES,
 } from '../types/gfxLayouts';
 import { FilterFlag, FilterOp, MaskFlag, MaskOp } from './opcodes';
-import { GfxDrawFlag, GfxMeshFlag, GfxOp } from './gfxOpcodes';
+import { GfxDrawFlag, GfxMeshFlag, GfxOp, GfxPoolKind } from './gfxOpcodes';
+import { LayerDrawFlag, LayerFlag, LayerOp } from './layerOpcodes';
+import { RetainFlag, RetainOp } from './retainOpcodes';
+import {
+  LAYER_FRAME_BYTES,
+  LAYER_POSITION_BYTES,
+  LayerStream,
+  LayerStreamBit,
+} from '../types/layerLayouts';
 import {
   COMMAND_HEADER_BYTES,
   CommandFlag,
@@ -233,6 +241,79 @@ const specs: Array<[number, number, Field[]]> = [
       f(0),
     ],
   ],
+  // M5: unified graphics batch (§27.4)
+  [GfxOp.GFX_POOL_ALLOC, 0, [u(GfxPoolKind.ITEMS), u(1), u(600)]],
+  [GfxOp.GFX_POOL_DESTROY, 0, [u(GfxPoolKind.SPRITES), u(2)]],
+  [GfxOp.GFX_POOL_UPLOAD, 0, [u(GfxPoolKind.ITEMS), u(1), u(0), u(6), b(24)]],
+  [
+    GfxOp.GFX_POOL_UPLOAD_SHARED,
+    0,
+    [u(GfxPoolKind.VERTICES), u(1), u(0), u(3), u(3), u(0)],
+  ],
+  [
+    GfxOp.GFX_SET_TRANSFORM,
+    0,
+    [u(1), f(1), f(0), f(0), f(1), f(5), f(6), f(1)],
+  ],
+  [GfxOp.GFX_SET_TEXTURE_SLOTS, 0, [u(1), u(2), u(7), u(8)]],
+  [
+    GfxOp.GFX_DRAW_UNIFIED,
+    CommandFlag.DRAW,
+    [u(1), u(0), u(12), u(1), u(1), u(2), u(0), u(1), u(1), u(0), u(0)],
+  ],
+  // M5: retained segments (§27.3)
+  [RetainOp.RETAIN_BEGIN, CommandFlag.DRAW, [u(1), u(RetainFlag.NO_BUNDLE)]],
+  [RetainOp.RETAIN_END, CommandFlag.DRAW, [u(1)]],
+  [RetainOp.RETAIN_DRAW, CommandFlag.DRAW, [u(1)]],
+  [RetainOp.RETAIN_DESTROY, 0, [u(1)]],
+  // M5: sprite layers (§28)
+  [
+    LayerOp.LAYER_CREATE,
+    0,
+    [
+      u(9),
+      u(1024),
+      u(LayerStreamBit.POSITION | LayerStreamBit.COLOR),
+      u(LayerFlag.CULL),
+      u(0),
+    ],
+  ],
+  [LayerOp.LAYER_DESTROY, 0, [u(9)]],
+  [
+    LayerOp.LAYER_UPLOAD,
+    0,
+    [u(9), u(LayerStream.POSITION), u(0), u(2), b(2 * LAYER_POSITION_BYTES)],
+  ],
+  [
+    LayerOp.LAYER_UPLOAD_SHARED,
+    0,
+    [u(9), u(LayerStream.COLOR), u(0), u(1024), u(3), u(0)],
+  ],
+  [LayerOp.LAYER_SET_FRAMES, 0, [u(9), u(1), b(LAYER_FRAME_BYTES)]],
+  [LayerOp.LAYER_SET_TEXTURES, 0, [u(9), u(1), u(7)]],
+  [LayerOp.LAYER_SET_SOURCE, 0, [u(9), u(1), u(0), u(0), u(0), u(2)]],
+  [
+    LayerOp.LAYER_CULL,
+    CommandFlag.COMPUTE,
+    [u(9), u(1024), f(1), f(0), f(0), f(1), f(0), f(0), f(16)],
+  ],
+  [
+    LayerOp.LAYER_DRAW,
+    CommandFlag.DRAW,
+    [
+      u(9),
+      f(1),
+      f(0),
+      f(0),
+      f(1),
+      f(0),
+      f(0),
+      f(1),
+      u(1024),
+      u(9),
+      u(LayerDrawFlag.CULLED),
+    ],
+  ],
   [Op.FRAME_END, 0, []],
 ];
 
@@ -311,7 +392,14 @@ function checkSpec(
 describe('command stream', () => {
   it('covers every opcode in the Op table', () => {
     const covered = new Set(specs.map(([op]) => op));
-    const all = { ...Op, ...MaskOp, ...FilterOp, ...GfxOp };
+    const all = {
+      ...Op,
+      ...MaskOp,
+      ...FilterOp,
+      ...GfxOp,
+      ...RetainOp,
+      ...LayerOp,
+    };
     for (const op of Object.values(all)) expect(covered.has(op)).toBe(true);
   });
 

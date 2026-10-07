@@ -17,7 +17,12 @@
 import type { BlendMode } from '../backend/types';
 import type { ColorSource } from '../math/types';
 import { NodeBase } from '../scene/Node';
-import type { CustomDrawable, FrontFrame, MaskDrawable } from '../types/core';
+import { nodeStore, touchScope } from '../scene/store';
+import type {
+  FrontFrame,
+  MaskDrawable,
+  RetainableDrawable,
+} from '../types/core';
 import { GraphicsContext } from './GraphicsContext';
 import type {
   FillStyle,
@@ -32,6 +37,22 @@ import type {
 } from './types';
 
 type EmitModule = typeof import('./emit');
+
+/** The binding as the `graphics` chunk builds it: retained-rendering aware. */
+interface RetainBinding extends GraphicsBinding {
+  readonly drawVersion: number;
+  syncDraw(
+    frame: FrontFrame,
+    world: Float32Array,
+    worldOffset: number,
+    worldAlpha: number,
+  ): void;
+}
+
+/** A tint or blend change alters records or draws without touching a node. */
+function bumpDrawEpoch(): void {
+  nodeStore.drawEpoch = (nodeStore.drawEpoch + 1) | 0;
+}
 
 /** Shared by every Graphics in the page. */
 let emitChunk: Promise<EmitModule> | null = null;
@@ -56,7 +77,7 @@ function isContext(
 
 export class Graphics
   extends NodeBase
-  implements GraphicsNode, CustomDrawable, MaskDrawable
+  implements GraphicsNode, RetainableDrawable, MaskDrawable
 {
   /** @internal */
   _context: GraphicsContextApi;
@@ -67,7 +88,7 @@ export class Graphics
   /** @internal */
   _blendMode: BlendMode = 'normal';
   /** @internal Set once the `graphics` chunk landed. */
-  _binding: GraphicsBinding | null = null;
+  _binding: RetainBinding | null = null;
   /** @internal */
   _ready: Promise<void>;
 
@@ -84,6 +105,7 @@ export class Graphics
     this._ready = emitChunk.then(m => {
       if (this._destroyed) return;
       this._binding = m.createGraphicsBinding(this);
+      bumpDrawEpoch();
       return this._binding.ready;
     });
     // Keeps Node/browser from reporting an unhandled rejection before the
@@ -105,6 +127,7 @@ export class Graphics
     this._ownsContext = false;
     this._context = context;
     this._binding?.setContext(context);
+    bumpDrawEpoch();
   }
 
   get tint(): number {
@@ -113,6 +136,9 @@ export class Graphics
 
   set tint(value: number) {
     this._tint = value >>> 0;
+    bumpDrawEpoch();
+    // A static container baking this node re-bakes (its records hold the tint).
+    touchScope(this._slot);
   }
 
   get blendMode(): BlendMode {
@@ -121,6 +147,7 @@ export class Graphics
 
   set blendMode(value: BlendMode) {
     this._blendMode = value;
+    bumpDrawEpoch();
   }
 
   get ready(): Promise<void> {
@@ -324,6 +351,34 @@ export class Graphics
   ): void {
     if (this._binding !== null && !this._destroyed) {
       this._binding.emitDraw(frame, world, worldOffset, worldAlpha);
+    }
+  }
+
+  /**
+   * @internal RetainableDrawable (ARCHITECTURE §27.2): changes whenever the
+   * draw commands `_emitDraw` would emit change; -1 until the chunk landed.
+   */
+  get _drawVersion(): number {
+    return this._binding !== null ? this._binding.drawVersion : -1;
+  }
+
+  /**
+   * @internal Called by the `graphics` chunk while something it needs is
+   * still loading: the next frame re-checks this node (§27.2).
+   */
+  _touchEpoch(): void {
+    bumpDrawEpoch();
+  }
+
+  /** @internal RetainableDrawable: records only, while a segment replays. */
+  _syncDraw(
+    frame: FrontFrame,
+    world: Float32Array,
+    worldOffset: number,
+    worldAlpha: number,
+  ): void {
+    if (this._binding !== null && !this._destroyed) {
+      this._binding.syncDraw(frame, world, worldOffset, worldAlpha);
     }
   }
 

@@ -43,6 +43,14 @@ export interface RendererOptions {
   backgroundAlpha?: number;
   /** 4× MSAA on the main pass. Default false. */
   antialias?: boolean;
+  /**
+   * M5 (ARCHITECTURE §27). Retained rendering: draw command runs that did
+   * not change since the last frame are recorded once and replayed by the
+   * core (render bundles on WebGPU), so a static scene costs ~0 front CPU
+   * and sends no per-frame draw payload. Default true; false keeps the
+   * immediate path (for A/B measurements).
+   */
+  retained?: boolean;
   powerPreference?: 'low-power' | 'high-performance';
   /** 'max' requests adapter maximum buffer limits (needed for multi-million Swarms). Default 'default'. */
   limits?: 'default' | 'max';
@@ -108,6 +116,16 @@ export interface RendererStats {
   readonly cpuMs: number;
   /** render() calls skipped because the worker had not finished the previous frame. */
   readonly skippedFrames: number;
+  /**
+   * M5. Retained segments drawn last frame by replay (RETAIN_DRAW) and by
+   * recording (RETAIN_BEGIN … RETAIN_END). A replayed segment counts as one
+   * draw command in `drawCalls` whatever it contains. Absent until the
+   * retain chunk has loaded.
+   */
+  readonly retainedSegments?: {
+    readonly replayed: number;
+    readonly recorded: number;
+  };
 }
 
 export interface Renderer {

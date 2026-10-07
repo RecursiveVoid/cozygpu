@@ -98,6 +98,22 @@ export interface NodeStore {
    * transform pass entirely.
    */
   touch: number;
+  /**
+   * M5 (ARCHITECTURE §27.2). Bumped by changes that alter draw commands or
+   * Graphics records without touching a node (a GraphicsContext edit, a
+   * Graphics tint or blend mode, something a drawable waits for landing). A
+   * retained frame with the same structure, `touch` and `drawEpoch` as the
+   * last one replays every segment without visiting a node.
+   */
+  drawEpoch: number;
+  /**
+   * M5 (ARCHITECTURE §27.5). Static scope per slot: the scope id of the
+   * static container whose bake draws the node, 0 for none. Allocated (and
+   * grown) by the `static` chunk; null while no static container exists.
+   */
+  scope?: Uint32Array;
+  /** M5. Changes inside each static scope, by scope id (`static` chunk). */
+  scopeTouch?: Uint32Array;
   /** Live slot count (debug/tests). */
   live: number;
   /**
@@ -123,6 +139,7 @@ export const nodeStore: NodeStore = {
   userId: new Uint32Array(0),
   structureVersion: 1,
   touch: 0,
+  drawEpoch: 0,
   live: 0,
   groups: 0,
 };
@@ -198,6 +215,7 @@ export function allocSlot(): number {
   s.uv[uo + 3] = 0xffff;
   s.flags[slot] = 0;
   s.userId[slot] = 0;
+  if (s.scope) s.scope[slot] = 0;
   s.touch = (s.touch + 1) & TOUCH_MASK;
   s.live++;
   return slot;
@@ -226,6 +244,29 @@ export function materializeWorld(slot: number): void {
 export function markDirty(slot: number, bits: number): void {
   nodeStore.dirty[slot] |= bits;
   nodeStore.touch = (nodeStore.touch + 1) & TOUCH_MASK;
+  touchScope(slot);
+}
+
+/**
+ * M5 (ARCHITECTURE §27.5). Something about `slot` changed: the static
+ * container baking it (if any) re-bakes.
+ */
+export function touchScope(slot: number): void {
+  const scope = nodeStore.scope;
+  // Past the column's end reads undefined: no scope.
+  if (scope && scope[slot]) nodeStore.scopeTouch![scope[slot]]++;
+}
+
+/**
+ * Touches the scopes an edit of `target` affects: the scope baking the
+ * node, and with `inner` (its children changed) a static container's own
+ * scope. Bulk writers of a container's children call it with `inner`.
+ */
+export function touchScopeOf(target: object, inner: boolean): void {
+  if (!nodeStore.scope) return;
+  const t = target as { _slot?: number; _scopeId?: number };
+  if (inner && t._scopeId) nodeStore.scopeTouch![t._scopeId]++;
+  if (t._slot !== undefined) touchScope(t._slot);
 }
 
 // ─── Structure log (ARCHITECTURE §16.2) ───────────────────────────────────────
@@ -295,9 +336,11 @@ export function bumpStructure(): void {
 /** `container`'s children list changed at child index >= `index`. */
 export function bumpChildren(container: object, index: number): void {
   logEdit(StructEdit.CHILDREN, container, index < 0 ? 0 : index);
+  touchScopeOf(container, true);
 }
 
 /** `node`'s visibility, texture source or blend mode changed. */
 export function bumpNode(node: object): void {
   logEdit(StructEdit.NODE, node, 0);
+  touchScopeOf(node, false);
 }

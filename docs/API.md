@@ -7,9 +7,10 @@ import * as GPU from 'cozygpu';
 This covers the **M1** and **M2** surface (M2 items are marked **M2**),
 the **M2.5** integration hooks (marked **M2.5**, see
 [Integration hooks](#integration-hooks-m25)) and the **M3** visual
-features — masks, filters, text and particles. All of it is implemented.
-[Graphics](#graphics-m4) (**M4**) is designed and its API settled, but it
-is **not implemented yet**: its methods throw `NOT_IMPLEMENTED`.
+features — masks, filters, text and particles — and
+[Graphics](#graphics-m4) (**M4**). All of it is implemented.
+[Rendering at scale](#rendering-at-scale-m5) (**M5**: retained rendering,
+static containers, `SpriteLayer`) is implemented too.
 Everything exported in `src/index.ts` is listed here.
 
 Everything is in stage pixels (CSS pixels, origin top-left, y down),
@@ -38,6 +39,7 @@ const renderer = await GPU.createRenderer({
   onDeviceRestored: () => console.info('GPU restored'),
   assets: { gpuBudgetMB: 256 }, // M2: options for renderer.assets
   events: bus, // M2.5: any { emit(name, payload) } — rare lifecycle events only
+  retained: true, // M5: record unchanged draw runs once and replay them
 });
 
 renderer.stage; // root Container
@@ -47,7 +49,7 @@ renderer.width;
 renderer.height;
 renderer.resolution;
 renderer.info; // { backend, fallbackReason?, worker, sharedMemory, capabilities }
-renderer.stats; // { frameId, drawCalls, packetBytes, cpuMs, skippedFrames }
+renderer.stats; // { frameId, drawCalls, packetBytes, cpuMs, skippedFrames, retainedSegments? }
 const hit = await renderer.pick(e.offsetX, e.offsetY); // M2: { node, instance, userId, x, y } | null
 renderer.assets; // M2: asset manager (see Assets)
 const interop = await renderer.interop(); // M2.5, main thread only: native device + external buffers
@@ -889,9 +891,7 @@ fx.swarm.aliveCount().then(n => console.log(n));
 
 ## Graphics (M4)
 
-> **Status: designed, not implemented yet.** The API below is settled
-> (design: `docs/ARCHITECTURE.md` §26); calling it today throws
-> `CozyGPUError('NOT_IMPLEMENTED')`.
+Design: `docs/ARCHITECTURE.md` §26.
 
 Vector shapes with a Pixi v8-style API. Rectangles, rounded rectangles,
 circles, ellipses, single line segments and arcs are drawn **analytically
@@ -1014,6 +1014,192 @@ force).
   to do on your side.
 
 ---
+
+## Rendering at scale (M5)
+
+Design: `docs/ARCHITECTURE.md` §27–§28. Examples: `examples/retained/`
+and `examples/spritelayer/`.
+
+Three tools, from automatic to explicit:
+
+| you have                                                         | use                               | per-frame cost when nothing changed |
+| ---------------------------------------------------------------- | --------------------------------- | ----------------------------------- |
+| an ordinary scene (sprites, Graphics, text)                      | nothing: retained rendering is on | ~0 front CPU, a few bytes sent      |
+| a large subtree that rarely changes (map, background, chart, UI) | `container.static = true`         | 0; moving it costs 32 bytes         |
+| 100k – millions of similar sprites driven by your own data / ECS | `GPU.SpriteLayer`                 | one draw, no per-sprite work        |
+
+### Retained rendering (M5)
+
+Automatic. Runs of draws that did not change since the last frame are
+recorded once and replayed by the GPU side (render bundles on WebGPU), so
+a static frame sends no draw payload and costs almost nothing on the main
+thread. Moving sprites does not break it: only their data is uploaded.
+Adding or removing nodes, changing textures or editing a Graphics
+re-records the affected runs on the next frame.
+
+```ts
+const renderer = await GPU.createRenderer({ canvas, retained: true }); // default
+renderer.stats.retainedSegments; // { replayed, recorded } of the last frame
+```
+
+- It switches on by itself once a scene has at least 8 draw batches and
+  kept its structure for 2 frames (its chunk loads then); small scenes
+  never load it. `stats.retainedSegments` is `undefined` until then. A
+  replayed segment counts as one draw in `stats.drawCalls`.
+- `retained: false` turns it off (for comparisons).
+- Swarm, Particles and SpriteLayer are drawn fresh every frame (their draw
+  is one small command); masks and filters keep working around replayed
+  runs. The contents of a `Group` (mask or filters) are drawn fresh too.
+- Mixed Graphics batch together: SDF shapes and tessellated paths of
+  consecutive Graphics share one draw (until the blend mode changes).
+  Exceptions keep their own draw: a texture fill, and a `GraphicsContext`
+  shared by 16 or more Graphics (drawn instanced, still one draw per run).
+  WebGPU in compatibility mode (no storage buffers in the vertex stage)
+  keeps the M4 split between shapes and meshes.
+
+### Static containers (M5)
+
+```ts
+const map = new GPU.Container({ static: true });
+for (const tile of tiles) map.addChild(new GPU.Sprite(tile));
+map.addChild(legendGraphics);
+stage.addChild(map);
+
+map.x -= 10; // free: one 32-byte transform update, no re-bake
+map.alpha = 0.5; // free
+map.children[3].tint = 0xff0000; // re-bakes `map` once on the next render()
+```
+
+- The subtree is baked into GPU records once; sprites and Graphics inside
+  share one draw per run of up to 8 texture sources. Nothing inside is
+  visited per frame. Setting `static` loads a small chunk first; until it
+  arrives the subtree is drawn normally, so nothing flickers.
+- Bulk writes (`bulkChildren().commit`, `bindColumns().commit`) to children
+  of a static container re-bake it like any other change.
+- Any change inside (a property, a child added or removed, a texture, a
+  Graphics edit) re-bakes **this container only**, on the next `render()`:
+  O(subtree). Keep frequently changing nodes outside it.
+- Swarm, Particles, SpriteLayer and Graphics with a texture fill inside a
+  static container are drawn live in their place. A `Group` (mask or
+  filters) inside makes the container draw unbaked, with a console
+  warning, until `static` is set again.
+- Picking, `userId`, masks and filters around it work as usual.
+
+## SpriteLayer (M5)
+
+Millions of sprites in one draw. A layer is **one** scene node whose
+instances are rows of compact GPU-resident data (8–24 bytes each), not
+`Sprite` objects: there is no per-sprite object and no per-sprite work
+per frame. It is the rendering side of an ECS: your systems own the data,
+the layer draws it.
+
+```ts
+const sheet = await renderer.assets.load<GPU.SpritesheetAsset>('units.json');
+const layer = new GPU.SpriteLayer({
+  capacity: 1_000_000,
+  frames: Object.values(sheet.value.frames), // frame index → frame; ≤ 8 texture sources
+  streams: { xform: true, color: true, user: true }, // which optional data exists
+  cull: true, // WebGPU: GPU frustum culling, order kept
+});
+stage.addChild(layer);
+
+// ECS columns, registered once:
+const binding = layer.bindColumns({
+  xy: positions, // Float32Array [x0, y0, x1, y1, …] — uploaded as-is
+  rotation, // Float32Array, radians — packed
+  frame, // Uint32Array — packed
+  userId: entity, // Uint32Array — uploaded as-is
+});
+
+ticker.add(() => {
+  // …your systems update the arrays…
+  binding.commit(liveCount); // rows [0, liveCount) changed; also sets layer.count
+});
+```
+
+- **Streams.** POSITION (8 B: x, y) always; XFORM (8 B: half-float scale
+  x/y, rotation, frame index), COLOR (4 B: tint × alpha) and USER (4 B: id
+  for picking) only when enabled in `streams`. A layer of positions only
+  is 8 MB per million sprites. A commit that only moved sprites uploads
+  only positions. Layouts: `GPU.layerLayouts`.
+- **Direct columns** are uploaded straight from your memory with no CPU
+  work: `xy` (interleaved positions), `xform` (pre-packed), `color`
+  (pre-packed RGBA8), `userId`. **Packed columns** (`x`, `y`, `scale`,
+  `scaleX`, `scaleY`, `rotation`, `frame`, `tint`, `alpha`; strided
+  `{ array, offset, stride }` sources allowed) are converted into the
+  layer's own stores during `render()`.
+- `commit(count, first?)` only records which rows changed; the data is
+  read during the next `render()`, so keep the arrays unchanged until
+  then. Without `first` it also sets `layer.count = count`.
+- Without an ECS: `layer.setInstance(i, x, y, rotation?, scale?, frame?,
+color?)` for setup and sparse edits, or write `layer.data.position` /
+  `xform` / `color` / `user` directly and call
+  `layer.markDirty(first, count)`.
+- **The layer node** moves, rotates, scales and fades the whole layer for
+  free (`layer.x`, `layer.alpha`, …), and can sit in a masked or filtered
+  `Group`. Instance index = draw order inside the layer.
+- **Textures**: up to 8 texture sources (atlas pages) stay in one draw;
+  more is `INVALID_ARGUMENT`. `anchor` (default 0.5) applies to every
+  frame.
+- **Culling** (`cull: true`, WebGPU with compute): instances outside the
+  viewport (plus `cullMargin` css px) are dropped on the GPU before
+  drawing, keeping painter's order. Worth it when a large share is off
+  screen; ignored on WebGL2.
+- **Picking**: opt in with `pickable: true` (a layer is not pickable by
+  default). `renderer.pick()` then returns
+  `{ node: layer, instance, userId }` (`userId` from the USER stream, 0
+  without it).
+- `capacity` can be raised later (re-allocates and re-uploads); `count`
+  rows `[0, count)` are drawn. COLOR alpha 0 hides an instance. Changing
+  `blendMode` or `cull` re-uploads nothing.
+- **Capacity limits**: each stream is one GPU buffer, so a layer holds at
+  most `capabilities.maxStorageBufferBindingSize / 8` instances on WebGPU
+  (16M with the default 128 MiB; `limits: 'max'` raises it) and
+  `capabilities.maxBufferSize / 8` on WebGL2. A larger layer draws nothing
+  and reports `OUT_OF_CAPACITY` once (console and the `error` event).
+- **Uploading a million positions per frame**: on WebGPU an 8 MB `xy`
+  commit costs about 0.3 ms on the main thread. On WebGL2 the same upload
+  (`bufferSubData`) blocks the main thread for several milliseconds; use
+  worker mode with an `xy` column in a `SharedArrayBuffer`
+  (cross-origin isolated page) to take it off the main thread.
+- A layer cannot be a mask source (`Group.mask` throws
+  `INVALID_ARGUMENT`); it can be masked and filtered like any node.
+- WebGPU in compatibility mode (no storage buffers in the vertex stage) is
+  not supported yet: the layer warns once and draws nothing.
+
+### GPU-driven layers (main thread)
+
+When your simulation already runs on the GPU, give the layer your buffers
+(see [Device interop](#device-interop-m25-main-thread-only)):
+
+```ts
+const interop = await renderer.interop();
+const pos = interop.registerInstanceBuffer(myPositions, {
+  layout: 'layer-position',
+  capacity: n,
+});
+const args = interop.registerInstanceBuffer(myIndirectArgs, {
+  layout: 'draw-indirect',
+  capacity: 1,
+});
+layer.setSource({ position: pos, indirect: args }); // count written by your compute
+```
+
+- Layouts: `'layer-position'`, `'layer-xform'`, `'layer-color'`,
+  `'layer-user'` (records as in `GPU.layerLayouts`) and `'draw-indirect'`
+  (16 bytes: vertexCount, instanceCount, firstVertex, firstInstance; your
+  compute writes instanceCount). Without `indirect`, set the count with
+  `count` or `layer.setSourceCount(n)` (a no-op while no source is set,
+  e.g. after a device loss dropped it).
+- Streams you do not pass come from the layer's own stores.
+  `setSource(null)` returns to them.
+- After `deviceRestored` re-create and re-register the buffers and call
+  `setSource` again (the old handles turn `valid: false`).
+- Worker mode: `setSource` throws `UNSUPPORTED`. WebGL2: buffers are read
+  as vertex attributes; `indirect` is `UNSUPPORTED`.
+
+`GPU.loadSpriteLayer()` preloads the layer chunks; `layer.ready` resolves
+when the layer can draw.
 
 ## Later milestones (sketches)
 

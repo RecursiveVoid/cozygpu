@@ -47,8 +47,10 @@ import type {
   CorePicking,
   CoreSystem,
   CoreTexture,
+  DrawSpan,
   PickReplay,
   RenderCore,
+  RetainHooks,
 } from '../types/core';
 import { CozyGPUError } from '../types/errors';
 import {
@@ -149,12 +151,35 @@ export class Context implements CoreContext {
     if (delta > 0) beginPickPipeline(this);
     else endPickPipeline(this);
   }
+
+  /** M5: installed by the retain core system (ARCHITECTURE §27.3). */
+  retain?: RetainHooks;
+  /** Systems by opcode range (set by the core). */
+  systems: (CoreSystem | undefined)[] = [];
+
+  systemFor(range: number): CoreSystem | undefined {
+    return this.systems[range];
+  }
 }
 
-/** Reused PickReplay over the current packet's DRAW offsets (M2). */
-class DrawReplay implements PickReplay {
+/**
+ * Reused PickReplay over the current packet's DRAW offsets (M2), and the
+ * DrawSpan handed to `CoreSystem.drawSpan` (M5, ARCHITECTURE §27.3).
+ */
+class DrawReplay implements PickReplay, DrawSpan {
   drawCount = 0;
   offsets: Uint32Array = new Uint32Array(0);
+  /** DrawSpan: the DRAW command whose system got `drawSpan`. */
+  index = 0;
+
+  get count(): number {
+    return this.drawCount;
+  }
+
+  seek(i: number): CommandReader {
+    this.decoder.seek(this.offsets[i]);
+    return this.decoder.reader;
+  }
 
   constructor(
     private readonly decoder: CommandDecoder,
@@ -223,6 +248,7 @@ export class RenderCoreImpl implements RenderCore {
     this.debugEnabled = isDebugEnabled(options);
     this.ctx = new Context(backend, options.antialias ? 4 : 1, post);
     this.ctx.mainPass = this.passDesc;
+    this.ctx.systems = this.systemsByRange;
     this.decoder = createCommandDecoder();
     this.replay = new DrawReplay(this.decoder, this.systemsByRange, this.frame);
     for (let i = 0; i < systems.length; i++) {
@@ -439,6 +465,10 @@ export class RenderCoreImpl implements RenderCore {
       }
       let pass = list.beginRenderPass(this.passDesc);
       const decoder = this.decoder;
+      // The DRAW offsets, for drawSpan (M5) and the pick replay.
+      const span = this.replay;
+      span.drawCount = drawCount;
+      span.offsets = this.drawOffsets;
       for (let i = 0; i < drawCount; i++) {
         decoder.seek(this.drawOffsets[i]);
         const system = this.systemsByRange[reader.opcode >>> 8];
@@ -460,7 +490,14 @@ export class RenderCoreImpl implements RenderCore {
           pass = list.beginRenderPass(desc ?? this.passDesc);
         }
         try {
-          system.draw(reader, pass, frame);
+          // M5 (§27.3): a system with drawSpan may draw the DRAW commands
+          // that follow itself (the retain core records them).
+          if (system.drawSpan) {
+            span.index = i;
+            i += system.drawSpan(reader, pass, frame, span);
+          } else {
+            system.draw(reader, pass, frame);
+          }
         } catch (err) {
           this.report(err, `${system.name}.draw`);
         }
@@ -471,8 +508,6 @@ export class RenderCoreImpl implements RenderCore {
       const picking = this.picking;
       if (picking && picking.pending > 0) {
         const replay = this.replay;
-        replay.drawCount = drawCount;
-        replay.offsets = this.drawOffsets;
         try {
           picking.render(list, replay, frame);
         } catch (err) {
@@ -872,6 +907,9 @@ export class RenderCoreImpl implements RenderCore {
         backend,
         get textureLayout() {
           return ctx.textureLayout;
+        },
+        get retain() {
+          return ctx.retain;
         },
         warn: message => this.warnOnce(message),
       });

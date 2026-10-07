@@ -99,21 +99,28 @@ export const FIXTURES = [
     id: 'minimal-webgpu',
     file: 'scripts/size-fixtures/minimal-webgpu.ts',
     what: 'createRenderer + Texture + Sprite, WebGPU chunks',
-    budget: 44 * KB,
+    // M5: +0.5 KB for the retained-rendering seams (packer emitter and
+    // static leaf, RenderCore drawSpan / systemFor, Container.static, the
+    // RETAIN and SPRITE_LAYER placeholders, store counters, render-bundle
+    // loaders, time-gated queue pacing): 44.33 KB measured.
+    budget: 44.5 * KB,
     dynamic: [BACKEND_WEBGPU, SPRITE_WGSL],
   },
   {
     id: 'minimal-webgl2',
     file: 'scripts/size-fixtures/minimal-webgl2.ts',
     what: 'createRenderer + Texture + Sprite, WebGL2 chunks',
-    budget: 46 * KB,
+    // M5: the same seams; 46.60 KB measured.
+    budget: 46.8 * KB,
     dynamic: [BACKEND_WEBGL2, SPRITE_GLSL],
   },
   {
     id: 'graphics-webgpu',
     file: 'scripts/size-fixtures/graphics-webgpu.ts',
     what: 'minimal WebGPU program + Graphics, every graphics chunk',
-    budget: 65 * KB,
+    // M5: the unified batch (persistent record pools, item streams, the
+    // unified pipeline and shaders) and the seams; 71.95 KB measured.
+    budget: 72.5 * KB,
     dynamic: [
       BACKEND_WEBGPU,
       SPRITE_WGSL,
@@ -141,7 +148,8 @@ export const FIXTURES = [
     id: 'worker-webgl2',
     file: 'src/worker/entry.ts',
     what: 'worker bundle + the WebGL2 backend chunk',
-    budget: 26 * KB,
+    // M5: two lazy loaders and the pacing change left 24 B; 25.98 KB measured.
+    budget: 26.5 * KB,
     dynamic: [BACKEND_WEBGL2, SPRITE_GLSL],
   },
 ];
@@ -154,7 +162,9 @@ export const FIXTURES = [
  */
 export const CHUNKS = [
   { id: 'backend-webgpu', module: BACKEND_WEBGPU, budget: 8800 },
-  { id: 'backend-webgl2', module: BACKEND_WEBGL2, budget: 10800 },
+  // backend-webgl2: M5 (render-bundle loader, time-gated queue pacing)
+  // 10.87 KB measured.
+  { id: 'backend-webgl2', module: BACKEND_WEBGL2, budget: 11000 },
   { id: 'sprite-wgsl', module: SPRITE_WGSL, budget: 1300 },
   { id: 'sprite-glsl', module: SPRITE_GLSL, budget: 1200 },
   { id: 'structure-patch', module: 'src/sprites/frontPatch.ts', budget: 2500 },
@@ -211,12 +221,27 @@ export const CHUNKS = [
   // M4 Graphics chunks (ARCHITECTURE §26.9): the front emitter, the
   // recording compiler it shares with tessellation, tessellation, the core
   // system and its shaders. Measured min+gzip + ~0.5 KB, rounded to 0.1 KB.
-  { id: 'graphics', module: GRAPHICS_EMIT, budget: 4000 },
+  // M5 re-measured graphics, graphics-core and both shader chunks after the
+  // unified batch (§27.4: persistent record pools, item streams, data
+  // textures on WebGL2, the unified pipeline) by the same rule.
+  { id: 'graphics', module: GRAPHICS_EMIT, budget: 6500 },
   { id: 'graphics-compile', module: 'src/graphics/compile.ts', budget: 2900 },
   { id: 'graphics-tess', module: GRAPHICS_TESS, budget: 7300 },
-  { id: 'graphics-core', module: GRAPHICS_CORE, budget: 3800 },
-  { id: 'graphics-wgsl', module: GRAPHICS_WGSL, budget: 2500 },
-  { id: 'graphics-glsl', module: 'src/graphics/shadersGLSL.ts', budget: 2300 },
+  { id: 'graphics-core', module: GRAPHICS_CORE, budget: 6300 },
+  { id: 'graphics-wgsl', module: GRAPHICS_WGSL, budget: 3900 },
+  { id: 'graphics-glsl', module: 'src/graphics/shadersGLSL.ts', budget: 3300 },
+  // M5 chunks (ARCHITECTURE §27.6, §28.7): retained segments, static
+  // containers, render bundles per backend, SpriteLayer. Measured min+gzip
+  // + ~0.5 KB, rounded to 0.1 KB.
+  { id: 'retain', module: 'src/retained/front.ts', budget: 2500 },
+  { id: 'retain-core', module: 'src/retained/core.ts', budget: 2300 },
+  { id: 'static', module: 'src/retained/static.ts', budget: 5200 },
+  { id: 'bundle-webgpu', module: 'src/backend/webgpu/bundle.ts', budget: 1300 },
+  { id: 'bundle-webgl2', module: 'src/backend/webgl2/bundle.ts', budget: 1600 },
+  { id: 'layer', module: 'src/layer/front.ts', budget: 3000 },
+  { id: 'layer-core', module: 'src/layer/core.ts', budget: 5000 },
+  { id: 'layer-wgsl', module: 'src/layer/shadersWGSL.ts', budget: 2500 },
+  { id: 'layer-glsl', module: 'src/layer/shadersGLSL.ts', budget: 1700 },
 ];
 
 const gz = bytes => gzipSync(bytes, { level: 9 }).length;

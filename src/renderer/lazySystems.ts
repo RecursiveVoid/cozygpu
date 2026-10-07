@@ -131,7 +131,7 @@ export class LazyCoreSystem implements CoreSystem {
   }
 
   /** The real system, created on first use once its factory is registered. */
-  private resolve(): CoreSystem | null {
+  protected resolve(): CoreSystem | null {
     if (this.inner || this.destroyed || !this.ctx) return this.inner;
     const factory = factories[this.range];
     if (!factory) return null;

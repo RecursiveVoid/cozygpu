@@ -1,5 +1,6 @@
 /**
- * The Graphics front (ARCHITECTURE §26.6): per-renderer arenas, change
+ * The Graphics front (ARCHITECTURE §26.6), M4 split path: persistent
+ * per-renderer records, change
  * detection, one upload per store per frame, draw coalescing across nodes,
  * shared meshes, device loss, masks and picking — decoded from the real
  * command stream.
@@ -24,6 +25,7 @@ import { compile } from './compile';
 import { createGraphicsBinding, loadTess } from './emit';
 import type { Recorded } from './frame.testutil';
 import { TestFrame } from './frame.testutil';
+import { FAKE_CAPS } from '../renderer/testing/fakeBackend';
 import { Graphics } from './Graphics';
 import { GraphicsContext } from './GraphicsContext';
 import type { GraphicsBinding } from './types';
@@ -33,9 +35,15 @@ beforeAll(async () => {
 });
 
 let nextRenderer = 100;
+/**
+ * A frame of a WebGPU device without vertex storage: the M4 split path
+ * (GFX_DRAW_SHAPES / GFX_DRAW_MESH over persistent records). The unified
+ * batch is tested in unified.test.ts.
+ */
 function frame(): TestFrame {
   const f = new TestFrame();
   f.rendererId = nextRenderer++;
+  f.caps = { ...FAKE_CAPS, vertexStorage: false };
   return f;
 }
 

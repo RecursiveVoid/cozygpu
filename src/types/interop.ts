@@ -19,8 +19,24 @@ import type { BackendKind } from '../backend/types';
  *  - 'swarm-cold': 16 B SwarmCold records (§4.3).
  *  - 'sprite-instance': 40 B sprite instances (§4.1). Reserved: M2.5 has no
  *    consumer and `registerInstanceBuffer` rejects it with UNSUPPORTED.
+ *  - M5 SpriteLayer streams (§28, `src/types/layerLayouts.ts`):
+ *    'layer-position' (8 B), 'layer-xform' (8 B), 'layer-color' (4 B),
+ *    'layer-user' (4 B). WebGPU: STORAGE usage (the layer pulls records by
+ *    index); WebGL2: an ARRAY_BUFFER read as instanced attributes.
+ *  - M5 'draw-indirect': one 16-byte indirect draw record
+ *    (LAYER_INDIRECT_BYTES; capacity 1) whose instanceCount is the layer's
+ *    draw count, so a GPU-side count needs no readback. WebGPU only
+ *    (INDIRECT usage); UNSUPPORTED on WebGL2.
  */
-export type ExternalLayout = 'swarm-hot' | 'swarm-cold' | 'sprite-instance';
+export type ExternalLayout =
+  | 'swarm-hot'
+  | 'swarm-cold'
+  | 'sprite-instance'
+  | 'layer-position'
+  | 'layer-xform'
+  | 'layer-color'
+  | 'layer-user'
+  | 'draw-indirect';
 
 export interface ExternalInstanceBufferDesc {
   readonly layout: ExternalLayout;

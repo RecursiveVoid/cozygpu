@@ -16,6 +16,7 @@ import { CommandFlag } from '../commands/opcodes';
 import {
   GFX_DRAW_MESH_BYTES,
   GFX_DRAW_SHAPES_BYTES,
+  GFX_DRAW_UNIFIED_BYTES,
   GfxDrawFlag,
   GfxMeshFlag,
   GfxOp,
@@ -80,11 +81,15 @@ async function setup(
   core: GraphicsCoreSystem;
 }> {
   const backend = new MaskBackend();
-  backend.caps = { ...backend.caps, ...caps };
+  // The M4 split path (no vertex storage); unified.test.ts covers the
+  // unified batch.
+  backend.caps = { ...backend.caps, vertexStorage: false, ...caps };
   const ctx = createMaskContext(backend, sampleCount);
   const core = createGraphicsCoreSystem() as GraphicsCoreSystem;
   await core.init(ctx);
   await settle();
+  // The identity transform slot written at init.
+  backend.writes.length = 0;
   return { backend, ctx, core };
 }
 
@@ -120,7 +125,7 @@ function run(
       core.drawPick(reader, pass, frame, view);
     }
   }
-  core.endFrame(frame);
+
   return pass as GfxPass;
 }
 
@@ -234,12 +239,14 @@ function pipelineDesc(
   return backend.pipelines.find(p => p.label === label);
 }
 
-/** Normal and pick variants of both kinds, warmed at init and restore. */
+/** Normal and pick variants of every kind, warmed at init and restore. */
 const INIT_PIPELINES = [
   'cozygpu.graphics.shape.0',
   'cozygpu.graphics.shape.6',
   'cozygpu.graphics.mesh.0',
   'cozygpu.graphics.mesh.6',
+  'cozygpu.graphics.unified.0',
+  'cozygpu.graphics.unified.6',
 ];
 
 describe('graphics core: pipelines', () => {
@@ -360,14 +367,20 @@ describe('graphics core: pipelines', () => {
     await settle();
     const enc = encoder();
     alloc(enc, GfxOp.GFX_SHAPE_BUFFER_ALLOC, 1, 4);
+    // WebGL2 draws shapes through the unified batch only.
     drawShapes(enc, 1, 0, 1, 0, GfxDrawFlag.MASK_WRITE);
+    enc.begin(GfxOp.GFX_DRAW_UNIFIED, GFX_DRAW_UNIFIED_BYTES, CommandFlag.DRAW);
+    for (const w of [1, 0, 6, 1, 0, 0, 0, 0, 0, 0, GfxDrawFlag.MASK_WRITE]) {
+      enc.u32(w);
+    }
+    enc.end();
     run(core, enc);
     expect(defines).toEqual([
-      'cozygpu.graphics.shape -',
-      'cozygpu.graphics.shape #define PICK',
       'cozygpu.graphics.mesh -',
       'cozygpu.graphics.mesh #define PICK',
-      'cozygpu.graphics.shape #define MASK',
+      'cozygpu.graphics.unified -',
+      'cozygpu.graphics.unified #define PICK',
+      'cozygpu.graphics.unified #define MASK',
     ]);
   });
 });
@@ -647,6 +660,7 @@ describe('graphics core: device loss', () => {
 
   it('drops pipelines that resolve after a restore', async () => {
     const backend = new MaskBackend();
+    backend.caps = { ...backend.caps, vertexStorage: false };
     const ctx = createMaskContext(backend);
     const core = createGraphicsCoreSystem();
     const resolvers: (() => void)[] = [];

@@ -217,6 +217,9 @@ function runScenario(
 
     const packer = new SpriteScenePacker();
     packer.incremental = incremental;
+    // The immediate path: these checks read every frame's SPRITE_DRAWs
+    // (retained segments would replay them).
+    packer.retained = false;
     const frame = new FakeFrame();
     let gpu = new Uint8Array(0);
     let uploadedBytesTotal = 0;

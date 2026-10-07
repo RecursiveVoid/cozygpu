@@ -82,6 +82,7 @@ export function resolveRendererConfig(
     onDeviceRestored: options.onDeviceRestored,
     assets: options.assets,
     events: options.events,
+    retained: options.retained,
   };
 }
 

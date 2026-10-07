@@ -203,11 +203,20 @@ describe('WebGPU pacing with the readback ring', () => {
 });
 
 describe('WebGPU queue-depth pacing (M3)', () => {
-  it('holds once the GPU is QUEUE_FRAMES submits behind, with no readback', () => {
+  // M5: a depth hold also needs the probe to be QUEUE_MS (20 ms) old.
+  let clock = 0;
+  beforeEach(() => {
+    clock = 0;
+    jest.spyOn(performance, 'now').mockImplementation(() => clock);
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  it('holds once the GPU is QUEUE_FRAMES submits and QUEUE_MS behind, with no readback', () => {
     const { backend } = setup();
     // The GPU answers nothing: every submit piles up.
     for (let i = 0; i < 15; i++) backend.afterSubmit();
     expect(backend.reads).toBe(0);
+    clock = 50;
     expect(backend.backlogged()).toBe(false);
     backend.afterSubmit(); // 16 = QUEUE_FRAMES
     expect(backend.backlogged()).toBe(true);
@@ -216,9 +225,22 @@ describe('WebGPU queue-depth pacing (M3)', () => {
     expect(held).not.toHaveBeenCalled();
   });
 
+  it('does not hold cheap frames while the probe is younger than QUEUE_MS', () => {
+    const { backend } = setup();
+    for (let i = 0; i < 40; i++) backend.afterSubmit();
+    clock = 19; // the probe was armed at 0
+    expect(backend.backlogged()).toBe(false);
+    const held = jest.fn();
+    backend.whenCaughtUp(held);
+    expect(held).toHaveBeenCalledTimes(1);
+    clock = 20;
+    expect(backend.backlogged()).toBe(true);
+  });
+
   it('a probe that lands releases the held frame and the queue moves again', async () => {
     const { backend, probes } = setup();
     for (let i = 0; i < 16; i++) backend.afterSubmit();
+    clock = 30;
     const held = jest.fn();
     backend.whenCaughtUp(held);
     expect(probes.length).toBe(1); // armed at QUEUE_PROBE, not per submit
@@ -239,6 +261,7 @@ describe('WebGPU queue-depth pacing (M3)', () => {
   it('a lost device stops holding on queue depth', async () => {
     const { backend, probes } = setup();
     for (let i = 0; i < 16; i++) backend.afterSubmit();
+    clock = 30;
     const held = jest.fn();
     backend.whenCaughtUp(held);
     expect(held).not.toHaveBeenCalled();

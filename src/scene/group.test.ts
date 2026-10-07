@@ -6,6 +6,8 @@
 import { isRenderGroup } from '../types/core';
 import { Container } from './Container';
 import { Group } from './Group';
+import { Texture } from './Texture';
+import { SpriteLayer } from '../layer/SpriteLayer';
 import { Text } from '../text/Text';
 import { Particles } from '../particles/Particles';
 import { filters, defineFilter } from '../filters';
@@ -40,6 +42,15 @@ describe('Group (M3 effect seam)', () => {
     const world = new Float32Array(6);
     expect(group._emitGroupBegin(null as never, world, 0, 1)).toBe(false);
     group.destroy();
+  });
+
+  it('rejects a SpriteLayer as a mask source (M5, §28.6)', () => {
+    const g = new Group();
+    const texture = Texture.fromPixels(1, 1, new Uint8Array(4));
+    const layer = new SpriteLayer({ capacity: 4, frames: [texture] });
+    expect(() => (g.mask = layer)).toThrow(/SpriteLayer/);
+    expect(() => (g.mask = { source: layer })).toThrow(/SpriteLayer/);
+    expect(g.mask).toBeNull();
   });
 
   it('a group without effects draws normally', () => {

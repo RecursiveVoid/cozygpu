@@ -222,6 +222,26 @@ describe('Renderer', () => {
     expect(renderer.stats.drawCalls).toBe(3);
   });
 
+  it('passes RendererOptions.retained to the packer and reports segment counts', () => {
+    type Packer = {
+      retained?: boolean;
+      segState?: { stats: { replayed: number; recorded: number } };
+    };
+    const off = new RendererImpl(
+      new FakeTransport(),
+      config({ retained: false }),
+    );
+    expect((off as unknown as { packer: Packer }).packer.retained).toBe(false);
+    const on = new RendererImpl(new FakeTransport(), config());
+    const packer = (on as unknown as { packer: Packer }).packer;
+    expect(packer.retained).toBeUndefined(); // the packer's default (true)
+    on.render();
+    expect(on.stats.retainedSegments).toBeUndefined();
+    packer.segState = { stats: { replayed: 3, recorded: 1 } };
+    on.render();
+    expect(on.stats.retainedSegments).toEqual({ replayed: 3, recorded: 1 });
+  });
+
   it('registers shared buffers once per generation and re-sends state after restore', () => {
     const transport = new FakeTransport();
     const onDeviceLost = jest.fn();

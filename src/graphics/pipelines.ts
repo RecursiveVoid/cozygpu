@@ -92,6 +92,8 @@ export const GFX_VARIANTS = 7;
 /** Draw kinds. */
 export const GFX_KIND_SHAPES = 0;
 export const GFX_KIND_MESH = 1;
+/** M5 (ARCHITECTURE §27.4): GFX_DRAW_UNIFIED. */
+export const GFX_KIND_UNIFIED = 2;
 
 /**
  * The pipeline variant a draw uses: the pick variant in the pick pass, the

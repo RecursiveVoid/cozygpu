@@ -123,6 +123,24 @@ export type {
   StrokeStyle,
 } from './graphics';
 
+// ─── SpriteLayer (M5) ────────────────────────────────────────────────────────
+// Millions of sprites from compact GPU-resident streams in one draw
+// (ARCHITECTURE §28). The shell is synchronous; drawing and the core are
+// chunks loaded on first use, `loadSpriteLayer()` preloads them.
+export { SpriteLayer, loadSpriteLayer } from './layer';
+export type {
+  LayerColumnBinding,
+  LayerColumnOptions,
+  LayerColumns,
+  LayerExternalSource,
+  SpriteLayerData,
+  SpriteLayerNode,
+  SpriteLayerOptions,
+  SpriteLayerStreams,
+} from './layer';
+/** SpriteLayer stream layouts, for code that fills layer streams itself. */
+export * as layerLayouts from './types/layerLayouts';
+
 // ─── Swarm (tier 2) ──────────────────────────────────────────────────────────
 export { Swarm, behaviors, defineBehavior } from './swarm';
 /** WebGL2 swarm ceilings: refuse above MAX, warn once above WARN (§14.2). */

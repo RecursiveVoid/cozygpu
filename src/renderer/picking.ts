@@ -96,9 +96,13 @@ class PickClientImpl implements PickClient {
         ? {
             node,
             instance: node.kind === 'sprite' ? -1 : message.instance,
-            // A Swarm instance's cold.user comes in the texel; a sprite's
-            // id is read from the node now (ARCHITECTURE §19.3).
-            userId: node.kind === 'swarm' ? (message.userId ?? 0) : node.userId,
+            // A Swarm instance's cold.user and a SpriteLayer row's USER
+            // value come in the texel; a sprite's id is read from the node
+            // now (ARCHITECTURE §19.3, §28.6).
+            userId:
+              node.kind === 'swarm' || node.kind === 'layer'
+                ? (message.userId ?? 0)
+                : node.userId,
             x: waiter.x,
             y: waiter.y,
           }

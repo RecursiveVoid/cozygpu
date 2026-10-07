@@ -97,6 +97,16 @@ const createToken = {};
 
 /** Sources destroyed while uploaded somewhere; flushed by each ScenePacker. */
 const pendingDestroys: TextureSource[] = [];
+/** TEXTURE_DESTROY commands emitted so far (any renderer). */
+let destroysEmitted = 0;
+
+/**
+ * @internal Bumped when a destroyed texture's id leaves a renderer: cached
+ * draws (static bakes) that may still name it are re-made.
+ */
+export function textureDestroyCount(): number {
+  return destroysEmitted;
+}
 
 /**
  * Renderers that were destroyed (renderer ids are never reused). Their cores
@@ -435,10 +445,12 @@ export function ensureTextureUploaded(
 /**
  * @internal Emits TEXTURE_DESTROY for sources destroyed since the last frame
  * that were uploaded to this renderer. Frees the texId once no renderer holds
- * it. Called by the ScenePacker at the start of pack().
+ * it. Called by the ScenePacker at the start of pack(). True when it
+ * emitted one (draws recorded with that id must be re-checked).
  */
-export function flushTextureDestroys(frame: FrontFrame): void {
+export function flushTextureDestroys(frame: FrontFrame): boolean {
   const rid = frame.rendererId;
+  let emitted = false;
   for (let i = pendingDestroys.length - 1; i >= 0; i--) {
     const s = pendingDestroys[i];
     if (s.uploads.has(rid)) {
@@ -447,6 +459,8 @@ export function flushTextureDestroys(frame: FrontFrame): void {
       enc.u32(s.id);
       enc.end();
       s.uploads.delete(rid);
+      destroysEmitted++;
+      emitted = true;
     }
     if (s.uploads.size === 0) {
       pendingDestroys[i] = pendingDestroys[pendingDestroys.length - 1];
@@ -454,6 +468,7 @@ export function flushTextureDestroys(frame: FrontFrame): void {
       ids.texture.free(s.id);
     }
   }
+  return emitted;
 }
 
 /**

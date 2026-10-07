@@ -32,6 +32,7 @@ export class TestFrame implements FrontFrame {
   useSharedArrayBuffer = false;
   generation = 0;
   caps = FAKE_CAPS;
+  retainSegment = 0;
   ready = true;
   hooks: FrontFrameHook[] = [];
   shared: (ArrayBuffer | SharedArrayBuffer)[] = [];

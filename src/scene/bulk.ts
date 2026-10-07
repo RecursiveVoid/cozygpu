@@ -31,6 +31,7 @@ import {
   POS_STRIDE,
   TOUCH_MASK,
   nodeStore,
+  touchScopeOf,
 } from './store';
 import { BulkField } from './types';
 import type {
@@ -450,6 +451,8 @@ class Rows {
       }
     } finally {
       s.touch = (s.touch + 1) & TOUCH_MASK;
+      // A static container (or one inside a static container) re-bakes.
+      touchScopeOf(this._host, true);
     }
   }
 

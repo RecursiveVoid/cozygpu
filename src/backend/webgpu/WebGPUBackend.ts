@@ -146,14 +146,18 @@ const PACE_FRAMES = 3;
  * — where the GPU is never more than a frame or two behind — arms one every
  * QUEUE_PROBE frames at most and never holds.
  *
- * The tradeoff: an uncapped loop is now capped at roughly QUEUE_FRAMES frames
- * of queued work, so its throughput becomes GPU-bound and `stats.skippedFrames`
- * rises. That is the point — the frames beyond the queue depth were never
- * displayed — but a benchmark that measures front CPU with vsync off sees
- * fewer, not cheaper, frames.
+ * M5: depth alone over-held cheap frames. A probe answers a few ms after the
+ * GPU finished, and a 0.2 ms frame submits 16 times in that window, so a
+ * 10k-shape static scene was held for a display tick every 16 frames (an
+ * uncapped loop stuck near 470 fps with p99 ~19 ms while the GPU idled). The
+ * queue now also has to be deep in TIME: the outstanding probe must be
+ * QUEUE_MS old, i.e. the GPU is at least that far behind the submit it
+ * covers. Cheap frames never hold; a GPU-bound uncapped loop still holds, so
+ * the first pick waits for at most a few ticks of queued work.
  */
 const QUEUE_FRAMES = 16;
 const QUEUE_PROBE = 8;
+const QUEUE_MS = 20;
 
 export class WebGPUBackend implements Backend, CommandHost {
   readonly kind = 'webgpu' as const;
@@ -191,6 +195,8 @@ export class WebGPUBackend implements Backend, CommandHost {
   private gpuDone = 0;
   /** `submits` when the outstanding probe was armed; 0 = none outstanding. */
   private probeAt = 0;
+  /** performance.now() when the outstanding probe was armed. */
+  private probeTime = 0;
   /** The probe's settle callback, created on the first probe and reused. */
   private probeCb: (() => void) | null = null;
 
@@ -308,12 +314,22 @@ export class WebGPUBackend implements Backend, CommandHost {
   /**
    * @internal Frame pacing (not part of the RHI; RenderCore duck-types it).
    * True while a readback is in flight and PACE_FRAMES frames were submitted
-   * since it started, or while the GPU is QUEUE_FRAMES submits behind.
+   * since it started, or while the GPU is QUEUE_FRAMES submits and QUEUE_MS
+   * behind.
    */
   backlogged(): boolean {
     return (
       (this.reads > 0 && this.submits - this.readSubmit >= PACE_FRAMES) ||
-      this.submits - this.gpuDone >= QUEUE_FRAMES
+      this.queueDeep()
+    );
+  }
+
+  /** The outstanding probe is QUEUE_FRAMES submits and QUEUE_MS old. */
+  private queueDeep(): boolean {
+    return (
+      this.probeAt !== 0 &&
+      this.submits - this.gpuDone >= QUEUE_FRAMES &&
+      performance.now() - this.probeTime >= QUEUE_MS
     );
   }
 
@@ -329,6 +345,7 @@ export class WebGPUBackend implements Backend, CommandHost {
   private probeQueue(): void {
     if (this.probeAt !== 0 || this.lost || this.destroyed) return;
     this.probeAt = this.submits;
+    this.probeTime = performance.now();
     let cb = this.probeCb;
     // Created once, never per probe; both settlements take the same path.
     if (!cb) cb = this.probeCb = () => this.probeLanded();
@@ -350,9 +367,7 @@ export class WebGPUBackend implements Backend, CommandHost {
    */
   landed(): void {
     const callback = this.caughtUp;
-    const held =
-      !this.lost &&
-      (this.reads > 0 || this.submits - this.gpuDone >= QUEUE_FRAMES);
+    const held = !this.lost && (this.reads > 0 || this.queueDeep());
     if (callback !== null && !held) {
       this.caughtUp = null;
       callback();
@@ -878,6 +893,14 @@ export class WebGPUBackend implements Backend, CommandHost {
     return import('./readbackRing').then(m => {
       ringModule = m;
     });
+  }
+
+  /**
+   * M5 (ARCHITECTURE §27.3). Loads the bundle chunk, which installs
+   * `createRenderBundleEncoder` and `RenderPass.executeBundle`.
+   */
+  loadRenderBundles(): Promise<void> {
+    return import('./bundle').then(m => m.installRenderBundles(this));
   }
 
   createReadbackRing(desc: ReadbackRingDesc): RhiReadbackRing {

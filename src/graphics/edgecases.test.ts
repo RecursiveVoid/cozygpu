@@ -39,6 +39,7 @@ import {
   tri,
   trianglesArea,
 } from './frame.testutil';
+import { FAKE_CAPS } from '../renderer/testing/fakeBackend';
 import { Graphics } from './Graphics';
 import { GraphicsContext } from './GraphicsContext';
 import type { MeshOut } from './stroke';
@@ -160,8 +161,10 @@ function uv(c: Compiled, i: number, byteOffset: number): number {
 }
 
 let nextRenderer = 5000;
+/** The M4 split path (no vertex storage); unified.test.ts covers the batch. */
 function frame(): TestFrame {
   const f = new TestFrame();
+  f.caps = { ...FAKE_CAPS, vertexStorage: false };
   f.rendererId = nextRenderer++;
   return f;
 }
@@ -498,25 +501,28 @@ describe('change tracking', () => {
     expect(u[GFX_SHAPE_F32_PER + (GS_FILL >> 2)]).toBe(toPackedColor(0xff0000));
   });
 
-  it('a node whose slot was taken while hidden is rewritten when it returns', () => {
+  it('records are persistent: hiding a node moves nothing, showing it rewrites nothing', () => {
     const f = frame();
     const a = node(new GraphicsContext().rect(0, 0, 1, 1).fill(0xff0000));
     const b = node(new GraphicsContext().rect(0, 0, 1, 1).fill(0x0000ff));
     a.binding.emitDraw(f, W, at(0, 0, 0), 1);
     b.binding.emitDraw(f, W, at(1, 5, 0), 1);
     f.end();
-    // a hidden: b moves into slot 0.
+    // a hidden: b keeps its record (1); nothing to upload.
     b.binding.emitDraw(f, W, at(1, 5, 0), 1);
-    let up = only(f.end(), GfxOp.GFX_SHAPE_UPLOAD);
-    expect(up[0].words.slice(1, 3)).toEqual([0, 1]);
-    // a back in slot 0, b back in slot 1: both rewritten.
+    let out = f.end();
+    expect(only(out, GfxOp.GFX_SHAPE_UPLOAD).length).toBe(0);
+    expect(only(out, GfxOp.GFX_DRAW_SHAPES)[0].words.slice(1, 3)).toEqual([
+      1, 1,
+    ]);
+    // a back: both draw from their own records, still nothing uploaded.
     a.binding.emitDraw(f, W, at(0, 0, 0), 1);
     b.binding.emitDraw(f, W, at(1, 5, 0), 1);
-    up = only(f.end(), GfxOp.GFX_SHAPE_UPLOAD);
-    expect(up[0].words.slice(1, 3)).toEqual([0, 2]);
-    const { u } = instances(up[0]);
-    expect(u[GS_FILL >> 2]).toBe(toPackedColor(0xff0000));
-    expect(u[GFX_SHAPE_F32_PER + (GS_FILL >> 2)]).toBe(toPackedColor(0x0000ff));
+    out = f.end();
+    expect(only(out, GfxOp.GFX_SHAPE_UPLOAD).length).toBe(0);
+    expect(only(out, GfxOp.GFX_DRAW_SHAPES)[0].words.slice(1, 3)).toEqual([
+      0, 2,
+    ]);
   });
 
   it('swapping node.context rewrites the slot with the new content', () => {

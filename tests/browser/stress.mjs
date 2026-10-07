@@ -8,7 +8,10 @@
  *     columns,pickuid,events,fallback,pickalloc,external; M3: m3masks,m3filters,
  *     m3text,m3particles,m3loss — --m3-seconds=N churn length, --m3-particles=N;
  *     Graphics: gfxsdf,gfxpaths,gfxshared,gfxmask,gfxpick,gfxloss,gfxalloc —
- *     --gfx-seconds=N, --gfx-count=N animated shapes, --gfx-rounds=N pick rounds)
+ *     --gfx-seconds=N, --gfx-count=N animated shapes, --gfx-rounds=N pick rounds;
+ *     rendering at scale: m5retained,m5static,m5layer,m5columns,m5frames,m5cull,
+ *     m5loss,m5leak — --m5-steps=N edit steps, --m5-seconds=N churn, --m5-layer-caps=a,b,
+ *     --m5-diff=ratio, --m5-shots=DIR for screenshots of failing pixel compares)
  *   node tests/browser/stress.mjs --mode=main          main | worker | both (default both)
  *   node tests/browser/stress.mjs --backend=webgl2     webgpu | webgl2 | both (default both)
  *   node tests/browser/stress.mjs --quick              short durations (burst 10 s, sprites 5 s)
@@ -61,7 +64,7 @@ const argv = Object.fromEntries(
   }),
 );
 const QUICK = !!argv.quick;
-const ALL = ['swarm', 'burst', 'sprites', 'resize', 'dpr', 'loss', 'recreate', 'regress', 'assets', 'pick', 'gpualloc', 'ring', 'soak', 'columns', 'pickuid', 'events', 'fallback', 'pickalloc', 'external', 'm3masks', 'm3filters', 'm3text', 'm3particles', 'm3loss', 'gfxsdf', 'gfxpaths', 'gfxshared', 'gfxmask', 'gfxpick', 'gfxloss', 'gfxalloc'];
+const ALL = ['swarm', 'burst', 'sprites', 'resize', 'dpr', 'loss', 'recreate', 'regress', 'assets', 'pick', 'gpualloc', 'ring', 'soak', 'columns', 'pickuid', 'events', 'fallback', 'pickalloc', 'external', 'm3masks', 'm3filters', 'm3text', 'm3particles', 'm3loss', 'gfxsdf', 'gfxpaths', 'gfxshared', 'gfxmask', 'gfxpick', 'gfxloss', 'gfxalloc', 'm5retained', 'm5static', 'm5layer', 'm5columns', 'm5frames', 'm5cull', 'm5loss', 'm5leak'];
 const ONLY = argv.only ? String(argv.only).split(',') : ALL;
 const MODES = argv.mode && argv.mode !== 'both' ? [String(argv.mode)] : ['main', 'worker'];
 /** M2: every scenario runs on both backends unless one is named. */
@@ -2480,6 +2483,273 @@ async function runGfxAlloc(mode, backend) {
   });
 }
 
+// ─── Rendering at scale: retained, static containers, SpriteLayer ───────────
+
+const M5_STEPS = Number(argv['m5-steps'] ?? (QUICK ? 12 : 30));
+const M5_S = Number(argv['m5-seconds'] ?? (QUICK ? 5 : 12));
+const M5_LAYER_CAPS = argv['m5-layer-caps'] ? String(argv['m5-layer-caps']).split(',').map(Number) : [1_000_000, 2_000_000, 4_000_000, 20_000_000];
+const M5_SHOTS = String(argv['m5-shots'] ?? path.join(ROOT, 'examples/_screenshots/m5'));
+/** Share of pixels that may differ between the test and reference canvases. */
+const M5_DIFF = Number(argv['m5-diff'] ?? 0.002);
+
+async function m5PairDiff(p, rect, label) {
+  const b64 = await p.page.screenshot({ encoding: 'base64', clip: rect, captureBeyondViewport: false });
+  const d = await p.page.evaluate(b => stress.m5Diff(b), b64);
+  if (d.badRatio >= M5_DIFF && label) {
+    await mkdir(M5_SHOTS, { recursive: true });
+    const file = path.join(M5_SHOTS, `${label.replace(/[^a-z0-9]+/gi, '-')}.png`);
+    await writeFile(file, Buffer.from(b64, 'base64'));
+    d.shot = file;
+  }
+  return d;
+}
+const m5Tag = (backend, mode) => `${backend}-${mode}`;
+
+async function runM5Retained(mode, backend) {
+  const worker = mode === 'worker';
+  await scenario(`m5: retained == immediate under random edits (${M5_STEPS} steps) [${backend}/${mode}]`, async p => {
+    const r = await withTimeout(p.page.evaluate(o => stress.m5RetInit(o), { worker, backend }), 120000, 'm5RetInit');
+    note('init', { test: r.test, ref: r.ref, throws: r.throws });
+    let d = await m5PairDiff(p, r.rect, `ret-init-${m5Tag(backend, mode)}`);
+    check('init: pixels equal (test retained, ref immediate)', d.badRatio < M5_DIFF && d.litRef > 0.05, d);
+    const bad = [];
+    const throws = [];
+    let last = null;
+    let worst = 0;
+    for (let k = 0; k < M5_STEPS; k++) {
+      const s = await withTimeout(p.page.evaluate((key, o) => stress.m5RetStep(key, o), r.key, { rounds: 1 + (k % 3), edits: 1 + (k % 5) }), 60000, `m5RetStep ${k}`);
+      d = await m5PairDiff(p, r.rect, `ret-step${k}-${m5Tag(backend, mode)}`);
+      worst = Math.max(worst, d.badRatio);
+      if (s.throws.length) throws.push({ k, throws: s.throws.slice(0, 3) });
+      if (d.badRatio >= M5_DIFF) bad.push({ k, ops: s.ops, segs: s.segs, diff: d });
+      last = s;
+    }
+    note('last step', { test: last.test, ref: last.ref, maxSeen: last.maxSeen, nodes: last.nodes, worstBadRatio: worst });
+    check(`every step: pixels equal (< ${M5_DIFF * 100}% differ)`, bad.length === 0, { failingSteps: bad.length, first: bad.slice(0, 3) });
+    check('no throws', throws.length === 0, throws.slice(0, 3));
+    check('retained path was active (segments replayed)', (last.maxSeen?.replayed ?? 0) > 0, last.maxSeen);
+    check('idle frame replays (no recording when nothing changed)', last.test.segments && last.test.segments.recorded === 0, last.test.segments);
+    m3CleanLogs(p, 0, '');
+    await p.page.evaluate(k => stress.m5Drop(k), r.key);
+  });
+}
+
+async function runM5Static(mode, backend) {
+  const worker = mode === 'worker';
+  for (const retainedTest of [true, false]) {
+    await scenario(`m5: container.static toggling vs plain scene (retained=${retainedTest}, ${M5_STEPS} steps) [${backend}/${mode}]`, async p => {
+      const r = await withTimeout(p.page.evaluate(o => stress.m5StaticInit(o), { worker, backend, retainedTest }), 120000, 'm5StaticInit');
+      let d = await m5PairDiff(p, r.rect, `static-init-${retainedTest}-${m5Tag(backend, mode)}`);
+      check('init: static container == plain container', d.badRatio < M5_DIFF && d.litRef > 0.05, d);
+      const kinds = ['mixed', 'toggle', 'texgrow', 'mixed', 'group', 'texgrow', 'mixed', 'toggle', 'group', 'texgrow'];
+      const bad = [];
+      const throws = [];
+      let warns = 0;
+      for (let k = 0; k < M5_STEPS; k++) {
+        const kind = kinds[k % kinds.length];
+        const s = await withTimeout(p.page.evaluate((key, o) => stress.m5StaticStep(key, o), r.key, { kind, edits: 2 + (k % 6) }), 60000, `m5StaticStep ${k}`);
+        d = await m5PairDiff(p, r.rect, `static-${retainedTest}-step${k}-${m5Tag(backend, mode)}`);
+        warns += s.warns;
+        if (s.throws.length) throws.push({ k, throws: s.throws.slice(0, 3) });
+        if (d.badRatio >= M5_DIFF) bad.push({ k, kind, done: s.done, static: s.static, inner: s.inner, diff: d });
+      }
+      check(`every step: pixels equal (< ${M5_DIFF * 100}% differ)`, bad.length === 0, { failingSteps: bad.length, first: bad.slice(0, 3) });
+      check('no throws', throws.length === 0, throws.slice(0, 3));
+      note('console warnings during steps', warns);
+      const m = await withTimeout(p.page.evaluate(k => stress.m5StaticMeasure(k, 90), r.key), 60000, 'm5StaticMeasure');
+      note('static container that only moves', m);
+      d = await m5PairDiff(p, r.rect, `static-${retainedTest}-final-${m5Tag(backend, mode)}`);
+      check('after re-baking: pixels equal', d.badRatio < M5_DIFF, d);
+      if (retainedTest) check('moving a baked container: packet < 512 B per frame', m.packetMax < 512, m);
+      m3CleanLogs(p, 0, '');
+      await p.page.evaluate(k => stress.m5Drop(k), r.key);
+    });
+  }
+}
+
+async function runM5Layer(mode, backend) {
+  const worker = mode === 'worker';
+  for (const cap of M5_LAYER_CAPS) {
+    const probe = cap > 4_000_000;
+    const label = probe ? `${cap / 1e6}M positions only (limit probe)` : `${cap / 1e6}M`;
+    await scenario(`m5: SpriteLayer ${label} [${backend}/${mode}]`, async p => {
+      const r = await withTimeout(p.page.evaluate(o => stress.m5LayerScale(o), { worker, backend, capacity: cap, xform: !probe, color: !probe, frames: QUICK ? 60 : 120 }), 300000, 'm5LayerScale');
+      const { static: st, moving, ...rest } = r;
+      note('result', rest);
+      note('static frames', st);
+      note('moving frames (xy commit of every row per frame)', moving);
+      const limit = backend === 'webgpu' ? r.caps.maxStorageBufferBindingSize : r.caps.maxBufferSize;
+      const fits = cap * 8 <= (limit ?? Infinity);
+      note('fits the per-buffer limit', { bytesPerStream: cap * 8, limit, fits });
+      if (!fits) {
+        // Must refuse cleanly (a CozyGPUError at creation or a reported error), never corrupt.
+        const gpu = gpuErrorLines(p.logs, 0).filter(l => !/destroyed|lost/i.test(l.text));
+        const cozy = cozyErrors(p.logs, 0);
+        check('over the limit: a clear CozyGPUError, no GPU validation errors', !!r.error || (cozy.length > 0 && gpu.length === 0), { error: r.error, cozy: cozy.slice(0, 2).map(l => l.text), gpu: gpu.slice(0, 3).map(l => l.text) });
+        check('over the limit: no uncaught page errors', p.logs.filter(l => l.type === 'pageerror').length === 0);
+        await p.page.evaluate(i => stress.dropCtx(i), r.ctxId);
+        return;
+      }
+      check('layer created and drawn', r.ok && !r.error, r.error);
+      check('no throws', r.throws.length === 0, r.throws);
+      const img = await m3shot(p, r.ctxId, { left: [20, 20, 280, 440], right: [340, 20, 280, 440] });
+      const R = img.regions;
+      if (probe) check('pixels: canvas covered (frame 0)', R.left.red > 0.95 && R.right.red > 0.95, { left: fmt(R.left), right: fmt(R.right) });
+      else check('pixels: left half red, right half blue', R.left.red > 0.95 && R.right.blue > 0.95, { left: fmt(R.left), right: fmt(R.right) });
+      check('one draw for the whole layer', st.drawCalls <= 2, st.drawCalls);
+      check('static frame: packet < 256 B', st.packetBytes.max < 256, st.packetBytes);
+      check('static frame: front CPU < 0.3 ms avg', st.cpuMs.avg < 0.3, st.cpuMs);
+      m3CleanLogs(p, 0, '');
+      await p.page.evaluate(i => stress.dropCtx(i), r.ctxId);
+    });
+  }
+}
+
+async function runM5Columns(mode, backend) {
+  const worker = mode === 'worker';
+  await scenario(`m5: layer column churn with partial commits, growth, rebinds (${M5_S} s) [${backend}/${mode}]`, async p => {
+    const r = await withTimeout(p.page.evaluate(o => stress.m5ColInit(o), { worker, backend }), 120000, 'm5ColInit');
+    const c = await withTimeout(p.page.evaluate((i, o) => stress.m5ColChurn(i, o), r.ctxId, { seconds: M5_S }), M5_S * 1000 + 120000, 'm5ColChurn');
+    note('churn', c);
+    check('churn: no throws', c.throws.length === 0, c.throws.slice(0, 4));
+    const f = await withTimeout(p.page.evaluate(i => stress.m5ColFinal(i), r.ctxId), 180000, 'm5ColFinal');
+    const b64 = await p.page.screenshot({ encoding: 'base64', clip: await p.page.evaluate(i => stress.canvasRect(i), r.ctxId), captureBeyondViewport: false });
+    const px = await p.page.evaluate((b, pts) => stress.m5Sample(b, pts), b64, f.probes.map(q => [q.x, q.y]));
+    const colorBad = [];
+    f.probes.forEach((q, i) => {
+      const want = [(q.tint >> 16) & 255, (q.tint >> 8) & 255, q.tint & 255];
+      if (!near(px[i], want, 40)) colorBad.push({ row: q.row, at: [q.x, q.y], want, got: px[i] });
+    });
+    check('final state from partial commits: probe colours exact', colorBad.length === 0, { bad: colorBad.length, of: f.probes.length, first: colorBad.slice(0, 4) });
+    const pickBad = [];
+    f.probes.forEach((q, i) => {
+      const h = f.picks[i];
+      if (!h || !h.isLayer || h.instance !== q.row || h.userId !== q.userId) pickBad.push({ row: q.row, userId: q.userId, got: h });
+    });
+    check('final state: pick returns (layer, row, userId) at every probe', pickBad.length === 0, { bad: pickBad.length, first: pickBad.slice(0, 4) });
+    const lit = await p.page.evaluate(b => stress.analyzePng(b), b64);
+    check('nothing else on screen (all other rows moved off by chunked partial commits)', lit.litRatio < 0.06, lit);
+    m3CleanLogs(p, 0, '');
+    await p.page.evaluate(i => stress.dropCtx(i), r.ctxId);
+  });
+}
+
+async function runM5Frames(mode, backend) {
+  const worker = mode === 'worker';
+  await scenario(`m5: layer texture slots 1 → 8 → 4096 frames, 9 sources refused, replace, shrink [${backend}/${mode}]`, async p => {
+    const r = await withTimeout(p.page.evaluate(o => stress.m5FramesInit(o), { worker, backend }), 120000, 'm5FramesInit');
+    const colors = r.colors.map(c => [(c >> 16) & 255, (c >> 8) & 255, c & 255]);
+    const verify = async (label, expect) => {
+      const b64 = await p.page.screenshot({ encoding: 'base64', clip: await p.page.evaluate(i => stress.canvasRect(i), r.ctxId), captureBeyondViewport: false });
+      const px = await p.page.evaluate((b, pts) => stress.m5Sample(b, pts), b64, r.points);
+      const bad = [];
+      px.forEach((got, i) => {
+        if (!near(got, colors[expect[i]], 30)) bad.push({ i, want: expect[i], got });
+      });
+      check(`${label}: every instance shows its source's colour`, bad.length === 0, { bad: bad.length, first: bad.slice(0, 4) });
+    };
+    await verify('1 source', new Array(64).fill(0));
+    for (const step of ['eight', 'many', 'nine', 'replace', 'shrink']) {
+      const s = await withTimeout(p.page.evaluate((i, st) => stress.m5FramesStep(i, st), r.ctxId, step), 60000, `m5FramesStep ${step}`);
+      if (step === 'nine') {
+        check('9 texture sources: INVALID_ARGUMENT', /INVALID_ARGUMENT/.test(s.code), s.code);
+        check('9 texture sources: frames unchanged', s.unchanged);
+      } else check(`${step}: no throws`, s.throws.length === 0, s.throws);
+      if (s.expect) await verify(step, s.expect);
+      check(`${step}: one draw`, s.drawCalls <= 1, s.drawCalls);
+    }
+    m3CleanLogs(p, 0, '');
+    await p.page.evaluate(i => stress.dropCtx(i), r.ctxId);
+  });
+}
+
+async function runM5Cull(mode, backend) {
+  const worker = mode === 'worker';
+  const variants = [
+    { name: 'stage', o: {} },
+    { name: 'stage, dpr 2', o: {}, dpr: 2 },
+    { name: 'margin 30', o: { margin: 30 } },
+    { name: 'in a blur-filtered Group', o: { filtered: true } },
+    { name: 'in a static container', o: { inStatic: true } },
+    { name: 'in a static container, culling off', o: { inStatic: true, cullTest: false } },
+  ];
+  for (const v of variants) {
+    await scenario(`m5: layer culling while panning == no culling (${v.name}) [${backend}/${mode}]`, async p => {
+      if (v.dpr) await p.page.setViewport({ width: 1000, height: 700, deviceScaleFactor: v.dpr });
+      const r = await withTimeout(p.page.evaluate(o => stress.m5CullInit(o), { worker, backend, ...v.o }), 120000, 'm5CullInit');
+      note('init', r);
+      const bad = [];
+      const pickBad = [];
+      const steps = QUICK ? 12 : 24;
+      let litPoses = 0;
+      for (let k = 0; k < steps; k++) {
+        const s = await withTimeout(p.page.evaluate((key, kk, o) => stress.m5CullStep(key, kk, o), r.key, k, { pick: k % 6 === 0 }), 60000, `m5CullStep ${k}`);
+        const d = await m5PairDiff(p, r.rect, `cull-${v.name}-step${k}-${m5Tag(backend, mode)}`);
+        if (d.badRatio >= M5_DIFF) bad.push({ k, pose: s.pose, diff: d });
+        if (d.litRef > 0.05) litPoses++;
+        for (const q of s.picks ?? []) if (q.test !== q.ref) pickBad.push({ k, ...q });
+      }
+      check(`every pose: culled == unculled pixels (< ${M5_DIFF * 100}% differ)`, bad.length === 0, { failing: bad.length, of: steps, first: bad.slice(0, 3) });
+      check('picks agree with the unculled layer', pickBad.length === 0, pickBad.slice(0, 4));
+      check('most poses show something (the comparison is not of two empty canvases)', litPoses >= steps / 2, { litPoses, of: steps });
+      m3CleanLogs(p, 0, '');
+      await p.page.evaluate(k => stress.m5Drop(k), r.key);
+    });
+  }
+}
+
+async function runM5Loss(mode, backend) {
+  const worker = mode === 'worker';
+  await scenario(`m5: device loss with retained segments, static container, column + culled layers [${backend}/${mode}]`, async p => {
+    const r = await withTimeout(p.page.evaluate(o => stress.m5LossInit(o), { worker, backend }), 120000, 'm5LossInit');
+    note('init', r);
+    let d = await m5PairDiff(p, r.rect, `loss-init-${m5Tag(backend, mode)}`);
+    check('before loss: pixels equal', d.badRatio < M5_DIFF && d.litRef > 0.05, d);
+    for (const [k, kind] of [[1, 'single'], [2, 'double'], [3, 'single']]) {
+      let res;
+      if (kind === 'double') res = await doubleLoss(p, worker);
+      else res = await p.page.evaluate(key => stress.m5Lose(key), r.key);
+      const w = await withTimeout(p.page.evaluate(key => stress.m5LossWait(key), r.key), 60000, 'm5LossWait');
+      check(`loss #${k} (${kind}): restored`, (res === 'ok' || res === undefined || /^ok/.test(String(res))) && w.restored && w.lost === w.restored, { res, ...w });
+      d = await m5PairDiff(p, r.rect, `loss${k}-${m5Tag(backend, mode)}`);
+      check(`after loss #${k}: pixels equal`, d.badRatio < M5_DIFF, d);
+      const e = await withTimeout(p.page.evaluate(key => stress.m5LossEdit(key), r.key), 60000, 'm5LossEdit');
+      d = await m5PairDiff(p, r.rect, `loss${k}-edit-${m5Tag(backend, mode)}`);
+      check(`after loss #${k} + edits: pixels equal`, d.badRatio < M5_DIFF, { diff: d, segs: e.test.segments });
+    }
+    m3CleanLogs(p, 0, '');
+    await p.page.evaluate(k => stress.m5Drop(k), r.key);
+  });
+}
+
+
+async function runM5Leak(mode, backend) {
+  const worker = mode === 'worker';
+  await scenario(`m5: layer stores released after capacity growth, rebind and destroy [${backend}/${mode}]`, async p => {
+    const r = await withTimeout(p.page.evaluate(o => stress.m5LeakInit(o), { worker, backend }), 120000, 'm5LeakInit');
+    const sharedSrc = `(() => { const c = globalThis.__COZYGPU_CORE__; if (!c || !c.ctx || !c.ctx.shared) return null; let bytes = 0; for (const b of c.ctx.shared.values()) bytes += b.byteLength; return { entries: c.ctx.shared.size, MB: +(bytes / 1048576).toFixed(1) }; })()`;
+    const shared = () => inCoreRealm(p, worker, sharedSrc).catch(e => `probe failed: ${e.message}`);
+    const base = await shared();
+    const steps = ['create', 'grow', 'grow', 'rebind', 'grow', 'rebind', 'destroy', 'create', 'destroy', 'create', 'grow', 'destroy'];
+    const trail = [];
+    for (const st of steps) {
+      const s = await withTimeout(p.page.evaluate((i, x) => stress.m5LeakStep(i, x), r.ctxId, st), 120000, `m5LeakStep ${st}`);
+      if (s.throws.length) check(`${st}: no throws`, false, s.throws);
+      trail.push({ step: st, shared: await shared() });
+    }
+    note('core shared registrations (base, then per step)', { base, trail });
+    const end = trail.at(-1).shared;
+    check('every layer destroyed: core holds no more shared memory than at the start', end && base && end.MB <= base.MB + 1, { base, end });
+    if (!worker) {
+      await heapMB(p.cdp);
+      const a = await p.page.evaluate(i => stress.m5LeakAlive(i), r.ctxId);
+      check('dropped stores and columns are collectable (main thread)', a.alive === 0, a);
+    }
+    m3CleanLogs(p, 0, '');
+    await p.page.evaluate(i => stress.dropCtx(i), r.ctxId);
+  });
+}
+
 async function main() {
   outDir = await mkdtemp(path.join(os.tmpdir(), 'cozygpu-stress-'));
   console.log(`bundling → ${outDir}`);
@@ -2525,6 +2795,15 @@ async function main() {
     ['gfxpick', runGfxPick],
     ['gfxloss', runGfxLoss],
     ['gfxalloc', runGfxAlloc],
+    // Rendering at scale.
+    ['m5retained', runM5Retained],
+    ['m5static', runM5Static],
+    ['m5layer', runM5Layer],
+    ['m5columns', runM5Columns],
+    ['m5frames', runM5Frames],
+    ['m5cull', runM5Cull],
+    ['m5loss', runM5Loss],
+    ['m5leak', runM5Leak],
   ];
   if (argv['crash-test']) {
     const kind = String(argv['crash-test']);

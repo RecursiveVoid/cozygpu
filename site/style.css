@@ -352,6 +352,9 @@ section {
   background: var(--accent);
   color: var(--accent-ink);
 }
+.seg[hidden] {
+  display: none;
+}
 .seg button:disabled {
   opacity: 0.45;
   cursor: not-allowed;

@@ -69,6 +69,8 @@ export interface RendererConfig {
   assets?: RendererOptions['assets'];
   /** M2.5. Lifecycle event sink. */
   events?: RendererOptions['events'];
+  /** M5. False keeps the immediate path (ARCHITECTURE §27.2). */
+  retained?: boolean;
 }
 
 interface PendingReadback {
@@ -90,6 +92,7 @@ class Stats implements RendererStats {
   packetBytes = 0;
   cpuMs = 0;
   skippedFrames = 0;
+  retainedSegments?: RendererStats['retainedSegments'];
 }
 
 /** The reused per-frame context handed to the ScenePacker and CustomDrawables. */
@@ -134,6 +137,11 @@ class Frame implements FrontFrame {
 
   registerShared(buffer: ArrayBuffer | SharedArrayBuffer): number {
     return this.owner._registerShared(buffer);
+  }
+
+  /** @internal M5. Optional on FrontFrame consumers. */
+  _releaseShared(buffer: ArrayBuffer | SharedArrayBuffer): void {
+    this.owner._releaseShared(buffer);
   }
 
   readback(
@@ -231,6 +239,9 @@ export class RendererImpl implements Renderer, RendererHost {
     );
     this.frame.encoder = this.encoder;
     this.packer = createScenePacker();
+    if (config.retained === false) {
+      (this.packer as { retained?: boolean }).retained = false;
+    }
     this.stage = new Container({ label: 'stage' });
 
     this.startTime = now();
@@ -338,6 +349,10 @@ export class RendererImpl implements Renderer, RendererHost {
       this.pickClient?.encode(frame);
       flushSwarmDestroys(frame);
       this.packer.pack(this.stage, frame);
+      // M5: the segment counters live in the lazily loaded emitter's state.
+      this.stats.retainedSegments = (
+        this.packer as { segState?: { stats?: Stats['retainedSegments'] } }
+      ).segState?.stats;
       for (let i = 0; i < hooks.length; i++) hooks[i].encodeFrameEnd?.(frame);
       encoder.begin(Op.FRAME_END, 0);
       encoder.end();
@@ -487,6 +502,19 @@ export class RendererImpl implements Renderer, RendererHost {
   }
 
   // ─── FrontFrame hooks ──────────────────────────────────────────────────────
+
+  /** @internal FrontFrame._releaseShared. */
+  _releaseShared(buffer: ArrayBuffer | SharedArrayBuffer): void {
+    const id = this.sharedIds.get(buffer);
+    if (id === undefined) return;
+    const encoder = this.encoder;
+    encoder.begin(Op.SHARED_RELEASE, 4);
+    encoder.u32(id);
+    encoder.end();
+    this.sharedIds.delete(buffer);
+    this.sharedGenerations.delete(buffer);
+    ids.shared.free(id);
+  }
 
   /** @internal */
   _registerShared(buffer: ArrayBuffer | SharedArrayBuffer): number {

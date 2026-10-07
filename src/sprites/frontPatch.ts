@@ -15,7 +15,6 @@ import {
 import type { ContainerNode, SceneNode } from '../scene/types';
 import { SPRITE_INSTANCE_BYTES } from '../types/layouts';
 import {
-  BATCH_CUSTOM,
   BATCH_SPRITES,
   INST_OFF,
   computeRuns,
@@ -92,14 +91,16 @@ export function patch(
       const parent = target.parent;
       if (!parent) continue;
       pIdx = pk.flatIndexOf(parent);
-      if (pIdx < 0) continue; // not drawn by this packer
+      // Not drawn by this packer, or drawn by a static bake (M5).
+      if (pIdx < 0 || (parent as { _sbLeaf?: boolean })._sbLeaf) continue;
       container = parent;
       childIndex = parent.children.indexOf(target);
       if (childIndex < 0) continue;
     } else {
       container = target as ContainerNode;
       pIdx = pk.flatIndexOf(container);
-      if (pIdx < 0) continue;
+      // M5: a baked static container's children are not in the list.
+      if (pIdx < 0 || (container as { _sbLeaf?: boolean })._sbLeaf) continue;
       childIndex = log.index[at];
     }
     // Children [0, childIndex) are unchanged since the last pack: the
@@ -355,9 +356,11 @@ function applyRegion(
   out.texture.length = 0;
   let b = 0;
   for (; b < old.count; b++) {
-    if (old.kind[b] === BATCH_CUSTOM) {
+    // Custom drawables and (M5) static containers: one entry per node.
+    const kind = old.kind[b];
+    if (kind !== BATCH_SPRITES) {
       if (old.flat[b] >= start) break;
-      out.append(BATCH_CUSTOM, 0, 0, 0, null, old.flat[b]);
+      out.append(kind, 0, 0, 0, null, old.flat[b]);
     } else {
       const first = old.first[b];
       if (first >= is) break;
@@ -384,10 +387,11 @@ function applyRegion(
     );
   }
   for (; b < old.count; b++) {
-    if (old.kind[b] === BATCH_CUSTOM) {
+    const kind = old.kind[b];
+    if (kind !== BATCH_SPRITES) {
       const f = old.flat[b];
       if (f < end) continue;
-      out.append(BATCH_CUSTOM, 0, 0, 0, null, f + delta);
+      out.append(kind, 0, 0, 0, null, f + delta);
     } else {
       const first = old.first[b];
       const last = first + old.size[b];

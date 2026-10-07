@@ -10,6 +10,8 @@
  */
 
 import type { GfxOpcode } from './gfxOpcodes';
+import type { LayerOpcode } from './layerOpcodes';
+import type { RetainOpcode } from './retainOpcodes';
 
 /**
  * 2 = M2 (new 0x01 texture/pick opcodes, SWARM_SET_PICK).
@@ -17,9 +19,10 @@ import type { GfxOpcode } from './gfxOpcodes';
  * 4 = M3 (mask 0x04 and filter 0x05 ranges, PASS_BREAK, sprite effects,
  *     SWARM_SET_CURVES).
  * 5 = M4 (graphics 0x06 range, MASK_GEOMETRY_END + MaskFlag.EXTERNAL).
+ * 6 = M5 (retain 0x07 and sprite layer 0x08 ranges, unified graphics draws).
  * Front and worker bundle must match.
  */
-export const PROTOCOL_VERSION = 5;
+export const PROTOCOL_VERSION = 6;
 /** 'CZG1' read as little-endian u32. */
 export const PACKET_MAGIC = 0x3147_5a43;
 
@@ -62,7 +65,9 @@ export const OpcodeRange = {
   MASK: 0x04, // M3 masks: scissor, stencil, alpha (masking)
   FILTER: 0x05, // M3 filter chains and render targets (filters)
   GRAPHICS: 0x06, // M4 vector shapes: SDF shape instances and meshes
-  // 0x07–0x7f reserved for future first-party systems
+  RETAIN: 0x07, // M5 recorded draw segments (retained rendering, §27)
+  SPRITE_LAYER: 0x08, // M5 compact GPU-resident sprite layers (§28)
+  // 0x09–0x7f reserved for future first-party systems
   EXTENSION: 0x80, // 0x80–0xff third-party / experimental
 } as const;
 
@@ -324,7 +329,9 @@ export type Opcode =
   | (typeof Op)[keyof typeof Op]
   | (typeof MaskOp)[keyof typeof MaskOp]
   | (typeof FilterOp)[keyof typeof FilterOp]
-  | GfxOpcode;
+  | GfxOpcode
+  | RetainOpcode
+  | LayerOpcode;
 
 export function opcodeRange(opcode: number): number {
   return opcode >>> 8;

@@ -17,7 +17,13 @@ import type { Filter, FilterOptions } from '../filters/types';
 import type { MaskTarget } from '../masks/types';
 import type { FrontFrame } from '../types/core';
 
-export type NodeKind = 'container' | 'sprite' | 'swarm' | 'group' | 'graphics';
+export type NodeKind =
+  | 'container'
+  | 'sprite'
+  | 'swarm'
+  | 'group'
+  | 'graphics'
+  | 'layer';
 
 export interface NodeOptions {
   label?: string;
@@ -140,6 +146,20 @@ export interface ContainerNode extends SceneNode {
     columns: SpriteColumns,
     options?: BindColumnsOptions,
   ): ColumnBinding;
+
+  /**
+   * M5 static container (ARCHITECTURE §27.5). When true, the subtree is
+   * baked once into persistent GPU records (sprites and Graphics share one
+   * unified batch) and drawn every frame without being walked: changing
+   * nothing inside costs nothing per frame, moving or fading the container
+   * itself rewrites 32 bytes. Any change inside (a property, a child added
+   * or removed, a texture frame, a Graphics edit) re-bakes this container
+   * only, O(subtree), on the next render(). Nodes that cannot be baked
+   * (Swarm, SpriteLayer, Group) are drawn live in their place. Default
+   * false. Use it for large subtrees that rarely change: backgrounds, maps,
+   * charts, UI chrome.
+   */
+  static: boolean;
 }
 
 // ─── Groups: masks and filters (M3, ARCHITECTURE §21, §22) ────────────────────

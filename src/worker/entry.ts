@@ -27,6 +27,8 @@ const LAZY_RANGES = [
   OpcodeRange.MASK,
   OpcodeRange.FILTER,
   OpcodeRange.GRAPHICS,
+  OpcodeRange.RETAIN,
+  OpcodeRange.SPRITE_LAYER,
 ] as const;
 
 registerCoreSystemLoader(OpcodeRange.SWARM, () =>
@@ -40,6 +42,12 @@ registerCoreSystemLoader(OpcodeRange.FILTER, () =>
 );
 registerCoreSystemLoader(OpcodeRange.GRAPHICS, () =>
   import('../graphics/core').then(m => m.createGraphicsCoreSystem),
+);
+registerCoreSystemLoader(OpcodeRange.RETAIN, () =>
+  import('../retained/core').then(m => m.createRetainCoreSystem),
+);
+registerCoreSystemLoader(OpcodeRange.SPRITE_LAYER, () =>
+  import('../layer/core').then(m => m.createSpriteLayerCoreSystem),
 );
 
 const scan = createCommandDecoder();

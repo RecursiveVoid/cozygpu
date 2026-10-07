@@ -1,4 +1,4 @@
-// Showcase page controller: one stage, seven demos, each loaded on demand.
+// Showcase page controller: one stage, eight demos, each loaded on demand.
 // Every demo gets a fresh canvas (a canvas keeps the first context type it
 // was given, so switching between WebGPU and WebGL2 needs a new one).
 import type { BackendChoice, DemoHandle, DemoStart } from './demos/types';
@@ -14,6 +14,8 @@ interface DemoDef {
   stops?: number[];
   unit?: 'count' | 'scale';
   defaultIndex?: (mobile: boolean) => number;
+  /** Mode buttons; the first is the default. */
+  modes?: { id: string; label: string }[];
 }
 
 const REPO = 'https://github.com/RecursiveVoid/cozygpu/blob/main/';
@@ -42,6 +44,25 @@ const DEMOS: DemoDef[] = [
     stops: [1_000, 5_000, 10_000, 25_000, 50_000, 100_000, 200_000, 300_000],
     unit: 'count',
     defaultIndex: mobile => (mobile ? 2 : 5),
+  },
+  {
+    id: 'layer',
+    title: '1 million sprites',
+    blurb:
+      'A SpriteLayer draws millions of sprites in one draw call: no object per sprite, just compact GPU streams (8 bytes per sprite for positions, 20 with rotation, frame and colour). Static: written once, then nothing per frame. Columns: positions live in a plain Float32Array that a CPU loop moves, as an ECS would, and the layer uploads it straight from that memory.',
+    hint: 'The slider stops at what this device can hold. Switch between static and columns-driven to compare the frame cost.',
+    source: 'examples/spritelayer/main.ts',
+    load: () => import('./demos/layer'),
+    stops: [
+      100_000, 250_000, 500_000, 1_000_000, 2_000_000, 4_000_000, 8_000_000,
+      16_000_000,
+    ],
+    unit: 'count',
+    defaultIndex: mobile => (mobile ? 1 : 3),
+    modes: [
+      { id: 'static', label: 'Static' },
+      { id: 'columns', label: 'Columns' },
+    ],
   },
   {
     id: 'graphics',
@@ -116,6 +137,7 @@ const sliderWrap = $<HTMLElement>('demo-count-wrap');
 const sliderValue = $<HTMLElement>('demo-count-value');
 const sliderLabel = $<HTMLElement>('demo-count-label');
 const workerBox = $<HTMLInputElement>('demo-worker');
+const modesEl = $<HTMLDivElement>('demo-modes');
 const backendBtns = Array.from(
   document.querySelectorAll<HTMLButtonElement>('[data-backend]'),
 );
@@ -127,6 +149,7 @@ const hud = {
   frame: $<HTMLElement>('hud-frame'),
   objects: $<HTMLElement>('hud-objects'),
   cpu: $<HTMLElement>('hud-cpu'),
+  draws: $<HTMLElement>('hud-draws'),
 };
 
 const workerUrl = new URL('./cozygpu.worker.js', import.meta.url).href;
@@ -142,6 +165,7 @@ let generation = 0;
 let wanted = false;
 let visible = true;
 const sliderIndex = new Map<string, number>();
+const modeChoice = new Map<string, string>();
 
 // ─── Frame stats ────────────────────────────────────────────────────────────
 const samples = new Float64Array(120);
@@ -180,6 +204,7 @@ function updateHud(): void {
     hud.frame.textContent = '–';
     hud.objects.textContent = '–';
     hud.cpu.textContent = '–';
+    hud.draws.textContent = '–';
     return;
   }
   let sum = 0;
@@ -191,6 +216,7 @@ function updateHud(): void {
   // Without cross-origin isolation the timer resolution is 0.1 ms.
   const cpu = handle.renderer.stats.cpuMs;
   hud.cpu.textContent = cpu < 0.1 ? '< 0.1 ms' : `${cpu.toFixed(1)} ms`;
+  hud.draws.textContent = String(handle.renderer.stats.drawCalls);
 }
 setInterval(updateHud, 500);
 
@@ -199,6 +225,10 @@ function sliderValueFor(def: DemoDef): number {
   if (!def.stops) return 0;
   const i = sliderIndex.get(def.id) ?? def.defaultIndex?.(mobile) ?? 0;
   return def.stops[Math.min(i, def.stops.length - 1)];
+}
+
+function modeFor(def: DemoDef): string {
+  return modeChoice.get(def.id) ?? def.modes?.[0].id ?? '';
 }
 
 function showOverlay(text: string, isError = false): void {
@@ -251,6 +281,7 @@ async function startDemo(): Promise<void> {
       workerUrl,
       assetBase,
       count: sliderValueFor(def),
+      mode: modeFor(def),
       tick,
     });
     if (gen !== generation) {
@@ -258,6 +289,7 @@ async function startDemo(): Promise<void> {
       return;
     }
     handle = h;
+    syncSlider();
     const info = h.renderer.info;
     hud.backend.textContent =
       (info.backend === 'webgpu' ? 'WebGPU' : 'WebGL2') +
@@ -307,12 +339,47 @@ function syncSlider(): void {
     return;
   }
   sliderWrap.hidden = false;
-  const i = sliderIndex.get(def.id) ?? def.defaultIndex?.(mobile) ?? 0;
+  // A running demo may cap the count at what this device can hold.
+  const max = handle?.maxCount;
+  let last = def.stops.length - 1;
+  while (max !== undefined && last > 0 && def.stops[last] > max) last--;
+  const i = Math.min(
+    last,
+    sliderIndex.get(def.id) ?? def.defaultIndex?.(mobile) ?? 0,
+  );
   slider.min = '0';
-  slider.max = String(def.stops.length - 1);
+  slider.max = String(last);
   slider.value = String(i);
   sliderLabel.textContent = def.unit === 'scale' ? 'Emission' : 'Objects';
   sliderValue.textContent = formatStop(def, def.stops[i]);
+}
+
+function syncModes(): void {
+  const def = current;
+  modesEl.textContent = '';
+  modesEl.hidden = !def.modes;
+  if (!def.modes) return;
+  const selected = modeFor(def);
+  for (const m of def.modes) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = m.label;
+    b.setAttribute('aria-pressed', String(m.id === selected));
+    b.addEventListener('click', () => {
+      if (modeFor(def) === m.id) return;
+      modeChoice.set(def.id, m.id);
+      for (const other of modesEl.querySelectorAll('button')) {
+        other.setAttribute('aria-pressed', String(other === b));
+      }
+      if (handle?.setMode && current === def) {
+        handle.setMode(m.id);
+        resetStats();
+      } else if (wanted) {
+        void startDemo();
+      }
+    });
+    modesEl.append(b);
+  }
 }
 
 function formatStop(def: DemoDef, v: number): string {
@@ -329,9 +396,12 @@ function selectDemo(def: DemoDef, run: boolean): void {
   hintEl.textContent = def.hint;
   sourceEl.href = REPO + def.source;
   sourceEl.textContent = `View source: ${def.source}`;
-  syncSlider();
+  // Stop first (synchronously, also inside startDemo), so the slider is not
+  // capped by the previous demo's device limit.
   if (run) void startDemo();
   else stopDemo();
+  syncSlider();
+  syncModes();
 }
 
 function setBackend(b: BackendChoice): void {

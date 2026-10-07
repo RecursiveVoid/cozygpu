@@ -54,6 +54,7 @@ import {
   flushTextureDestroys,
   sameTextureSource,
 } from '../scene/Texture';
+import type { StaticBinding } from '../retained/static';
 import type { ContainerNode, SceneNode, TextureHandle } from '../scene/types';
 import { isCustomDrawable, isRenderGroup } from '../types/core';
 import type {
@@ -78,6 +79,14 @@ export const BATCH_CUSTOM = 1;
 /** M3: the two ends of a render group; both carry its flat index. */
 export const BATCH_GROUP_BEGIN = 2;
 export const BATCH_GROUP_END = 3;
+/** M5: a static container drawn by its bake (ARCHITECTURE §27.5). */
+export const BATCH_STATIC = 4;
+
+/** The fields of a static container the packer reads (src/scene/Container.ts). */
+interface StaticLeaf {
+  _sbLeaf?: boolean;
+  _sb: StaticBinding | null;
+}
 
 /** Per-flat-entry "changed this frame" bits propagated to children. */
 const CH_WORLD = 1;
@@ -303,6 +312,31 @@ export function loadPatcher(): Promise<void> {
   }));
 }
 
+/**
+ * Copies of RETAIN_MIN_ENTRIES and RETAIN_WARMUP_FRAMES
+ * (src/commands/retainOpcodes.ts; src/retained/contracts.test.ts keeps them
+ * equal): importing that module here would split it into a chunk of its own
+ * on the minimal path.
+ */
+export const PACKER_RETAIN_MIN_ENTRIES = 8;
+export const PACKER_RETAIN_WARMUP_FRAMES = 2;
+
+type SegmentsModule = typeof import('../retained/front');
+let segments: SegmentsModule | null = null;
+let segmentsLoading: Promise<void> | null = null;
+
+/**
+ * M5 (ARCHITECTURE §27.2). Loads the retained segment emitter (chunk
+ * `retain`). pack() starts it once a scene with RETAIN_MIN_ENTRIES batches
+ * kept its structure for RETAIN_WARMUP_FRAMES frames; until it lands every
+ * draw is emitted immediately.
+ */
+export function loadSegments(): Promise<void> {
+  return (segmentsLoading ||= import('../retained/front').then(m => {
+    segments = m;
+  }));
+}
+
 export class SpriteScenePacker implements ScenePacker {
   readonly bufferId = ids.spriteBuffer.alloc();
   readonly instances = new InstanceStore();
@@ -315,6 +349,15 @@ export class SpriteScenePacker implements ScenePacker {
   /** Debug/tests: full rebuilds and incremental patches so far. */
   rebuildCount = 0;
   patchCount = 0;
+  /**
+   * M5 (ARCHITECTURE §27.2). Retained segments; false keeps the immediate
+   * path (`RendererOptions.retained`).
+   */
+  retained = true;
+  /** Frames since the last structure change (retain warm-up). */
+  private stableFrames = 0;
+  /** @internal State of the retained segment emitter (src/retained/front.ts). */
+  declare segState?: unknown;
 
   /** @internal frontPatch.ts */
   list = new FlatList();
@@ -411,7 +454,10 @@ export class SpriteScenePacker implements ScenePacker {
 
   pack(stage: ContainerNode, frame: FrontFrame): void {
     if (this.destroyed) return;
-    flushTextureDestroys(frame);
+    if (flushTextureDestroys(frame)) {
+      // A clean retained frame would replay the destroyed texture's id.
+      nodeStore.drawEpoch = (nodeStore.drawEpoch + 1) | 0;
+    }
 
     if (frame.generation !== this.generation) {
       this.generation = frame.generation;
@@ -451,7 +497,20 @@ export class SpriteScenePacker implements ScenePacker {
       this.ranges.clear();
     }
     this.upload(frame);
-    this.emitDraws(frame);
+    if (segments !== null && this.retained) {
+      segments.emitSegments(this, frame, rebuilt);
+      return;
+    }
+    this.emitDraws(frame, 0, this.batches.count);
+    if (rebuilt) {
+      this.stableFrames = 0;
+    } else if (
+      ++this.stableFrames >= PACKER_RETAIN_WARMUP_FRAMES &&
+      this.batches.count >= PACKER_RETAIN_MIN_ENTRIES &&
+      this.retained
+    ) {
+      void loadSegments();
+    }
   }
 
   destroy(): void {
@@ -459,6 +518,7 @@ export class SpriteScenePacker implements ScenePacker {
     this.destroyed = true;
     // The GPU buffer dies with the renderer's core; the id can be reused.
     ids.spriteBuffer.free(this.bufferId);
+    segments?.releaseSegments(this);
     this.list.nodes.length = 0;
     this.staging.nodes.length = 0;
     this.batches.texture.length = 0;
@@ -609,6 +669,13 @@ export class SpriteScenePacker implements ScenePacker {
       return;
     }
     let kind = KIND_CONTAINER;
+    if ((node as unknown as StaticLeaf)._sbLeaf) {
+      // M5 (§27.5): a baked static container is a leaf; its bake draws it.
+      out.kind[i] = kind | this.mark(slot, abs);
+      this.outBatches.push(BATCH_STATIC, abs);
+      out.end[i] = abs + 1;
+      return;
+    }
     if (isCustomDrawable(node)) {
       kind = KIND_CUSTOM;
       this.outBatches.push(BATCH_CUSTOM, abs);
@@ -1153,12 +1220,16 @@ export class SpriteScenePacker implements ScenePacker {
 
   // ─── 4. Draw ───────────────────────────────────────────────────────────────
 
-  private emitDraws(frame: FrontFrame): void {
+  /**
+   * @internal Immediate draw commands of batches [from, to); a range never
+   * splits a render group (src/retained/front.ts emits the rest).
+   */
+  emitDraws(frame: FrontFrame, from: number, to: number): void {
     const enc = frame.encoder;
     const s = nodeStore;
     const batches = this.batches;
     const list = this.list;
-    for (let b = 0; b < batches.count; b++) {
+    for (let b = from; b < to; b++) {
       if (batches.kind[b] === BATCH_SPRITES) {
         const count = batches.size[b];
         if (count === 0) continue;
@@ -1185,6 +1256,13 @@ export class SpriteScenePacker implements ScenePacker {
             slot * AFF,
             s.worldAlpha[slot],
           );
+        } else if (kind === BATCH_STATIC) {
+          (node as unknown as StaticLeaf)._sb?.emit(
+            frame,
+            s.world,
+            slot * AFF,
+            s.worldAlpha[slot],
+          );
         } else if (kind === BATCH_GROUP_BEGIN) {
           // False = the group's effect is not drawable this frame; its whole
           // subtree is skipped so a mask never flashes unclipped content.
@@ -1204,7 +1282,7 @@ export class SpriteScenePacker implements ScenePacker {
 }
 
 /** Batch index of the BATCH_GROUP_END matching the begin at `b`. */
-function skipGroup(batches: BatchList, b: number): number {
+export function skipGroup(batches: BatchList, b: number): number {
   let depth = 1;
   for (let j = b + 1; j < batches.count; j++) {
     const kind = batches.kind[j];

@@ -121,12 +121,14 @@ const PACE_FRAMES = 3;
  * never more than a frame or two behind, arms one fence every QUEUE_PROBE
  * frames at most and never holds.
  *
- * The tradeoff is the WebGPU one: an uncapped loop is capped at roughly
- * QUEUE_FRAMES frames of queued work, so its throughput becomes GPU-bound and
- * `stats.skippedFrames` rises. Those frames were never displayed.
+ * M5, as on WebGPU: the queue also has to be deep in TIME. The fence must be
+ * QUEUE_MS old before the depth holds a frame, so cheap frames (16 of them
+ * fit in the fence's reporting delay) never hold, while a GPU-bound uncapped
+ * loop still does and `stats.skippedFrames` rises.
  */
 const QUEUE_FRAMES = 16;
 const QUEUE_PROBE = 8;
+const QUEUE_MS = 20;
 
 const RESTORE_DELAYS_MS = [0, 500, 2000] as const;
 /** ImageBitmap scratch canvases up to this size stay allocated between uploads. */
@@ -165,6 +167,8 @@ export class WebGL2Backend implements Backend, GLCommandHost {
   /** The outstanding probe's fence and the frame serial it covers. */
   private probeSync: WebGLSync | null = null;
   private probeAt = 0;
+  /** performance.now() when the outstanding fence was armed. */
+  private probeTime = 0;
   /** @internal Live readback rings (pacing looks at their fences). */
   readonly rings: GLReadbackRing[] = [];
   /**
@@ -598,6 +602,14 @@ export class WebGL2Backend implements Backend, GLCommandHost {
     });
   }
 
+  /**
+   * M5 (ARCHITECTURE §27.3). Loads the bundle chunk, which installs
+   * `createRenderBundleEncoder` and `RenderPass.executeBundle`.
+   */
+  loadRenderBundles(): Promise<void> {
+    return import('./bundle').then(m => m.installRenderBundles(this));
+  }
+
   createReadbackRing(desc: ReadbackRingDesc): RhiReadbackRing {
     if (!ringModule) {
       throw new CozyGPUError('INTERNAL', 'call loadReadbackRing() first');
@@ -683,7 +695,13 @@ export class WebGL2Backend implements Backend, GLCommandHost {
     // frame: the one place the depth is measured and acted on.
     const depth = this.frameSerial - this.gpuDone;
     if (depth >= QUEUE_PROBE) this.probeQueue();
-    if (depth >= QUEUE_FRAMES) return true;
+    if (
+      depth >= QUEUE_FRAMES &&
+      this.probeSync !== null &&
+      performance.now() - this.probeTime >= QUEUE_MS
+    ) {
+      return true;
+    }
     const serial = this.frameSerial - PACE_FRAMES;
     if (this.readsInFlight > 0 && this.readFrame <= serial) return true;
     const rings = this.rings;
@@ -706,6 +724,7 @@ export class WebGL2Backend implements Backend, GLCommandHost {
     gl.flush();
     this.probeSync = sync;
     this.probeAt = this.frameSerial;
+    this.probeTime = performance.now();
   }
 
   /** Polls the outstanding fence. One GL call, wherever the depth is read. */

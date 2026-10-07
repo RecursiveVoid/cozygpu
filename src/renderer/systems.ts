@@ -1,8 +1,31 @@
 /** The default core systems, used by LocalTransport and the worker entry. */
 import { createSpriteCoreSystem } from '../sprites/core';
 import { OpcodeRange } from '../commands/opcodes';
-import type { CoreSystem } from '../types/core';
+import type { CommandReader } from '../commands/types';
+import type { RenderPass } from '../backend/types';
+import type { CoreFrameState, CoreSystem, DrawSpan } from '../types/core';
 import { LazyCoreSystem } from './lazySystems';
+
+/**
+ * M5 (ARCHITECTURE §27.3). The retain core's placeholder: like any lazy
+ * system, plus `drawSpan`, so RenderCore hands it the DRAW commands it
+ * records. The real system is created on first use, as LazyCoreSystem does.
+ */
+class LazySpanSystem extends LazyCoreSystem {
+  drawSpan(
+    reader: CommandReader,
+    pass: RenderPass,
+    frame: CoreFrameState,
+    span: DrawSpan,
+  ): number {
+    const inner = this.resolve();
+    if (inner && inner.drawSpan) {
+      return inner.drawSpan(reader, pass, frame, span);
+    }
+    this.draw(reader, pass, frame);
+    return 0;
+  }
+}
 
 /**
  * Every system. The swarm core goes through a `LazyCoreSystem` in BOTH modes:
@@ -29,6 +52,11 @@ export function createDefaultCoreSystems(): CoreSystem[] {
     // M4. Graphics: the `graphics` front chunk registers the loader (main
     // thread), `src/worker/entry.ts` its own (ARCHITECTURE §26.7).
     new LazyCoreSystem(OpcodeRange.GRAPHICS, 'graphics'),
+    // M5. Retained segments (§27.3): the `retain` front chunk registers the
+    // loader; SpriteLayer (§28.3): the layer front chunk. The worker entry
+    // registers both.
+    new LazySpanSystem(OpcodeRange.RETAIN, 'retain'),
+    new LazyCoreSystem(OpcodeRange.SPRITE_LAYER, 'layer'),
   ];
 }
 

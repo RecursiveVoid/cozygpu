@@ -477,7 +477,39 @@ export interface RenderPass {
   ): void;
   /** Requires caps.indirectDraw. */
   drawIndirect(buffer: RhiBuffer, offset: number): void;
+  /**
+   * M5 (ARCHITECTURE §27.3). Executes a recorded bundle in this pass and
+   * returns true; returns false (drawing nothing) when the bundle was
+   * recorded for a pass with other attachments (color format, sample
+   * count, depth/stencil format), so the caller re-records it. Pass state
+   * the bundle cannot set (viewport, scissor, stencil reference) is
+   * inherited; the pipeline, bind groups and vertex/index buffers are
+   * unset afterwards (WebGPU semantics, emulated on WebGL2), so callers
+   * bind again before their next draw. Optional: present only once the
+   * backend's bundle chunk is loaded (`Backend.loadRenderBundles`).
+   */
+  executeBundle?(bundle: RhiRenderBundle): boolean;
   end(): void;
+}
+
+/**
+ * M5 (ARCHITECTURE §27.3). A recorded list of draw calls, replayed with
+ * `RenderPass.executeBundle`. WebGPU: a native GPURenderBundle. WebGL2: the
+ * recorded RHI calls (typed arrays plus an object table), replayed through
+ * the backend's state cache — no command decoding, no system logic.
+ */
+export type RhiRenderBundle = RhiResource;
+
+/**
+ * M5. Records draw calls for a bundle. It is a `RenderPass` so a system's
+ * unchanged `draw(reader, pass, frame)` can record into it. Calls a bundle
+ * cannot hold (`setViewport`, `setScissor`, `setStencilReference`, `end`)
+ * do nothing and make `finish` return null; the caller then keeps drawing
+ * the commands directly instead of through a bundle.
+ */
+export interface RenderBundleEncoder extends RenderPass {
+  /** The bundle, or null when a pass-state call made it unrecordable. */
+  finish(): RhiRenderBundle | null;
 }
 
 export interface ComputePass {
@@ -728,6 +760,21 @@ export interface Backend {
    * Optional so test fakes whose ring needs no loading can omit it.
    */
   loadReadbackRing?(): Promise<void>;
+
+  /**
+   * M5 (ARCHITECTURE §27.3). Starts recording a bundle compatible with
+   * `pass` (its color format, sample count and depth/stencil format). Only
+   * present after `loadRenderBundles()` resolved; the bundle code is a lazy
+   * chunk of each backend, so the minimal program does not carry it.
+   */
+  createRenderBundleEncoder?(pass: RenderPass): RenderBundleEncoder;
+  /**
+   * M5. Loads the backend's bundle chunk (idempotent) and installs
+   * `createRenderBundleEncoder` and `RenderPass.executeBundle`. Optional:
+   * a backend without it has no bundles, and recorded segments are
+   * replayed through their systems.
+   */
+  loadRenderBundles?(): Promise<void>;
 
   /**
    * M2.5 (ARCHITECTURE §19.4, main-thread interop). The native device:
