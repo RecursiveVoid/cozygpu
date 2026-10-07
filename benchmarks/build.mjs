@@ -7,7 +7,7 @@
  * Exports `buildBench()` and `measureBundleSizes()` for run.mjs.
  */
 import { build } from 'esbuild';
-import { rm } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gzipSync } from 'node:zlib';
@@ -62,8 +62,47 @@ export async function buildBench() {
     outfile: path.join(OUT_DIR, 'cozygpu.worker.js'),
     sourcemap: true,
   });
+  // T1 font: the example MSDF font, plus the same atlas as a BMFont .fnt.
+  await writeFonts(path.join(OUT_DIR, 'fonts'));
   // A1 asset set (PNG, KTX2, KTX1), served from dist/a1/.
   return generateAssets(OUT_DIR);
+}
+
+/**
+ * T1: copies examples/text/font (msdf-atlas-gen JSON + page) and writes
+ * cozy.fnt, the same glyphs in the BMFont text format Pixi's BitmapFont
+ * loader reads (`distanceField fieldType=msdf`), so Pixi BitmapText and
+ * cozygpu Text draw from one atlas.
+ */
+async function writeFonts(dir) {
+  const src = path.join(ROOT, 'examples/text/font');
+  await mkdir(dir, { recursive: true });
+  await copyFile(path.join(src, 'cozy.json'), path.join(dir, 'cozy.json'));
+  await copyFile(path.join(src, 'cozy.png'), path.join(dir, 'cozy.png'));
+  const j = JSON.parse(await readFile(path.join(src, 'cozy.json'), 'utf8'));
+  const size = j.atlas.size;
+  const m = j.metrics;
+  const r = Math.round;
+  const lines = [
+    `info face="cozy" size=${size} bold=0 italic=0 padding=0,0,0,0 spacing=0,0`,
+    `common lineHeight=${r(m.lineHeight * size)} base=${r(m.ascender * size)} scaleW=${j.atlas.width} scaleH=${j.atlas.height} pages=1 packed=0`,
+    `page id=0 file="${j.pages[0]}"`,
+    `chars count=${j.glyphs.length}`,
+  ];
+  for (const g of j.glyphs) {
+    const a = g.atlasBounds;
+    const p = g.planeBounds;
+    const top = j.atlas.yOrigin === 'top';
+    lines.push(
+      a && p
+        ? `char id=${g.unicode} x=${a.left} y=${top ? a.top : j.atlas.height - a.top} width=${a.right - a.left} height=${Math.abs(a.bottom - a.top)} xoffset=${r(p.left * size)} yoffset=${r((m.ascender - p.top) * size)} xadvance=${r(g.advance * size)} page=0 chnl=15`
+        : `char id=${g.unicode} x=0 y=0 width=0 height=0 xoffset=0 yoffset=0 xadvance=${r(g.advance * size)} page=0 chnl=15`,
+    );
+  }
+  lines.push(
+    `distanceField fieldType=msdf distanceRange=${j.atlas.distanceRange}`,
+  );
+  await writeFile(path.join(dir, 'cozy.fnt'), `${lines.join('\n')}\n`);
 }
 
 const SIZE_ENTRIES = [

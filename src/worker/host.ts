@@ -241,15 +241,12 @@ export function startWorkerHost(
     run(packet);
   };
 
-  /** A packet waiting for a lazily loaded core system (see pendingLoad). */
-  let held: FramePacket | null = null;
-  const runHeld = (): void => {
-    const packet = held;
-    held = null;
-    if (packet === null) return;
-    if (core === null || destroyed) ackFrame(packet);
-    else execute(packet);
-  };
+  /**
+   * Packets waiting for a lazily loaded core system (see pendingLoad), in
+   * arrival order: a packet that arrives meanwhile queues behind them, so
+   * commands never run out of order and none is overwritten.
+   */
+  const held: FramePacket[] = [];
 
   const execute = (packet: FramePacket): void => {
     try {
@@ -261,21 +258,53 @@ export function startWorkerHost(
   };
 
   /**
+   * Runs the held packets in order. Each is checked again before it runs:
+   * one packet can need several chunks (a mask and a swarm added in the
+   * same frame), and running it after only the first has loaded would drop
+   * the other range's commands (e.g. a SWARM_CREATE). `force` runs the head
+   * after a failed load, as a lone packet always did.
+   */
+  const drain = (force: boolean): void => {
+    while (held.length > 0) {
+      const packet = held[0];
+      if (core === null || destroyed) {
+        held.shift();
+        ackFrame(packet);
+        continue;
+      }
+      const wait = force ? null : deps.pendingLoad?.(packet);
+      if (wait) {
+        wait.then(drainLoaded, drainFailed);
+        return;
+      }
+      force = false;
+      held.shift();
+      execute(packet);
+    }
+  };
+  const drainLoaded = (): void => drain(false);
+  const drainFailed = (error: unknown): void => {
+    post(errorMessage(error, 'INTERNAL'));
+    drain(true);
+  };
+
+  /**
    * Runs `packet`, unless it needs a core system that is still loading: then
    * it waits (unacknowledged, so the front skips frames) and runs when the
-   * chunk arrives. Only the first such packet ever waits.
+   * chunk arrives.
    */
   const run = (packet: FramePacket): void => {
+    if (held.length > 0) {
+      held.push(packet);
+      return;
+    }
     const wait = deps.pendingLoad?.(packet);
     if (!wait) {
       execute(packet);
       return;
     }
-    held = packet;
-    wait.then(runHeld, (error: unknown) => {
-      post(errorMessage(error, 'INTERNAL'));
-      runHeld();
-    });
+    held.push(packet);
+    wait.then(drainLoaded, drainFailed);
   };
 
   const handle = (msg: WorkerInboundMessage | WorkerDoorbell): void => {

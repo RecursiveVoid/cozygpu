@@ -193,3 +193,28 @@
 
 Regressed = not ok, or avg frame > 10 % slower and above the M1 max run, or CPU > 25 % higher. Competitor rows (Pixi/Three, unchanged code) are in the JSON as a drift control.
 
+## Notes on this run
+
+- **Machine load.** The load average rose from about 7 to about 28 during
+  the run (other processes on the machine). Round 1 ran at the lower load,
+  rounds 2–3 at the higher one, so CPU-bound cases slowed down by 50–115 %
+  in the later rounds for every library (Pixi/Three S1/S2 rows vs
+  m25-final: +27 % to +114 %). Medians include two loaded rounds.
+- **S1 100k.** In round 1 cozygpu webgpu was fastest (1.44 ms vs Three
+  WebGL 1.76 ms); the median flips to Three (+9 %) because of the loaded
+  rounds. Treat it as a tie within load noise, not a regression.
+- **p99 ≈ 17–19 ms on cozygpu rows** in GPU-light uncapped loops (T1, F1,
+  M1m, S2, P1): this is the WebGPU/WebGL2 queue-depth pacing
+  (`QUEUE_FRAMES` in the backends). When the GPU is more than 16 submits
+  behind, a frame is held and Chrome fires the next rAF on its ~16.7 ms
+  timer. Those frames would never have been displayed; with vsync on there
+  is no hold. Pixi has no pacing, so its p99 stays low while it queues
+  deeper.
+- **Three r186** has no built-in counterpart for text, filter chains,
+  container masks or particle emitters, so T1/F1/M1m/P1 compare with Pixi
+  only.
+- **T1 Pixi `msdf`** draws from the same atlas (converted to BMFont `.fnt`
+  by `build.mjs`). Pixi's MSDF shader leaves a dark backdrop on the glyph
+  quads with this atlas. Draw cost is unaffected.
+- **M1m stencil on WebGPU** resolves to alpha (`maskMode` column), as
+  documented; WebGL2 uses the stencil buffer.

@@ -5,7 +5,8 @@
  *   node tests/browser/stress.mjs                      all scenarios, main + worker
  *   node tests/browser/stress.mjs --only=swarm,loss    subset (swarm,burst,sprites,
  *     resize,dpr,loss,recreate,regress,assets,pick,gpualloc,ring,soak; M2.5 hooks:
- *     columns,pickuid,events,fallback,pickalloc,external)
+ *     columns,pickuid,events,fallback,pickalloc,external; M3: m3masks,m3filters,
+ *     m3text,m3particles,m3loss — --m3-seconds=N churn length, --m3-particles=N)
  *   node tests/browser/stress.mjs --mode=main          main | worker | both (default both)
  *   node tests/browser/stress.mjs --backend=webgl2     webgpu | webgl2 | both (default both)
  *   node tests/browser/stress.mjs --quick              short durations (burst 10 s, sprites 5 s)
@@ -58,7 +59,7 @@ const argv = Object.fromEntries(
   }),
 );
 const QUICK = !!argv.quick;
-const ALL = ['swarm', 'burst', 'sprites', 'resize', 'dpr', 'loss', 'recreate', 'regress', 'assets', 'pick', 'gpualloc', 'ring', 'soak', 'columns', 'pickuid', 'events', 'fallback', 'pickalloc', 'external'];
+const ALL = ['swarm', 'burst', 'sprites', 'resize', 'dpr', 'loss', 'recreate', 'regress', 'assets', 'pick', 'gpualloc', 'ring', 'soak', 'columns', 'pickuid', 'events', 'fallback', 'pickalloc', 'external', 'm3masks', 'm3filters', 'm3text', 'm3particles', 'm3loss'];
 const ONLY = argv.only ? String(argv.only).split(',') : ALL;
 const MODES = argv.mode && argv.mode !== 'both' ? [String(argv.mode)] : ['main', 'worker'];
 /** M2: every scenario runs on both backends unless one is named. */
@@ -246,6 +247,9 @@ async function bundle(outDir) {
 <body><script type="module" src="/page.js"></script></body></html>`,
   );
   await writeAssetFiles(outDir);
+  // M3 text: the example MSDF font, served at /font/.
+  await mkdir(path.join(outDir, 'font'), { recursive: true });
+  for (const f of ['cozy.json', 'cozy.png']) await writeFile(path.join(outDir, 'font', f), await readFile(path.join(ROOT, 'examples/text/font', f)));
 }
 
 function serve(dir) {
@@ -1918,6 +1922,322 @@ async function runExternal(mode, backend) {
 }
 
 // ─── Main ────────────────────────────────────────────────────────────────────
+// ─── M3 scenarios: masks, filters, text, particles, device loss ─────────────
+
+const M3_S = Number(argv['m3-seconds'] ?? (QUICK ? 4 : 8));
+const M3_PARTICLES = Number(argv['m3-particles'] ?? 1_000_000);
+
+async function m3shot(p, ctxId, regions, scale = 0) {
+  const rect = await p.page.evaluate(id => stress.canvasRect(id), ctxId);
+  const b64 = await p.page.screenshot({ encoding: 'base64', clip: rect, captureBeyondViewport: false });
+  return p.page.evaluate((b, r, s) => stress.regionColors(b, r, s), b64, regions, scale);
+}
+/** Evaluates `src` in the realm that owns the core (page or the last worker). */
+async function inCoreRealm(p, worker, src) {
+  if (!worker) return p.page.evaluate(src);
+  const w = p.page.workers().at(-1);
+  return w ? w.evaluate(src) : null;
+}
+async function poolProbe(p, worker) {
+  const src = await p.page.evaluate(() => stress.poolProbeSource);
+  return inCoreRealm(p, worker, src).catch(e => `probe failed: ${e.message}`);
+}
+const m3Info = (p, id) => p.page.evaluate(i => stress.m3LoopInfo(i), id);
+async function lossAndWait(p, ctxId, worker, kind = 'single') {
+  const before = await m3Info(p, ctxId);
+  const res = kind === 'double' ? await doubleLoss(p, worker) : await simulateLoss(p, worker);
+  const end = Date.now() + 15000;
+  let s = before;
+  while (Date.now() < end) {
+    s = await m3Info(p, ctxId);
+    if (s.restored > before.restored && s.lost > before.lost) break;
+    await new Promise(r => setTimeout(r, 100));
+  }
+  await new Promise(r => setTimeout(r, 1500));
+  const settled = await m3Info(p, ctxId);
+  return { res, before, after: settled, restoredOk: settled.restored > before.restored && settled.lost === settled.restored };
+}
+/** No GPU errors (other than lost-device noise) and no INTERNAL errors since `since`. */
+function m3CleanLogs(p, since = 0, label = '') {
+  const gpu = gpuErrorLines(p.logs, since).filter(l => !/destroyed|lost/i.test(l.text));
+  check(`${label}no GPU validation errors`, gpu.length === 0, { count: gpu.length, first: gpu.slice(0, 4).map(l => l.text) });
+  // WebGL2 reports misuse (e.g. objects of a lost context) as console warnings.
+  const gl = p.logs.slice(since).filter(l => /WebGL: (INVALID_|too many errors)/.test(l.text));
+  check(`${label}no WebGL errors`, gl.length === 0, { count: gl.length, first: [...new Set(gl.map(l => l.text.slice(0, 120)))].slice(0, 3) });
+  const internal = cozyErrors(p.logs, since, 'INTERNAL');
+  check(`${label}no INTERNAL errors`, internal.length === 0, internal.slice(0, 3).map(l => l.text));
+  const other = cozyErrors(p.logs, since).filter(l => !l.text.includes('[cozygpu:INTERNAL]'));
+  if (other.length) note(`${label}cozygpu errors reported`, [...new Set(other.map(l => l.text.slice(0, 200)))].slice(0, 6));
+  const pageErr = p.logs.slice(since).filter(l => l.type === 'pageerror');
+  check(`${label}no uncaught page errors`, pageErr.length === 0, pageErr.slice(0, 3).map(l => l.text));
+}
+const fmt = r => ({ lit: r.lit, blue: r.blue, red: r.red, green: r.green, gray: r.gray, mean: r.mean });
+
+function maskChecks(label, img, cfg) {
+  const R = img.regions;
+  const bad = [];
+  for (let i = 0; i < 3; i++) {
+    const want = cfg.outerInvert && cfg.innerInvert ? 'none' : cfg.outerInvert ? 'right' : cfg.innerInvert ? 'top' : 'in';
+    for (const k of ['in', 'top', 'right']) {
+      const r = R[`p${i}.${k}`];
+      const ok = k === want ? r.blue > 0.9 : r.lit < 0.02;
+      if (!ok) bad.push({ panel: i, region: k, expect: k === want ? 'blue' : 'dark', got: fmt(r) });
+    }
+  }
+  check(`${label}: mask pixels (3 panels × in/top/right)`, bad.length === 0, bad.slice(0, 4));
+  check(`${label}: controls unclipped (red before, red after, green in plain group)`, R.ctrlBefore.red > 0.95 && R.ctrlAfter.red > 0.95 && R.ctrlGroup.green > 0.95, { before: fmt(R.ctrlBefore), after: fmt(R.ctrlAfter), group: fmt(R.ctrlGroup) });
+}
+
+async function runM3Masks(mode, backend) {
+  const worker = mode === 'worker';
+  await scenario(`M3 masks: nested/inverted scissor+stencil+alpha under churn, depth limit, loss [${backend}/${mode}]`, async p => {
+    const init = await p.page.evaluate(o => stress.maskInit(o), { worker, backend });
+    const { ctxId, regions } = init;
+    const modes = await p.page.evaluate(id => stress.maskModes(id), ctxId);
+    note('resolved modes (panel: scissor, stencil, alpha)', { modes, stencilCap: init.stencilCap });
+    check('scissor panel resolves to scissor', modes[0].outer === 'scissor' && modes[0].inner === 'scissor', modes[0]);
+    check(`stencil panel resolves to ${backend === 'webgl2' && init.stencilCap ? 'stencil' : 'alpha (no stencil on this backend)'}`, modes[1].inner === (backend === 'webgl2' && init.stencilCap ? 'stencil' : 'alpha'), modes[1]);
+    check('alpha panel resolves to alpha', modes[2].outer === 'alpha' && modes[2].inner === 'alpha', modes[2]);
+    for (const cfg of [{}, { innerInvert: true }, { outerInvert: true }, { outerInvert: true, innerInvert: true }, {}]) {
+      const r = await p.page.evaluate((id, c) => stress.maskSet(id, c), ctxId, cfg);
+      if (r.errs.length) check(`set ${JSON.stringify(cfg)}: no throws`, false, r.errs);
+      maskChecks(`config ${JSON.stringify(cfg)}`, await m3shot(p, ctxId, regions), cfg);
+    }
+    const since = p.logs.length;
+    const churn = await withTimeout(p.page.evaluate((id, o) => stress.maskChurn(id, o), ctxId, { seconds: M3_S }), 120000, 'maskChurn');
+    note('churn', { ops: churn.ops, frames: churn.loopFrames, frameId: churn.frameId });
+    check('churn: no API throws', churn.errs.length === 0, churn.errs);
+    check('churn: no render() throws', churn.throws.length === 0, churn.throws);
+    maskChecks('after churn', await m3shot(p, ctxId, regions), {});
+    m3CleanLogs(p, since, 'churn: ');
+    for (const dm of ['scissor', 'stencil', 'alpha']) {
+      const pre = p.logs.length;
+      const d = await p.page.evaluate((id, o) => stress.maskDeep(id, o), ctxId, { mode: dm });
+      const img = await m3shot(p, ctxId, d.regions);
+      const R = img.regions;
+      note(`deep ×9 (${dm})`, { ring1: fmt(R.ring1), ring8: fmt(R.ring8), center: fmt(R.center), outside: fmt(R.outside), errs: d.errs, reported: cozyErrors(p.logs, pre).map(l => l.text.slice(0, 160)).slice(0, 3) });
+      check(`deep ×9 (${dm}): no throws`, d.errs.length === 0 && d.loopThrows.length === 0, [...d.errs, ...d.loopThrows]);
+      check(`deep ×9 (${dm}): levels 0 and 1 clip (outside + ring1 dark)`, R.outside.lit < 0.02 && R.ring1.lit < 0.02, { outside: fmt(R.outside), ring1: fmt(R.ring1) });
+      check(`deep ×9 (${dm}): innermost content visible`, R.center.blue > 0.9, fmt(R.center));
+      maskChecks(`deep ×9 (${dm}) leaves panels intact`, await m3shot(p, ctxId, regions), {});
+      await p.page.evaluate(id => stress.deepClear(id), ctxId);
+    }
+    const loss = await lossAndWait(p, ctxId, worker);
+    check('device loss: restored once', loss.res === 'ok' && loss.restoredOk, loss);
+    await p.page.evaluate((id, c) => stress.maskSet(id, c), ctxId, { innerInvert: true });
+    maskChecks('after device loss (inner inverted)', await m3shot(p, ctxId, regions), { innerInvert: true });
+    await p.page.evaluate((id, c) => stress.maskSet(id, c), ctxId, {});
+    maskChecks('after device loss', await m3shot(p, ctxId, regions), {});
+    const fin = await m3Info(p, ctxId);
+    check('frames flowing, no render() throws at the end', fin.loopThrows.length === 0 && !fin.destroyed, fin.loopThrows);
+    m3CleanLogs(p, 0, 'whole scenario: ');
+    await p.page.evaluate(id => stress.dropCtx(id), ctxId);
+  });
+}
+
+function filterChecks(label, img, { on = true } = {}) {
+  const R = img.regions;
+  if (on) {
+    check(`${label}: cheap grayscale group is gray`, R.gray.lit > 0.9 && R.gray.gray > 0.9, fmt(R.gray));
+    check(`${label}: blur spreads past the sprite edge`, R.blurHalo.mean && R.blurHalo.mean[0] > 6, fmt(R.blurHalo));
+    check(`${label}: masked+filtered group clipped`, R.maskedIn.blue > 0.5 && R.maskedOut.lit < 0.03, { in: fmt(R.maskedIn), out: fmt(R.maskedOut) });
+  } else {
+    check(`${label}: no cheap effect left (red stays red)`, R.gray.red > 0.95, fmt(R.gray));
+    check(`${label}: no blur left`, R.blurHalo.mean && R.blurHalo.mean[0] <= 2, fmt(R.blurHalo));
+    check(`${label}: mask removed (outside visible)`, R.maskedOut.blue > 0.9, fmt(R.maskedOut));
+  }
+  check(`${label}: effect does not leak to following sprites (ctrl after, plain group, last)`, R.ctrlAfter.red > 0.95 && R.ctrlGroup.red > 0.95 && R.ctrlLast.red > 0.95, { after: fmt(R.ctrlAfter), group: fmt(R.ctrlGroup), last: fmt(R.ctrlLast) });
+  check(`${label}: blur center, long chain and nested groups visible`, R.blurCenter.lit > 0.9 && R.chain.lit > 0.3 && R.nested.lit > 0.3, { blur: fmt(R.blurCenter), chain: fmt(R.chain), nested: fmt(R.nested) });
+  if (on) check(`${label}: nested (gray inside blur) is gray`, R.nested.gray > 0.8 * R.nested.lit, fmt(R.nested));
+}
+
+async function runM3Filters(mode, backend) {
+  const worker = mode === 'worker';
+  await scenario(`M3 filters: chains, toggling, target-pool growth, resize, DPR, loss [${backend}/${mode}]`, async p => {
+    const { ctxId, regions } = await p.page.evaluate(o => stress.filtersInit(o), { worker, backend });
+    filterChecks('initial', await m3shot(p, ctxId, regions));
+    let since = p.logs.length;
+    let t = await p.page.evaluate((id, o) => stress.filtersToggle(id, o), ctxId, { frames: 240, end: 'off' });
+    check('toggle ×240: no throws', t.errs.length === 0 && t.loopThrows.length === 0, [...t.errs, ...t.loopThrows]);
+    filterChecks('after toggling, ended off', await m3shot(p, ctxId, regions), { on: false });
+    t = await p.page.evaluate((id, o) => stress.filtersToggle(id, o), ctxId, { frames: 120, end: 'on' });
+    filterChecks('after toggling, ended on', await m3shot(p, ctxId, regions));
+    await p.page.evaluate((id, o) => stress.filtersEnabled(id, o), ctxId, { enabled: false });
+    const offImg = await m3shot(p, ctxId, regions);
+    check('filter.enabled = false: red stays red (cheap uniform reset)', offImg.regions.gray.red > 0.95, fmt(offImg.regions.gray));
+    check('filter.enabled = false: no blur', offImg.regions.blurHalo.mean[0] <= 2, fmt(offImg.regions.blurHalo));
+    await p.page.evaluate((id, o) => stress.filtersEnabled(id, o), ctxId, { enabled: true });
+    filterChecks('re-enabled', await m3shot(p, ctxId, regions));
+    m3CleanLogs(p, since, 'toggling: ');
+
+    since = p.logs.length;
+    const pool = { base: await poolProbe(p, worker) };
+    for (let c = 1; c <= 2; c++) {
+      const g = await withTimeout(p.page.evaluate((id, o) => stress.filtersGrow(id, o), ctxId, { frames: 240 }), 120000, 'filtersGrow');
+      check(`grow cycle ${c}: no throws`, g.errs.length === 0 && g.loopThrows.length === 0, [...g.errs, ...g.loopThrows]);
+      pool[`grown${c}`] = await poolProbe(p, worker);
+      await new Promise(r => setTimeout(r, 3000));
+      pool[`settled${c}`] = await poolProbe(p, worker);
+    }
+    note('target pool (bytes / entries)', pool);
+    const b = k => (pool[k] && typeof pool[k] === 'object' ? pool[k].bytes : null);
+    if (b('grown1') !== null && b('grown1') !== undefined) {
+      check('target pool: shrinks after the big captures end (ages out)', b('settled1') <= b('grown1') && b('settled2') <= b('grown2'), { grown1: b('grown1'), settled1: b('settled1'), grown2: b('grown2'), settled2: b('settled2') });
+      check('target pool: no accumulation across grow cycles', b('settled2') <= b('settled1') * 1.25 + (1 << 20), { settled1: b('settled1'), settled2: b('settled2') });
+      check('target pool: settled size bounded (< 64 MB)', b('settled2') < 64 * 1048576, b('settled2'));
+    } else {
+      note('target pool probe unavailable', pool);
+    }
+    filterChecks('after pool growth', await m3shot(p, ctxId, regions));
+    m3CleanLogs(p, since, 'pool growth: ');
+
+    since = p.logs.length;
+    const rs = await withTimeout(p.page.evaluate((id, o) => stress.filtersResizeStorm(id, o), ctxId, { steps: 300 }), 120000, 'filtersResizeStorm');
+    check('resize storm: no render() throws', rs.loopThrows.length === 0, rs.loopThrows);
+    check('resize storm: settled 640×480', rs.width === 640 && rs.height === 480, `${rs.width}×${rs.height}`);
+    filterChecks('after resize storm', await m3shot(p, ctxId, regions));
+    m3CleanLogs(p, since, 'resize storm: ');
+
+    since = p.logs.length;
+    for (const dpr of [2, 1.5, 1]) {
+      await p.cdp.send('Emulation.setDeviceMetricsOverride', { width: 1000, height: 700, deviceScaleFactor: dpr, mobile: false });
+      await new Promise(res => setTimeout(res, 400));
+      await p.page.evaluate(id => stress.nudgeCanvas(id, 641, 480), ctxId);
+      await p.page.evaluate(id => stress.nudgeCanvas(id, 640, 480), ctxId);
+      await new Promise(res => setTimeout(res, 500));
+      const s = await m3Info(p, ctxId);
+      check(`dpr ${dpr}: resolution follows`, Math.abs(s.resolution - dpr) < 1e-3, s.resolution);
+      filterChecks(`dpr ${dpr}`, await m3shot(p, ctxId, regions));
+    }
+    await p.cdp.send('Emulation.clearDeviceMetricsOverride');
+    m3CleanLogs(p, since, 'dpr: ');
+
+    const loss = await lossAndWait(p, ctxId, worker);
+    check('device loss: restored once', loss.res === 'ok' && loss.restoredOk, loss);
+    filterChecks('after device loss', await m3shot(p, ctxId, regions));
+    pool.afterLoss = await poolProbe(p, worker);
+    note('target pool after loss', pool.afterLoss);
+    m3CleanLogs(p, 0, 'whole scenario: ');
+    await p.page.evaluate(id => stress.dropCtx(id), ctxId);
+  });
+}
+
+async function runM3Text(mode, backend) {
+  const worker = mode === 'worker';
+  await scenario(`M3 text: rapid updates (MSDF + canvas pages), font eviction, loss [${backend}/${mode}]`, async p => {
+    const init = await p.page.evaluate(o => stress.textInit(o), { worker, backend });
+    const { ctxId, regions } = init;
+    check('probe metrics: glyphs = non-space characters', init.probe.msdfGlyphs === init.probe.expect, init.probe);
+    let img = await m3shot(p, ctxId, regions);
+    check('initial: MSDF and canvas probes drawn', img.regions.msdf.lit > 0.03 && img.regions.canvas.lit > 0.03, { msdf: fmt(img.regions.msdf), canvas: fmt(img.regions.canvas) });
+    const lit0 = img.regions;
+    let since = p.logs.length;
+    const c = await withTimeout(p.page.evaluate((id, o) => stress.textChurn(id, o), ctxId, { seconds: M3_S }), 120000, 'textChurn');
+    note('churn', { frames: c.loopFrames, cjkSent: c.cjkSent, canvasPages: c.pages, packetBytes: c.packetBytes });
+    check('churn: no API throws', c.errs.length === 0, c.errs);
+    check('churn: no render() throws', c.throws.length === 0 && c.loopThrows.length === 0, [...c.throws, ...c.loopThrows]);
+    check('churn: final metrics consistent ("ok" → 2 glyphs)', c.metricsOk, c.metricsBad);
+    check('churn: canvas atlas grew past one page for ~2000 CJK glyphs', c.pages.some(n => n > 1), c.pages);
+    img = await m3shot(p, ctxId, regions);
+    check('after churn: probes still drawn', img.regions.msdf.lit > lit0.msdf.lit * 0.8 && img.regions.canvas.lit > lit0.canvas.lit * 0.8, { msdf: fmt(img.regions.msdf), canvas: fmt(img.regions.canvas) });
+    m3CleanLogs(p, since, 'churn: ');
+
+    since = p.logs.length;
+    const e1 = await p.page.evaluate((id, o) => stress.textEvict(id, o), ctxId, { step: 'trimReferenced' });
+    img = await m3shot(p, ctxId, regions);
+    check('trim(0) while referenced keeps the font', e1.has && !e1.error && img.regions.msdf.lit > lit0.msdf.lit * 0.8, { e1, msdf: fmt(img.regions.msdf) });
+    const e2 = await p.page.evaluate((id, o) => stress.textEvict(id, o), ctxId, { step: 'unloadReferenced' });
+    check('unload() while referenced throws INVALID_ARGUMENT', e2.unload === 'INVALID_ARGUMENT', e2.unload);
+    const e3 = await p.page.evaluate((id, o) => stress.textEvict(id, o), ctxId, { step: 'releaseTrim' });
+    await new Promise(r => setTimeout(r, 500));
+    img = await m3shot(p, ctxId, regions);
+    note('release + trim(0) with texts still on the font', { e3, msdf: fmt(img.regions.msdf), canvas: fmt(img.regions.canvas) });
+    check('release + trim(0): font evicted', !e3.has && e3.stats.evictions > e1.stats.evictions, e3.stats);
+    check('release + trim(0): frames keep flowing, no throws', !e3.error && e3.loopThrows.length === 0, e3.error ?? e3.loopThrows);
+    check('release + trim(0): canvas text unaffected', img.regions.canvas.lit > lit0.canvas.lit * 0.8, fmt(img.regions.canvas));
+    const e4 = await p.page.evaluate((id, o) => stress.textEvict(id, o), ctxId, { step: 'reload' });
+    await new Promise(r => setTimeout(r, 400));
+    img = await m3shot(p, ctxId, regions);
+    check('reload + setStyle({ font }): MSDF probe drawn again', !e4.error && img.regions.msdf.lit > lit0.msdf.lit * 0.8, { e4: e4.error, msdf: fmt(img.regions.msdf), lit0: lit0.msdf.lit });
+    m3CleanLogs(p, since, 'eviction: ');
+
+    const loss = await lossAndWait(p, ctxId, worker);
+    check('device loss: restored once', loss.res === 'ok' && loss.restoredOk, loss);
+    await new Promise(r => setTimeout(r, 1000));
+    img = await m3shot(p, ctxId, regions);
+    check('after device loss: MSDF probe drawn', img.regions.msdf.lit > lit0.msdf.lit * 0.8, fmt(img.regions.msdf));
+    check('after device loss: canvas probe drawn (pages re-uploaded)', img.regions.canvas.lit > lit0.canvas.lit * 0.8, fmt(img.regions.canvas));
+    m3CleanLogs(p, 0, 'whole scenario: ');
+    await p.page.evaluate(id => stress.dropCtx(id), ctxId);
+  });
+}
+
+async function runM3Particles(mode, backend) {
+  const worker = mode === 'worker';
+  await scenario(`M3 particles: presets ×9 + ${M3_PARTICLES.toLocaleString('en')} burst system, churn, loss [${backend}/${mode}]`, async p => {
+    const init = await withTimeout(p.page.evaluate(o => stress.particlesInit(o), { worker, backend, big: M3_PARTICLES }), 60000, 'particlesInit');
+    if (init.unsupported) {
+      note('particles unsupported on this backend', init);
+      return;
+    }
+    const { ctxId } = init;
+    note('capacities', { total: init.capacity, presets: init.presetCapacity });
+    const since = p.logs.length;
+    const b = await withTimeout(p.page.evaluate((id, o) => stress.particlesBursts(id, o), ctxId, { seconds: M3_S }), 180000, 'particlesBursts');
+    note('bursts', { fill: b.fill, alive: b.alive, frames: b.loopFrames, packetP50: b.packetP50, packetMax: b.packetMax, cpuMs: b.cpuMs });
+    check('bursts: no API throws', b.errs.length === 0, b.errs);
+    check('bursts: no render() throws', b.throws.length === 0 && b.loopThrows.length === 0, [...b.throws, ...b.loopThrows]);
+    const cap = b.caps.big;
+    check(`1M system filled by 4 bursts (alive ≥ 90% of ${cap.toLocaleString('en')})`, typeof b.fill[0] === 'number' && b.fill[0] >= cap * 0.9, b.fill);
+    const over = Object.entries(b.alive).filter(([k, v]) => typeof v !== 'number' || v > b.caps[k]);
+    check('alive counts are numbers within capacity', over.length === 0, { alive: b.alive, caps: b.caps });
+    const dead = ['fire', 'smoke', 'sparks', 'rain'].filter(k => !(b.alive[k] > 0));
+    check('continuous emitters alive after churn (fire, smoke, sparks, rain)', dead.length === 0, b.alive);
+    check('packet stays small (max < 4 KB)', (b.packetMax ?? 0) < 4096, { p50: b.packetP50, max: b.packetMax });
+    m3CleanLogs(p, since, 'bursts: ');
+    const loss = await lossAndWait(p, ctxId, worker);
+    check('device loss: restored once', loss.res === 'ok' && loss.restoredOk, loss);
+    await new Promise(r => setTimeout(r, 1000));
+    const a = await withTimeout(p.page.evaluate(id => stress.particlesAlive(id), ctxId), 60000, 'particlesAlive');
+    note('alive after loss', a.alive);
+    const dead2 = ['fire', 'smoke', 'sparks', 'rain'].filter(k => !(a.alive[k] > 0));
+    check('after loss: continuous emitters emit again', dead2.length === 0, a.alive);
+    const refill = await withTimeout(p.page.evaluate(id => stress.particlesRefill(id), ctxId), 60000, 'particlesRefill');
+    check('after loss: 1M system can be refilled', typeof refill === 'number' && refill >= cap * 0.9, refill);
+    check('after loss: no render() throws', a.loopThrows.length === 0, a.loopThrows);
+    m3CleanLogs(p, 0, 'whole scenario: ');
+    await p.page.evaluate(id => stress.dropCtx(id), ctxId);
+  });
+}
+
+async function runM3Loss(mode, backend) {
+  const worker = mode === 'worker';
+  await scenario(`M3 device loss ×3 with masks + filters + text + particles [${backend}/${mode}]`, async p => {
+    const { ctxId, regions, particles } = await p.page.evaluate(o => stress.comboInit(o), { worker, backend });
+    const verify = async label => {
+      await new Promise(r => setTimeout(r, 800));
+      const img = await m3shot(p, ctxId, regions);
+      const R = img.regions;
+      const st = await withTimeout(p.page.evaluate(id => stress.comboState(id), ctxId), 30000, 'comboState');
+      check(`${label}: scissor mask (single level)`, R.maskIn.blue > 0.9 && R.maskTop.lit < 0.02, { in: fmt(R.maskIn), top: fmt(R.maskTop) });
+      check(`${label}: ${st.modes[1]} mask (single level)`, R.maskStencilIn.blue > 0.9 && R.maskStencilTop.lit < 0.02, { in: fmt(R.maskStencilIn), top: fmt(R.maskStencilTop) });
+      check(`${label}: cheap filter gray, control red`, R.gray.gray > 0.9 && R.ctrl.red > 0.95, { gray: fmt(R.gray), ctrl: fmt(R.ctrl) });
+      check(`${label}: blur filter`, R.blurHalo.mean && R.blurHalo.mean[0] > 6, fmt(R.blurHalo));
+      check(`${label}: MSDF + canvas text`, R.msdf.lit > 0.03 && R.canvasText.lit > 0.03, { msdf: fmt(R.msdf), canvas: fmt(R.canvasText) });
+      if (particles) check(`${label}: particles alive and drawn`, st.alive > 0 && R.particles.lit > 0.005, { alive: st.alive, px: fmt(R.particles) });
+      check(`${label}: no render() throws`, st.loopThrows.length === 0, st.loopThrows);
+    };
+    await verify('before loss');
+    for (const [k, kind] of [[1, 'single'], [2, 'double'], [3, 'single']]) {
+      const loss = await lossAndWait(p, ctxId, worker, kind);
+      check(`loss #${k} (${kind}): onDeviceLost → onDeviceRestored, paired`, loss.res === 'ok' && loss.restoredOk, { res: loss.res, lost: loss.after.lost, restored: loss.after.restored });
+      await verify(`after loss #${k}`);
+    }
+    m3CleanLogs(p, 0, 'whole scenario: ');
+    await p.page.evaluate(id => stress.dropCtx(id), ctxId);
+  });
+}
+
 async function main() {
   outDir = await mkdtemp(path.join(os.tmpdir(), 'cozygpu-stress-'));
   console.log(`bundling → ${outDir}`);
@@ -1949,6 +2269,12 @@ async function main() {
     ['fallback', (mode, backend) => (backend === BACKENDS[BACKENDS.length - 1] ? runFallback(mode) : undefined)],
     ['pickalloc', runPickAlloc],
     ['external', runExternal],
+    // M3: masks, filters, text, particles.
+    ['m3masks', runM3Masks],
+    ['m3filters', runM3Filters],
+    ['m3text', runM3Text],
+    ['m3particles', runM3Particles],
+    ['m3loss', runM3Loss],
   ];
   if (argv['crash-test']) {
     const kind = String(argv['crash-test']);

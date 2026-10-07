@@ -148,8 +148,9 @@ export class WebGL2Backend implements Backend, GLCommandHost {
   pixelWidth: number;
   pixelHeight: number;
   readonly state: GLState;
-  baseInstance: GLCommandHost['baseInstance'] = null;
-  transformFeedback: WebGLTransformFeedback | null = null;
+  // Set by initContext (constructor and restore), hence `declare`.
+  declare baseInstance: GLCommandHost['baseInstance'];
+  declare transformFeedback: WebGLTransformFeedback | null;
   feedbackSerial = 0;
   /** True between a context loss and a successful restore(). */
   lost = false;
@@ -175,8 +176,8 @@ export class WebGL2Backend implements Backend, GLCommandHost {
   /** @internal The backend's command list (readTexture records into it). */
   readonly list: GLCommandList;
   private readonly debug: boolean;
-  private parallelCompile = false;
-  private loseExt: LoseContext | null = null;
+  declare private parallelCompile: boolean;
+  declare private loseExt: LoseContext | null;
   private lostCallback: ((info: DeviceLostInfo) => void) | null = null;
   private destroyed = false;
   private simulated = false;
@@ -228,7 +229,7 @@ export class WebGL2Backend implements Backend, GLCommandHost {
     if (!gl) {
       throw new CozyGPUError(
         'UNSUPPORTED',
-        'canvas.getContext("webgl2") returned null (no WebGL2, or the canvas has another context)',
+        'no WebGL2 context (unsupported, or the canvas has another one)',
       );
     }
     if (gl.isContextLost()) {
@@ -261,7 +262,7 @@ export class WebGL2Backend implements Backend, GLCommandHost {
     return caps;
   }
 
-  private extensions = new Set<string>();
+  declare private extensions: Set<string>;
 
   // ─── Size ──────────────────────────────────────────────────────────────────
 
@@ -623,7 +624,7 @@ export class WebGL2Backend implements Backend, GLCommandHost {
     if (this.lost || !this.gl.isBuffer(raw)) {
       throw new CozyGPUError(
         'INVALID_ARGUMENT',
-        `importBuffer "${desc.label ?? ''}": not a buffer of this WebGL2 context`,
+        `importBuffer "${desc.label ?? ''}": not a buffer of this context`,
       );
     }
     return new GLImportedBuffer(
@@ -1148,7 +1149,7 @@ export class WebGL2Backend implements Backend, GLCommandHost {
       throw new CozyGPUError('DESTROYED', 'backend was destroyed');
     throw new CozyGPUError(
       'DEVICE_LOST',
-      `could not restore the WebGL2 context after ${RESTORE_DELAYS_MS.length} attempts`,
+      `WebGL2 context not restored after ${RESTORE_DELAYS_MS.length} tries`,
     );
   }
 

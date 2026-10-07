@@ -34,7 +34,12 @@ import type {
   RhiShaderModule,
   RhiTexture,
 } from '../backend/types';
-import { MaskFlag, MaskOp, OpcodeRange } from '../commands/opcodes';
+import {
+  CommandFlag,
+  MaskFlag,
+  MaskOp,
+  OpcodeRange,
+} from '../commands/opcodes';
 import type { CommandReader } from '../commands/types';
 import type { CoreContext, CoreFrameState, CoreSystem } from '../types/core';
 import {
@@ -117,6 +122,10 @@ export class MaskCoreSystem implements CoreSystem {
   private scissorOn = false;
 
   private alpha: AlphaMasks | null = null;
+  /** The last MASK_PUSH_ALPHA's capture opened (passBreak → draw). */
+  private alphaOpen = false;
+  /** The pass the last pass break reopened (null: the main pass). */
+  private reopened: RenderPassDesc | null = null;
   private alphaLoading = false;
   /** Soft-mask builds tried so far (see MAX_ALPHA_ATTEMPTS). */
   private alphaAttempts = 0;
@@ -150,10 +159,14 @@ export class MaskCoreSystem implements CoreSystem {
     this.stencilDirtyFrame = -1;
     this.depth = 0;
     this.level = 0;
-    this.alpha?.destroy();
+    // The shared target pool outlives the restore; its textures do not.
+    this.alpha?.lost();
     this.alpha = null;
     this.alphaLoading = false;
     this.alphaAttempts = 0;
+    this.alphaOpen = false;
+    this.reopened = null;
+    this.scissorOn = false;
     this.ctx = ctx;
     await this.createPipelines(ctx);
   }
@@ -308,34 +321,72 @@ export class MaskCoreSystem implements CoreSystem {
   ): RenderPassDesc | null {
     const ctx = this.ctx;
     if (!ctx) return null;
-    if (reader.opcode === MaskOp.MASK_PUSH_STENCIL) {
-      return this.stencilPass(ctx, frame);
-    }
-    if (reader.opcode === MaskOp.MASK_PUSH_ALPHA) {
-      const alpha = this.alpha;
+    // Payload is read without moving the reader: `draw` reads it next.
+    const u32 = reader.u32View;
+    const at = reader.payloadOffset >> 2;
+    const alpha = this.alpha;
+    const op = reader.opcode;
+    let desc: RenderPassDesc | null = null;
+    if (op === MaskOp.MASK_PUSH_STENCIL) {
+      // Inside a capture the stencil buffer is not attached: stay in the
+      // capture and let pushStencil clip to the mask's bounds.
+      if (!alpha?.capturing) desc = this.stencilPass(ctx, frame);
+    } else if (op === MaskOp.MASK_PUSH_ALPHA) {
+      this.alphaOpen = false;
       if (!alpha) {
         this.loadAlpha();
-        return null;
+      } else {
+        desc = alpha.begin(
+          list,
+          this.buffers[u32[at + 1]] ?? null,
+          u32[at + 2],
+          u32[at + 3],
+          ctx.getTexture(u32[at + 4]).bindGroup,
+          (u32[at + 5] & MaskFlag.INVERT) !== 0,
+          frame,
+        );
+        this.alphaOpen = desc !== null;
       }
-      // Payload is read without moving the reader: `draw` reads it next.
-      const u32 = reader.u32View;
-      const at = reader.payloadOffset >> 2;
-      return alpha.begin(
-        list,
-        this.buffers[u32[at + 1]] ?? null,
-        u32[at + 2],
-        u32[at + 3],
-        ctx.getTexture(u32[at + 4]).bindGroup,
-        (u32[at + 5] & MaskFlag.INVERT) !== 0,
-        frame,
+    } else if (op === MaskOp.MASK_POP && alpha) {
+      // Only a soft mask that really opened a capture ends one.
+      let i = this.depth - 1;
+      while (i >= 0 && this.ids[i] !== u32[at]) i--;
+      if (i >= 0 && this.kinds[i] === ALPHA) alpha.endCapture();
+    }
+    // Otherwise reopen the pass that was open before the break: an open
+    // capture (soft mask or filter), the main pass with this frame's stencil
+    // attachment, or null for RenderCore's main pass.
+    desc ??= alpha?.current() ?? null;
+    if (!desc && !this.implicitStencil && this.stencilFrame === frame.frameId) {
+      const depth = this.passDesc.depth!;
+      depth.load = depth.stencilLoad = 'load';
+      desc = this.passDesc;
+    }
+    return (this.reopened = desc);
+  }
+
+  /**
+   * A pass break started a new pass, which has the default viewport, no
+   * scissor and stencil reference 0: put the open masks' clip back.
+   */
+  private reapply(pass: RenderPass, frame: CoreFrameState): void {
+    const target = this.reopened?.color.target;
+    this.reopened = null;
+    if (target && target !== 'canvas') {
+      // A reopened filter capture may be larger than the canvas (pool
+      // granularity); draws keep the canvas' viewport inside it.
+      pass.setViewport(
+        0,
+        0,
+        Math.min(target.width, frame.pixelWidth),
+        Math.min(target.height, frame.pixelHeight),
       );
     }
-    if (reader.opcode === MaskOp.MASK_POP) {
-      const alpha = this.alpha;
-      if (alpha) alpha.endCapture();
-      return null;
+    if (this.scissorOn) {
+      const s = this.scissor;
+      pass.setScissor(s[0], s[1], s[2], s[3]);
     }
-    return null;
+    if (this.level > 0) pass.setStencilReference(this.level);
   }
 
   /** Reopens the main pass with a stencil attachment (once per frame). */
@@ -425,6 +476,9 @@ export class MaskCoreSystem implements CoreSystem {
   draw(reader: CommandReader, pass: RenderPass, frame: CoreFrameState): void {
     const ctx = this.ctx;
     if (!ctx) return;
+    if ((reader.flags & CommandFlag.PASS_BREAK) !== 0) {
+      this.reapply(pass, frame);
+    }
     switch (reader.opcode) {
       case MaskOp.MASK_PUSH_SCISSOR: {
         const id = reader.u32();
@@ -469,7 +523,8 @@ export class MaskCoreSystem implements CoreSystem {
         const width = reader.f32();
         const height = reader.f32();
         reader.f32();
-        if (this.alpha) {
+        if (this.alpha && this.alphaOpen) {
+          this.alphaOpen = false;
           this.push(ALPHA, id, 0, 0, bufferId, 0, 0);
         } else if ((flags & MaskFlag.INVERT) !== 0) {
           // See pushStencil: an inverted mask cannot fall back to a rect.
@@ -575,7 +630,8 @@ export class MaskCoreSystem implements CoreSystem {
       !increment ||
       !decrement ||
       count === 0 ||
-      !this.stencilReady(frame)
+      !this.stencilReady(frame) ||
+      this.alpha?.capturing
     ) {
       // Pipelines still compiling, or no stencil attachment this frame: clip
       // to the mask's bounds. An inverted mask keeps what is OUTSIDE a shape,
@@ -767,6 +823,8 @@ export class MaskCoreSystem implements CoreSystem {
     this.depth = 0;
     this.level = 0;
     this.scissorOn = false;
+    this.alphaOpen = false;
+    this.reopened = null;
     this.alpha?.endFrame();
   }
 

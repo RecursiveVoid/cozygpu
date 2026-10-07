@@ -290,6 +290,9 @@ export class GLRenderPass extends GLPassBase implements RenderPass {
     state.setScissorTest(false);
 
     if (color.load === 'clear') {
+      // A stencil-write pipeline from the previous pass (or frame) may have
+      // left the color mask off; glClear honours it, so turn it back on.
+      state.setColorMask(true);
       const cc = color.clearColor;
       const a = cc ? cc[3] : 0;
       const r = cc ? cc[0] * a : 0;
@@ -363,6 +366,9 @@ export class GLRenderPass extends GLPassBase implements RenderPass {
    */
   setStencilReference(reference: number): void {
     this.stencilRef = reference;
+    // A reference set on a fresh pass (a mask reopening the canvas after a
+    // capture) clips the draws that follow, as a stencil draw would.
+    if (reference > 0) this.stencilActive = true;
   }
 
   private applyPipelineState(): void {
@@ -378,6 +384,7 @@ export class GLRenderPass extends GLPassBase implements RenderPass {
     } else if (this.stencilActive) {
       // Inside a mask: pipelines without their own stencil state (sprites,
       // swarms) are clipped by the buffer but never write to it.
+      state.setStencilTest(true);
       state.setStencil(GL_STENCIL_INSIDE, this.stencilRef);
     } else {
       // No mask in this pass (yet): the test must be off, or draws would be
@@ -548,7 +555,7 @@ export class GLFeedbackPass extends GLPassBase implements FeedbackPass {
     if (outputOffset + bytes > out.size) {
       throw new CozyGPUError(
         'INVALID_ARGUMENT',
-        `feedback run of ${count} records (${bytes} B) at ${outputOffset} exceeds buffer "${out.label ?? ''}" (${out.size} B)`,
+        `feedback of ${count} records (${bytes} B) at ${outputOffset} exceeds buffer "${out.label ?? ''}" (${out.size} B)`,
       );
     }
     // A transform feedback buffer must not stay bound to any other target.

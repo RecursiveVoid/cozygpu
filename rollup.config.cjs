@@ -3,6 +3,7 @@
  *   npm run build           → dist/: library (ESM + CJS + .d.ts) and worker bundle
  *   npm run build:examples  → build/examples/<name>/main.js (no server)
  *   npm run dev             → watch everything + dev server (serve/livereload ONLY in watch mode)
+ *   npm run build:site      → site-dist/: the static showcase page (GitHub Pages)
  */
 const fs = require('fs');
 const path = require('path');
@@ -14,6 +15,7 @@ const { string } = require('rollup-plugin-string');
 const { shaderMinifyPlugin } = require('./scripts/shader-minify.cjs');
 
 const WATCH = !!process.env.ROLLUP_WATCH;
+const SITE = !!process.env.SITE;
 const WITH_EXAMPLES = WATCH || !!process.env.EXAMPLES;
 const DEV_PORT = Number(process.env.PORT || 3002);
 
@@ -175,4 +177,81 @@ if (WATCH) {
   );
 }
 
-module.exports = configs;
+/**
+ * Showcase page (site/ → site-dist/). Every URL is relative, so the folder
+ * works under any sub-path (https://<user>.github.io/<repo>/). The library is
+ * code-split: each demo and each backend is a chunk loaded on demand.
+ */
+function siteConfigs() {
+  const OUT = 'site-dist';
+  const siteTs = {
+    tsconfig: './tsconfig.json',
+    noEmitOnError: false,
+    include: ['src/**/*.ts', 'site/src/**/*.ts'],
+    exclude: ['**/*.test.ts'],
+    compilerOptions: {
+      noEmit: false,
+      declaration: false,
+      sourceMap: false,
+      types: ['@webgpu/types'],
+    },
+  };
+  const minify = () => ({
+    name: 'esbuild-minify',
+    async renderChunk(code) {
+      const { transform } = require('esbuild');
+      const out = await transform(code, {
+        minify: true,
+        format: 'esm',
+        target: 'es2022',
+      });
+      return { code: out.code, map: null };
+    },
+  });
+  const copy = (from, to) => {
+    fs.mkdirSync(path.dirname(path.resolve(__dirname, to)), {
+      recursive: true,
+    });
+    fs.cpSync(path.resolve(__dirname, from), path.resolve(__dirname, to), {
+      recursive: true,
+    });
+  };
+  const staticFiles = () => ({
+    name: 'site-static',
+    buildStart() {
+      fs.rmSync(path.resolve(__dirname, OUT), { recursive: true, force: true });
+    },
+    writeBundle() {
+      copy('site/index.html', `${OUT}/index.html`);
+      copy('site/style.css', `${OUT}/style.css`);
+      copy('site/public', OUT);
+      copy('examples/text/font', `${OUT}/assets/font`);
+      fs.writeFileSync(path.resolve(__dirname, OUT, '.nojekyll'), '');
+    },
+  });
+  return [
+    {
+      input: 'site/src/main.ts',
+      preserveEntrySignatures: false,
+      output: {
+        dir: `${OUT}/assets`,
+        entryFileNames: 'main.js',
+        chunkFileNames: 'chunks/[name]-[hash].js',
+        format: 'esm',
+      },
+      plugins: [staticFiles(), ...basePlugins(siteTs), minify()],
+    },
+    {
+      // The worker option loads this file next to main.js.
+      input: 'src/worker/entry.ts',
+      output: {
+        file: `${OUT}/assets/cozygpu.worker.js`,
+        format: 'esm',
+        inlineDynamicImports: true,
+      },
+      plugins: [...basePlugins(siteTs), minify()],
+    },
+  ];
+}
+
+module.exports = SITE ? siteConfigs() : configs;

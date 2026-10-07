@@ -13,7 +13,6 @@
  * texels are a distance field, not colour) and is uploaded as-is: an MSDF
  * page is opaque, so premultiplying it would only round its channels.
  */
-import { parseMsdfFont, msdfPageUrl } from '../text/msdf';
 import type { FontAsset } from '../text/types';
 import { CozyGPUError } from '../types/errors';
 import type {
@@ -53,6 +52,8 @@ export async function loadFontAsset(
    */
   children?: AssetHandle[],
 ): Promise<FontAsset> {
+  // Dynamic, like Text's: one shared msdf chunk instead of a facade.
+  const { parseMsdfFont, msdfPageUrl } = await import('../text/msdf');
   let json: unknown;
   try {
     json = JSON.parse(new TextDecoder().decode(data));

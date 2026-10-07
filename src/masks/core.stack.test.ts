@@ -160,8 +160,10 @@ describe('mask core: the one stack holds every kind', () => {
     pop(encoder, 2);
     pop(encoder, 1);
     const list = run(system, encoder, 1);
-    // The stencil push and pop never touch the scissor rect.
+    // The stencil push breaks the pass, so the open scissor is put back on
+    // the new one; the pop restores the canvas.
     expect(scissors(list)).toEqual([
+      'scissor 10 10 100 100',
       'scissor 10 10 100 100',
       'scissor 0 0 400 300',
     ]);

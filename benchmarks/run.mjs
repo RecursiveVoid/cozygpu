@@ -8,8 +8,9 @@
  * Options
  *   --label <name>        results/<name>.json (default: ISO timestamp)
  *   --filter <regex>      only cases whose id matches, e.g. "pixi|three"
- *   --scenarios <list>    s1,s1b,s2,s3,a1,a2,a3 (default all; S4 is derived from S3;
- *                         a1 = a1png + a1ktx2)
+ *   --scenarios <list>    s1,s1b,s2,s3,a1,a2,a3,t1,f1,m1m,p1 (default all; S4 is
+ *                         derived from S3; a1 = a1png + a1ktx2; m1m = m1ms +
+ *                         m1mt + m1ma, one per mask path)
  *   --counts <list>       override object counts, e.g. 1000,50000 (debugging)
  *   --duration <sec>      measured seconds per case (default 5)
  *   --warmup <sec>        warmup seconds per case (default 2)
@@ -47,13 +48,20 @@ const opt = (name, def) => {
   return i >= 0 && i + 1 < argv.length ? argv[i + 1] : def;
 };
 const quick = flag('quick');
+const LOAD_START = os.loadavg();
 const cfg = {
   label: opt('label', new Date().toISOString().replace(/[:.]/g, '-')),
   filter: opt('filter', null),
-  scenarios: opt('scenarios', 's1,s1b,s2,s3,a1,a2,a3')
+  scenarios: opt('scenarios', 's1,s1b,s2,s3,a1,a2,a3,t1,f1,m1m,p1')
     .split(',')
     .flatMap(k =>
-      k === 'a1' ? ['a1png', 'a1ktx2'] : k === 'a2' ? ['a2', 'a2u'] : [k],
+      k === 'a1'
+        ? ['a1png', 'a1ktx2']
+        : k === 'a2'
+          ? ['a2', 'a2u']
+          : k === 'm1m'
+            ? ['m1ms', 'm1mt', 'm1ma']
+            : [k],
     ),
   compare: opt('compare', 'm1-final'),
   counts: opt('counts', null)?.split(',').map(Number) ?? null,
@@ -126,6 +134,12 @@ const SWARM_ENGINES = [
   E('three', 'webgl', 'instanced'),
   E('three', 'webgpu', 'instanced'),
   E('three', 'webgpu', 'compute'),
+];
+/** M3 scenarios run on both main-thread backends (no worker, no Three counterpart). */
+const M3_BACKENDS = (cozyVariant, pixiVariants) => [
+  E('cozygpu', 'webgpu', cozyVariant),
+  E('cozygpu', 'webgl2', cozyVariant),
+  ...pixiVariants.flatMap(v => [E('pixi', 'webgpu', v), E('pixi', 'webgl', v)]),
 ];
 const SCENARIOS = {
   s1: {
@@ -230,6 +244,75 @@ const SCENARIOS = {
       E('cozygpu', 'webgl2', 'ring'),
       E('pixi', 'webgpu', 'particle'),
     ],
+  },
+  t1: {
+    id: 'text',
+    title:
+      'T1 — text: 10k glyphs (200 labels × 50), 20 labels (10 %) replaced per frame',
+    counts: [10_000],
+    kind: 'm3',
+    engines: [
+      E('cozygpu', 'webgpu', 'msdf'),
+      E('cozygpu', 'webgl2', 'msdf'),
+      E('cozygpu', 'webgpu', 'canvas'),
+      E('cozygpu', 'webgl2', 'canvas'),
+      E('pixi', 'webgpu', 'msdf'),
+      E('pixi', 'webgl', 'msdf'),
+      E('pixi', 'webgpu', 'text'),
+      E('pixi', 'webgl', 'text'),
+    ],
+  },
+  f1: {
+    id: 'filtered',
+    title:
+      'F1 — blur (8 px) + color matrix over a 100k static-sprite container (filter area = canvas)',
+    counts: [100_000],
+    kind: 'm3',
+    engines: [
+      E('cozygpu', 'webgpu', 'good'),
+      E('cozygpu', 'webgl2', 'good'),
+      E('cozygpu', 'webgpu', 'fast'),
+      E('cozygpu', 'webgl2', 'fast'),
+      E('pixi', 'webgpu', 'sprite'),
+      E('pixi', 'webgl', 'sprite'),
+      E('pixi', 'webgpu', 'particle'),
+      E('pixi', 'webgl', 'particle'),
+    ],
+  },
+  m1ms: {
+    id: 'masked-moving',
+    idSuffix: '-scissor',
+    title:
+      'M1m scissor — 10k sprites sliding under a fixed rect mask (Pixi: Graphics rect, stencil)',
+    counts: [10_000],
+    kind: 'm3',
+    engines: M3_BACKENDS('scissor', ['rect']),
+  },
+  m1mt: {
+    id: 'masked-moving',
+    idSuffix: '-stencil',
+    title:
+      "M1m stencil — 10k sprites under a fixed circle mask (cozygpu mode 'stencil'; WebGPU resolves it to alpha; Pixi: Graphics circle, stencil)",
+    counts: [10_000],
+    kind: 'm3',
+    engines: M3_BACKENDS('stencil', ['circle']),
+  },
+  m1ma: {
+    id: 'masked-moving',
+    idSuffix: '-alpha',
+    title:
+      "M1m alpha — 10k sprites under a fixed soft circle sprite mask (cozygpu mode 'alpha'; Pixi: Sprite mask)",
+    counts: [10_000],
+    kind: 'm3',
+    engines: M3_BACKENDS('alpha', ['sprite']),
+  },
+  p1: {
+    id: 'particles',
+    title:
+      'P1 — particles: ~500k alive (disc emitter, life 1–2 s, alpha + size over life, fixed 1/60 s step)',
+    counts: [500_000],
+    kind: 'churn',
+    engines: M3_BACKENDS('auto', ['particle']),
   },
 };
 const SCENARIO_BY_ID = Object.fromEntries(
@@ -543,6 +626,10 @@ function markdown(report) {
     `- Machine: ${meta.machine.cpu} · ${meta.machine.memGB} GB · ${meta.machine.platform}`,
   );
   out.push(`- GPU: ${meta.gpu ?? 'unknown'}`);
+  if (meta.loadavg)
+    out.push(
+      `- Load average (1/5/15 min): start ${meta.loadavg.start.map(v => v.toFixed(2)).join(' / ')} · end ${meta.loadavg.end.map(v => v.toFixed(2)).join(' / ')}`,
+    );
   out.push(
     `- Chrome: ${meta.chrome} (${meta.headful ? 'headful' : 'headless=new'}, ${meta.vsync ? 'vsync ON' : 'vsync/frame-rate limit OFF'})`,
   );
@@ -582,6 +669,7 @@ function markdown(report) {
     if (s.kind === 'assets') out.push(...assetsTable(rows), '');
     if (s.kind === 'picking') out.push(...pickingTable(rows), '');
     if (s.kind === 'churn') out.push(...churnTable(rows), '');
+    if (s.kind === 'm3') out.push(...m3Table(rows), '');
   }
 
   const init = results.filter(
@@ -699,6 +787,20 @@ function pickingTable(rows) {
 }
 
 /** A3: churn extras. */
+function m3Table(rows) {
+  const out = [
+    '| engine | tool | draw calls | front CPU ms | mask mode | init ms | status |',
+    '|---|---|---:|---:|---|---:|---|',
+  ];
+  for (const r of rows) {
+    const i = r.info ?? {};
+    out.push(
+      `| ${engineLabel(r)} | ${r.tool ?? r.params.variant} | ${i.drawCalls ?? '—'} | ${f2(i.frontCpuMs)} | ${i.maskMode ?? '—'} | ${f1(r.init?.totalMs)} | ${statusCell(r)} |`,
+    );
+  }
+  return out;
+}
+
 function churnTable(rows) {
   const out = [
     '| engine | tool | alive at end | spawns/frame | draw calls | front CPU ms | packet B | status |',
@@ -1028,6 +1130,7 @@ async function main() {
             .filter(Boolean)
             .join(' ')
         : null,
+      loadavg: { start: LOAD_START, end: os.loadavg() },
       machine: {
         cpu: os.cpus()[0]?.model ?? 'unknown',
         cores: os.cpus().length,

@@ -15,7 +15,15 @@ export type ScenarioId =
   /** M2 A2: S3 (static sprites) + one outstanding pick at a time. */
   | 'picking'
   /** M2 A3: GPU-simulated mortal objects, spawn/kill churn every frame. */
-  | 'swarm-churn';
+  | 'swarm-churn'
+  /** M3 T1: `count` glyphs in T1_LABELS labels, 10 % of them replaced per frame. */
+  | 'text'
+  /** M3 F1: blur + color-matrix chain over a container of `count` static sprites. */
+  | 'filtered'
+  /** M3 M1m: a masked container of `count` sprites moving under a fixed mask. */
+  | 'masked-moving'
+  /** M3 P1: emitter-driven particles, ~`count` alive in steady state. */
+  | 'particles';
 export type LibId = 'cozygpu' | 'pixi' | 'three';
 
 export interface BenchParams {
@@ -61,6 +69,59 @@ export function assetCell(i: number): { x: number; y: number } {
 export const CHURN_SPAWN_PER_FRAME = 8000;
 export const CHURN_LIFE_MIN = 0.5;
 export const CHURN_LIFE_MAX = 1.5;
+
+/** T1: labels × glyphs per label = count (10k); T1_CHANGE labels change per frame. */
+export const T1_LABELS = 200;
+export const T1_CHANGE = 20;
+export const T1_SIZE = 10;
+export const T1_COLUMNS = 4;
+export const T1_ROW = 14;
+export const T1_FILL = 0xc8d4f0;
+const T1_ALPHABET =
+  'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+/** T1: `n` seeded strings of `len` glyphs (no spaces: every char draws). */
+export function textPool(seed: number, n: number, len: number): string[] {
+  const r = rng(seed);
+  const out: string[] = [];
+  for (let i = 0; i < n; i++) {
+    let s = '';
+    for (let k = 0; k < len; k++)
+      s += T1_ALPHABET[Math.floor(r() * T1_ALPHABET.length)];
+    out.push(s);
+  }
+  return out;
+}
+export const T1_POOL = 1024;
+
+/** F1: Gaussian radius in stage px (Pixi's BlurFilter default strength). */
+export const F1_BLUR = 8;
+export const F1_SATURATE = 0.5;
+export const F1_HUE = 15;
+
+/** M1m: the mask stays put while the masked container slides along x. */
+export const M1_RECT = { x: 320, y: 180, width: 640, height: 360 };
+export const M1_RADIUS = 300;
+export const M1_SWING = 120;
+/** M1m: container x offset at frame `f` (fixed step, so every library matches). */
+export function m1Offset(f: number): number {
+  return Math.sin(f * SIM_DT * 2) * M1_SWING;
+}
+
+/** P1: life range (s), spawn rate (/s) ⇒ alive ≈ rate × mean life = count. */
+export const P1_LIFE_MIN = 1;
+export const P1_LIFE_MAX = 2;
+export const P1_SPEED: readonly [number, number] = [20, 120];
+export const P1_SIZE: readonly [number, number] = [2, 6];
+export const P1_RADIUS = 200;
+/** Over life: alpha 1 → 0, size × 1 → 0.25 (linear). */
+export const P1_END_SCALE = 0.25;
+export function p1Rate(alive: number): number {
+  return alive / ((P1_LIFE_MIN + P1_LIFE_MAX) / 2);
+}
+/** Capacity with head-room so a ring never overwrites a live particle. */
+export function p1Capacity(alive: number): number {
+  return Math.ceil(p1Rate(alive) * P1_LIFE_MAX * 1.05);
+}
 
 /**
  * A2: pick statistics collected by the adapters. `latencyMs` = pick call →

@@ -88,34 +88,38 @@ export const GL_STENCIL_INSIDE: GLStencil = {
 const UNKNOWN = {} as never;
 
 export class GLState {
-  program: WebGLProgram | null = UNKNOWN;
-  vao: WebGLVertexArrayObject | null = UNKNOWN;
-  framebuffer: WebGLFramebuffer | null = UNKNOWN;
-  private blend = -1;
-  private depth = -1;
-  private scissor = -1;
-  private discard = -1;
+  // The cached values are set by `reset` (run by the constructor), so they
+  // are declared here without initializers: no second copy of the list.
+  declare program: WebGLProgram | null;
+  declare vao: WebGLVertexArrayObject | null;
+  declare framebuffer: WebGLFramebuffer | null;
+  declare private blend: number;
+  declare private depth: number;
+  declare private scissor: number;
+  declare private discard: number;
   /** M3 stencil (masks): test toggle, func + ref + masks, ops, color mask. */
-  private stencil = -1;
-  private stencilFunc = -1;
-  private stencilRef = -1;
-  private stencilRead = -1;
-  private stencilWrite = -1;
-  private stencilFail = -1;
-  private stencilZFail = -1;
-  private stencilPass = -1;
-  private colorMask = -1;
-  private activeUnit = -1;
+  declare private stencil: number;
+  declare private stencilFunc: number;
+  declare private stencilRef: number;
+  declare private stencilRead: number;
+  declare private stencilWrite: number;
+  declare private stencilFail: number;
+  declare private stencilZFail: number;
+  declare private stencilPass: number;
+  declare private colorMask: number;
+  declare private activeUnit: number;
   private readonly textures: (WebGLTexture | null)[] = [];
   private readonly samplers: (WebGLSampler | null)[] = [];
   private readonly uboBuffers: (WebGLBuffer | null)[] = [];
   private readonly uboOffsets: number[] = [];
   private readonly uboSizes: number[] = [];
   /** UNPACK_FLIP_Y, UNPACK_PREMULTIPLY_ALPHA (-1 unknown). */
-  private flipY = -1;
-  private premultiply = -1;
+  declare private flipY: number;
+  declare private premultiply: number;
 
-  constructor(private gl: WebGL2RenderingContext) {}
+  constructor(private gl: WebGL2RenderingContext) {
+    this.reset(gl);
+  }
 
   reset(gl: WebGL2RenderingContext): void {
     this.gl = gl;

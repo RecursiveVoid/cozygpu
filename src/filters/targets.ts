@@ -29,12 +29,17 @@ import { FILTER_TARGET_GRANULARITY } from '../types/layouts';
 export const TARGET_IDLE_FRAMES = 120;
 
 export interface TargetPool {
-  /** A target at least `width` × `height` physical px (rounded up). */
+  /**
+   * A target at least `width` × `height` physical px (rounded up), or
+   * exactly that size when `exact` is set (soft masks draw their capture
+   * with the main pass' viewport, so it must match the canvas).
+   */
   acquire(
     width: number,
     height: number,
     format?: TextureFormat,
     sampleCount?: 1 | 4,
+    exact?: boolean,
   ): RhiTexture;
   release(target: RhiTexture): void;
   /** Releases every target still held and ages the free list. */
@@ -47,6 +52,12 @@ export interface TargetPool {
    */
   onDestroyed(listener: (texture: RhiTexture) => void): void;
   offDestroyed(listener: (texture: RhiTexture) => void): void;
+  /**
+   * Forgets every target without destroying it: after a device restore the
+   * textures belong to the lost device, so they can neither be reused nor
+   * destroyed on the new one. The next acquire creates fresh targets.
+   */
+  reset(): void;
   /** Physical bytes currently held. */
   readonly bytes: number;
   destroy(): void;
@@ -111,6 +122,7 @@ class TargetPoolImpl implements TargetPool {
     height: number,
     format?: TextureFormat,
     sampleCount: 1 | 4 = 1,
+    exact = false,
   ): RhiTexture {
     if (this.destroyed) {
       throw new CozyGPUError('DESTROYED', 'filter target pool');
@@ -118,8 +130,8 @@ class TargetPoolImpl implements TargetPool {
     const caps = this.backend.caps;
     const fmt = format ?? caps.canvasFormat;
     const max = caps.maxTextureSize;
-    const w = Math.min(max, roundUp(width));
-    const h = Math.min(max, roundUp(height));
+    const w = Math.min(max, exact ? Math.max(1, width) : roundUp(width));
+    const h = Math.min(max, exact ? Math.max(1, height) : roundUp(height));
     const entries = this.entries;
     for (let i = 0; i < entries.length; i++) {
       const e = entries[i];
@@ -190,6 +202,11 @@ class TargetPoolImpl implements TargetPool {
     }
   }
 
+  reset(): void {
+    this.entries.length = 0;
+    this.held = 0;
+  }
+
   destroy(): void {
     this.destroyed = true;
     const entries = this.entries;
@@ -248,6 +265,19 @@ export function releaseTargetPool(backend: Backend): void {
   if (--entry.refs > 0) return;
   entry.pool.destroy();
   shared.delete(backend);
+}
+
+/**
+ * @internal Drops the backend's pooled targets after a device restore (the
+ * backend object survives it, so the shared record does too) and forgets any
+ * capture pass left open by the lost frame. Safe to call from every system's
+ * `restore`: the second call finds an empty pool.
+ */
+export function resetTargetPool(backend: Backend): void {
+  const entry = shared.get(backend);
+  if (!entry) return;
+  entry.pool.reset();
+  entry.currentPassDesc = null;
 }
 
 /** @internal The pass an effect nested in this one must reopen. */

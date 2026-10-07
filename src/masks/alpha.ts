@@ -28,7 +28,17 @@ import type {
   RhiTexture,
 } from '../backend/types';
 import { ShaderStage } from '../backend/types';
-import type { TargetPool } from '../filters/targets';
+// Static: this chunk is itself lazy, and a dynamic import of a module the
+// filter chunk also imports statically would cost an extra facade chunk.
+import {
+  acquireTargetPool,
+  currentPassDesc,
+  releaseTargetPool,
+  resetTargetPool,
+  setCurrentPassDesc,
+  type TargetPool,
+} from '../filters/targets';
+import { MASK_MAX_DEPTH } from '../types/layouts';
 import type { CoreContext, CoreFrameState } from '../types/core';
 import { SPRITE_VERTEX_LAYOUT } from '../sprites/pipeline';
 
@@ -39,7 +49,8 @@ export interface AlphaMasks {
   /**
    * Records the coverage pass and returns the pass the group is captured
    * into, or null when nothing can be captured (the core then clips to the
-   * mask's bounds instead).
+   * mask's bounds instead). Soft masks nest: each open capture keeps its own
+   * targets, and the pass it interrupted is reopened when it ends.
    */
   begin(
     list: CommandList,
@@ -50,34 +61,69 @@ export interface AlphaMasks {
     invert: boolean,
     frame: CoreFrameState,
   ): RenderPassDesc | null;
-  /** The capture pass was ended by the core; the main pass reopens next. */
+  /**
+   * The innermost capture pass was ended by the core: the pass it
+   * interrupted (the enclosing capture, or the main pass) becomes current
+   * again, for the composite.
+   */
   endCapture(): void;
-  /** Composites the captured target over the main pass and frees the targets. */
+  /** Composites the innermost capture over the open pass and frees it. */
   composite(pass: RenderPass, frame: CoreFrameState): void;
+  /**
+   * The capture (alpha or filter) draws currently go to, set to load so it
+   * can be reopened, or null for the main pass.
+   */
+  current(): RenderPassDesc | null;
+  /** True while draws go to an offscreen capture rather than the main pass. */
+  readonly capturing: boolean;
   endFrame(): void;
+  /** Device restore: forgets the lost device's targets, then destroys. */
+  lost(): void;
   destroy(): void;
 }
 
-class AlphaMasksImpl implements AlphaMasks {
-  private capture: RhiTexture | null = null;
+/** One open soft mask: its targets and the pass it interrupted. */
+interface Level {
+  capture: RhiTexture | null;
   /** Multisampled capture attachment that resolves into `capture` (MSAA). */
-  private captureMsaa: RhiTexture | null = null;
-  private coverage: RhiTexture | null = null;
-  private invert = false;
-  private group: RhiBindGroup | null = null;
-  private groupCapture: RhiTexture | null = null;
-  private groupCoverage: RhiTexture | null = null;
+  msaa: RhiTexture | null;
+  coverage: RhiTexture | null;
+  invert: boolean;
+  prev: RenderPassDesc | null;
+  readonly pass: RenderPassDesc;
+  group: RhiBindGroup | null;
+  groupCapture: RhiTexture | null;
+  groupCoverage: RhiTexture | null;
+}
+
+function makeLevel(): Level {
+  return {
+    capture: null,
+    msaa: null,
+    coverage: null,
+    invert: false,
+    prev: null,
+    pass: {
+      label: 'cozygpu mask capture',
+      color: {
+        target: 'canvas',
+        load: 'clear',
+        clearColor: new Float32Array([0, 0, 0, 0]),
+      },
+    },
+    group: null,
+    groupCapture: null,
+    groupCoverage: null,
+  };
+}
+
+class AlphaMasksImpl implements AlphaMasks {
+  /** Open captures, innermost last; never reallocated. */
+  private readonly levels: Level[] = [];
+  private depth = 0;
 
   private readonly coveragePass: RenderPassDesc = {
     label: 'cozygpu mask coverage',
-    color: {
-      target: 'canvas',
-      load: 'clear',
-      clearColor: new Float32Array([0, 0, 0, 0]),
-    },
-  };
-  private readonly capturePass: RenderPassDesc = {
-    label: 'cozygpu mask capture',
     color: {
       target: 'canvas',
       load: 'clear',
@@ -95,7 +141,19 @@ class AlphaMasksImpl implements AlphaMasks {
     private readonly coveragePipeline: RhiRenderPipeline,
     private readonly compositeNormal: RhiRenderPipeline,
     private readonly compositeInvert: RhiRenderPipeline,
-  ) {}
+  ) {
+    for (let i = 0; i < MASK_MAX_DEPTH; i++) this.levels.push(makeLevel());
+  }
+
+  get capturing(): boolean {
+    return currentPassDesc(this.ctx.backend) !== null;
+  }
+
+  current(): RenderPassDesc | null {
+    const desc = currentPassDesc(this.ctx.backend);
+    if (desc) desc.color.load = 'load';
+    return desc;
+  }
 
   begin(
     list: CommandList,
@@ -106,23 +164,32 @@ class AlphaMasksImpl implements AlphaMasks {
     invert: boolean,
     frame: CoreFrameState,
   ): RenderPassDesc | null {
-    if (!quads || count === 0 || this.capture) return null;
+    if (!quads || count === 0 || this.depth >= this.levels.length) {
+      return null;
+    }
+    const backend = this.ctx.backend;
+    // Exactly the frame's size, so the capture is drawn with the main pass'
+    // viewport and scissor rects need no mapping (§21.3).
     const width = Math.max(1, frame.pixelWidth);
     const height = Math.max(1, frame.pixelHeight);
-    const format = this.ctx.backend.caps.canvasFormat;
-    const coverage = this.pool.acquire(width, height, format, 1);
-    const capture = this.pool.acquire(width, height, format, 1);
+    const format = backend.caps.canvasFormat;
+    const coverage = this.pool.acquire(width, height, format, 1, true);
+    const capture = this.pool.acquire(width, height, format, 1, true);
     // The subtree is drawn by the sprite pipelines, which are built for the
     // main pass' sample count, so under MSAA the capture attachment has to be
     // multisampled and resolve into the single-sampled texture the composite
     // samples.
     const samples = this.ctx.sampleCount;
     const msaa =
-      samples === 1 ? null : this.pool.acquire(width, height, format, samples);
-    this.coverage = coverage;
-    this.capture = capture;
-    this.captureMsaa = msaa;
-    this.invert = invert;
+      samples === 1
+        ? null
+        : this.pool.acquire(width, height, format, samples, true);
+    const level = this.levels[this.depth++];
+    level.coverage = coverage;
+    level.capture = capture;
+    level.msaa = msaa;
+    level.invert = invert;
+    level.prev = currentPassDesc(backend);
     // 1. Coverage: the mask's own alpha, on its own pass.
     this.coveragePass.color.target = coverage;
     const pass = list.beginRenderPass(this.coveragePass);
@@ -132,20 +199,31 @@ class AlphaMasksImpl implements AlphaMasks {
     pass.setVertexBuffer(0, quads);
     pass.draw(QUAD_VERTICES, count, 0, first);
     pass.end();
-    // 2. Capture: the core opens this one and the subtree draws into it.
-    this.capturePass.color.target = msaa ?? capture;
-    this.capturePass.color.resolveTarget = msaa ? capture : undefined;
-    return this.capturePass;
+    // 2. Capture: the core opens this one and the subtree draws into it. An
+    // inner effect reopens it (with load) after its own capture.
+    const color = level.pass.color;
+    color.target = msaa ?? capture;
+    color.resolveTarget = msaa ? capture : undefined;
+    color.keepMultisampled = msaa !== null;
+    color.load = 'clear';
+    setCurrentPassDesc(backend, level.pass);
+    return level.pass;
   }
 
-  endCapture(): void {}
+  endCapture(): void {
+    if (this.depth > 0) {
+      setCurrentPassDesc(this.ctx.backend, this.levels[this.depth - 1].prev);
+    }
+  }
 
   composite(pass: RenderPass, _frame: CoreFrameState): void {
-    const capture = this.capture;
-    const coverage = this.coverage;
+    if (this.depth === 0) return;
+    const level = this.levels[--this.depth];
+    const capture = level.capture;
+    const coverage = level.coverage;
     if (!capture || !coverage) return;
-    if (this.groupCapture !== capture || this.groupCoverage !== coverage) {
-      this.group = this.ctx.backend.createBindGroup({
+    if (level.groupCapture !== capture || level.groupCoverage !== coverage) {
+      level.group = this.ctx.backend.createBindGroup({
         label: 'cozygpu.mask.composite',
         layout: this.layout,
         entries: [
@@ -154,35 +232,49 @@ class AlphaMasksImpl implements AlphaMasks {
           { binding: 2, resource: { texture: coverage } },
         ],
       });
-      this.groupCapture = capture;
-      this.groupCoverage = coverage;
+      level.groupCapture = capture;
+      level.groupCoverage = coverage;
     }
-    pass.setPipeline(this.invert ? this.compositeInvert : this.compositeNormal);
+    pass.setPipeline(
+      level.invert ? this.compositeInvert : this.compositeNormal,
+    );
     pass.setBindGroup(0, this.ctx.viewBindGroup);
-    pass.setBindGroup(1, this.group!);
+    pass.setBindGroup(1, level.group!);
     pass.draw(TRIANGLE_VERTICES, 1, 0, 0);
     this.pool.release(capture);
     this.pool.release(coverage);
-    if (this.captureMsaa) this.pool.release(this.captureMsaa);
-    this.capture = null;
-    this.captureMsaa = null;
-    this.coverage = null;
+    if (level.msaa) this.pool.release(level.msaa);
+    this.clear(level);
+  }
+
+  private clear(level: Level): void {
+    level.capture = null;
+    level.msaa = null;
+    level.coverage = null;
+    level.prev = null;
   }
 
   endFrame(): void {
-    this.capture = null;
-    this.captureMsaa = null;
-    this.coverage = null;
+    for (let i = 0; i < this.levels.length; i++) this.clear(this.levels[i]);
+    this.depth = 0;
+    setCurrentPassDesc(this.ctx.backend, null);
     this.pool.endFrame();
   }
 
+  lost(): void {
+    resetTargetPool(this.ctx.backend);
+    this.destroy();
+  }
+
   destroy(): void {
-    this.capture = null;
-    this.captureMsaa = null;
-    this.coverage = null;
-    this.group = null;
-    this.groupCapture = null;
-    this.groupCoverage = null;
+    for (let i = 0; i < this.levels.length; i++) {
+      const level = this.levels[i];
+      this.clear(level);
+      level.group = null;
+      level.groupCapture = null;
+      level.groupCoverage = null;
+    }
+    this.depth = 0;
     // The pool is shared with the filter core: drop the reference and let the
     // last holder destroy it.
     this.releasePool();
@@ -200,7 +292,6 @@ export async function createAlphaMasks(
 ): Promise<AlphaMasks> {
   const backend = ctx.backend;
   const wgsl = backend.caps.shaderLanguage === 'wgsl';
-  const targets = await import('../filters/targets');
   const sources = wgsl
     ? await import('./shadersWGSL')
     : await import('./shadersGLSL');
@@ -301,11 +392,11 @@ export async function createAlphaMasks(
   // second pool, so a page that filters and soft-masks keeps one set of
   // canvas-sized targets instead of two. Taken last, after everything that
   // can reject, so a failed build never leaks the reference.
-  const pool = targets.acquireTargetPool(backend);
+  const pool = acquireTargetPool(backend);
   return new AlphaMasksImpl(
     ctx,
     pool,
-    () => targets.releaseTargetPool(backend),
+    () => releaseTargetPool(backend),
     sampler,
     layout,
     coveragePipeline,

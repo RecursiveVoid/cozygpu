@@ -2,6 +2,7 @@
 // aliased to src/index.ts) and driven through page.evaluate(). Every scenario
 // returns plain JSON; the Node side decides pass/fail.
 import * as GPU from 'cozygpu';
+import { installM3 } from './stress-m3.js';
 
 const S = globalThis.__stress;
 // Marks where the stress page's own code starts in the bundle (after the
@@ -2961,4 +2962,9 @@ globalThis.stress = {
   },
   version: GPU.VERSION,
 };
+// M3 scenarios (masks, filters, text, particles) share the helpers above.
+Object.assign(
+  globalThis.stress,
+  installM3({ createCtx, startLoop, stopLoop, registerCtx, getCtx, settle, sleep, raf, errText, phase, swarmSupported }),
+);
 globalThis.__stressReady = true;

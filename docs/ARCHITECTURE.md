@@ -761,7 +761,7 @@ preserved per name where possible.
 
 ## 7. Backend (RHI)
 
-Contract: `src/backend/types.ts` (frozen). Implementations:
+Contract: `src/backend/types.ts`. Implementations:
 `src/backend/webgpu/*` (M1) and `src/backend/webgl2/*` (M2, §13). Both are
 loaded by dynamic import from `src/backend/createBackend.ts`.
 
@@ -1215,10 +1215,10 @@ M2 widens reach (WebGL2), adds the asset loader and picking, closes the
 M1 budget gaps (worker allocations, bundle size, moving-sprite CPU), and
 adds GPU free lists to Swarm. The contracts were designed first; during
 the build the implementation files were stubs that threw
-`CozyGPUError('NOT_IMPLEMENTED')` (or answer requests with that code), so
-`tsc` and `jest` pass while developers work in parallel.
+`CozyGPUError('NOT_IMPLEMENTED')` (or answered requests with that code), so
+`tsc` and `jest` passed while the pieces were built in parallel.
 
-Frozen M2 contract additions, by file:
+M2 contract additions, by file:
 
 | file                           | additions                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -2232,7 +2232,7 @@ show:
 - `?backend=` and `?worker=1` like every example (`bindColumns` and events
   work in worker mode; interop does not).
 
-### 19.9 Frozen M2.5 contract additions
+### 19.9 M2.5 contract additions
 
 | file                         | additions                                                                                                                                                                                                           |
 | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -2250,7 +2250,7 @@ show:
 | `src/index.ts`               | type exports `Events`, `EventName`, `EventSink`, `RendererInterop`, `ExternalInstanceBuffer(Desc)`, `ExternalLayout`, `SpriteColumns`, `ColumnSource`, `BindColumnsOptions`, `ColumnBinding`, `SwarmExternalSource` |
 
 **All implemented by the end of M2.5** (see §19.1–§19.7 "as built"). As
-frozen, the stubs that threw `CozyGPUError('NOT_IMPLEMENTED')` (or rejected
+designed, the stubs that threw `CozyGPUError('NOT_IMPLEMENTED')` (or rejected
 with it) so `tsc` and `jest` passed were: `NodeBase.userId` (get and set),
 `Container.bindColumns`, `Swarm.setSource`, `Swarm.setSourceCount`,
 `RendererImpl.interop`, `createReadbackRing` / `native` / `importBuffer` /
@@ -2269,7 +2269,7 @@ fills it.
 ## 20. Later milestones (design notes only)
 
 The following are **not** part of M2 or M2.5. Masking, filters, text and
-particles were designed and frozen for M3: see §21–§24.
+particles were designed for M3: see §21–§24.
 
 - **Per-renderer dirty tracking.** Dirty bits are process-wide, so one
   node tree drawn by two renderers can miss updates.

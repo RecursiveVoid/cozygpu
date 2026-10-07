@@ -52,6 +52,7 @@ import {
   acquireTargetPool,
   currentPassDesc,
   releaseTargetPool,
+  resetTargetPool,
   setCurrentPassDesc,
 } from './targets';
 import type { TargetPool } from './targets';
@@ -216,12 +217,19 @@ class FilterCoreSystem implements CoreSystem {
     this.pipelines.clear();
     this.srcGroups.clear();
     this.kept.clear();
+    // The uniform ring belonged to the lost device: build() must not delete
+    // it on the restored one.
+    this.ring = null;
     const previous = this.ctx;
     this.ctx = ctx;
     // One reference per system, however many restores run: taking another
     // without dropping the old one would pin the shared pool forever. The new
     // one is taken first, so a pool another system still holds is kept.
     this.pool?.offDestroyed(this.forgetSource);
+    // The backend (and so the shared pool record) survives a restore, but
+    // the pooled textures belong to the lost device: drop them first.
+    if (previous) resetTargetPool(previous.backend);
+    resetTargetPool(ctx.backend);
     const pool = acquireTargetPool(ctx.backend);
     if (previous) releaseTargetPool(previous.backend);
     this.pool = pool;

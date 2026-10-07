@@ -13,6 +13,8 @@ jspm_packages/
 # Output directories (commonly used by Rollup)
 dist/
 build/
+# Showcase page build (npm run build:site; deployed by .github/workflows/pages.yml)
+site-dist/
 
 
 # Temporary build files

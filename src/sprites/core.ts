@@ -98,7 +98,8 @@ export class SpriteCoreSystem implements CoreSystem {
     this.sharedSource.length = 0;
     this.sharedViews.length = 0;
     this.ctx = ctx;
-    this.fx?.dispose();
+    // Dropped, not disposed: its buffer belonged to the lost device, and
+    // deleting it on the restored one is an error (WebGL2).
     this.fx = null;
     this.fxLoad = null;
     this.fxCurrent = 0;

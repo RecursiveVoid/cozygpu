@@ -344,6 +344,29 @@ describe('filter core system', () => {
     expect(() => pool.acquire(64, 64)).toThrow(/DESTROYED/);
   });
 
+  it("does not reuse the lost device's targets after a device restore", async () => {
+    const backend = new FakeBackend(800, 600);
+    const pool = acquireTargetPool(backend);
+    const before = pool.acquire(800, 600);
+    pool.endFrame();
+    const ctx = context(backend);
+    const system = createFilterCoreSystem();
+    await system.init(ctx);
+    await system.restore!(ctx);
+    expect(pool.bytes).toBe(0);
+    expect(pool.acquire(800, 600)).not.toBe(before);
+    // Neither is the old uniform ring deleted on the restored device.
+    const rings = backend.buffers.filter(
+      b => b.label === 'cozygpu.filter.passUniforms',
+    );
+    expect(rings.length).toBe(2);
+    expect((rings[0] as unknown as { destroyed: boolean }).destroyed).toBe(
+      false,
+    );
+    system.destroy();
+    releaseTargetPool(backend);
+  });
+
   it('drops the source bind group of a target the pool destroyed', async () => {
     const backend = new FakeBackend(800, 600);
     const sources: { destroyed: boolean }[] = [];

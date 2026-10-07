@@ -1,7 +1,6 @@
 /**
- * M2.5 device interop (ARCHITECTURE §19.4). SHARED + FROZEN during the M2.5
- * build. Implemented by owner "renderer-hooks" (front handle, core table,
- * both backends); consumed by owner "swarm-hooks" (Swarm external sources).
+ * M2.5 device interop (ARCHITECTURE §19.4): a front handle and core table on
+ * both backends, used by Swarm external sources.
  *
  * Main-thread mode only. External GPU code (a compute simulation, a physics
  * step, a video decoder) can use the renderer's own device and hand cozygpu

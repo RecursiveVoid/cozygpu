@@ -1,7 +1,6 @@
 /**
- * M2.5 events sink (ARCHITECTURE §19.2). SHARED + FROZEN during the M2.5
- * build; emitted by owner "renderer-hooks" (src/renderer/**, plus the asset
- * events in src/assets/Assets.ts).
+ * M2.5 events sink (ARCHITECTURE §19.2). Emitted from src/renderer/** and,
+ * for asset events, from src/assets/Assets.ts.
  *
  * cozygpu has no event system of its own. `createRenderer({ events })` takes
  * any object with `emit(name, payload)` (an EventEmitter, a cozyEvent bus, a

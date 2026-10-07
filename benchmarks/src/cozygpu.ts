@@ -14,6 +14,17 @@
  * CHURN_SPAWN_PER_FRAME mortal objects every frame, stepped with SIM_DT.
  * S1b (M2.5, variant columns): S1, but the sim's x/y Float32Arrays are bound
  * once with `container.bindColumns` and each frame calls `binding.commit`.
+ * M3 (variants in parentheses):
+ *   T1 text: 200 GPU.Text labels of 50 glyphs, 20 replaced per frame
+ *      (msdf: the example MSDF font via assets kind 'font'; canvas: a system
+ *      font descriptor rasterised into a glyph atlas).
+ *   F1 filtered: 100k static sprites in a Group with [blur, colorMatrix]
+ *      (good: separable Gaussian; fast: dual Kawase), area = the canvas.
+ *   M1m masked-moving: 10k sprites in a Group sliding under a fixed mask
+ *      (scissor: rect; stencil: circle sprite, mode 'stencil' (WebGPU
+ *      resolves it to alpha); alpha: circle sprite, mode 'alpha').
+ *   P1 particles: GPU.Particles, one disc emitter, alpha/size over life,
+ *      stepped with SIM_DT like the CPU emitter it is compared with.
  */
 import * as GPU from 'cozygpu';
 import {
@@ -24,6 +35,17 @@ import {
   CHURN_LIFE_MAX,
   CHURN_LIFE_MIN,
   CHURN_SPAWN_PER_FRAME,
+  F1_BLUR,
+  F1_HUE,
+  F1_SATURATE,
+  M1_RADIUS,
+  M1_RECT,
+  P1_END_SCALE,
+  P1_LIFE_MAX,
+  P1_LIFE_MIN,
+  P1_RADIUS,
+  P1_SIZE,
+  P1_SPEED,
   PickStats,
   SIM_DT,
   SPEED_MAX,
@@ -31,9 +53,20 @@ import {
   SPRITE_SIZE,
   SPRITE_TEXTURE_SIZE,
   SWARM_SIZE,
+  T1_CHANGE,
+  T1_COLUMNS,
+  T1_FILL,
+  T1_LABELS,
+  T1_POOL,
+  T1_ROW,
+  T1_SIZE,
   assetCell,
   assetUrl,
+  m1Offset,
+  p1Capacity,
+  p1Rate,
   rng,
+  textPool,
 } from './common';
 import { start } from './harness';
 
@@ -49,6 +82,11 @@ function createCozyAdapter(ctx: BenchContext): Adapter {
   let skippedAtStart = 0;
   let measuredSkipped = 0;
   let assetInfo: Record<string, unknown> = {};
+  // M3: per-frame work of the T1/F1/M1m/P1 scenarios (set by populate).
+  let m3Frame: (() => void) | null = null;
+  let group: GPU.Group | null = null;
+  let particles: GPU.Particles | null = null;
+  let m3Frames = 0;
 
   // A2 picking
   const picks = new PickStats();
@@ -103,7 +141,9 @@ function createCozyAdapter(ctx: BenchContext): Adapter {
         antialias: false,
         powerPreference: 'high-performance',
         limits:
-          scenario === 'swarm' || scenario === 'swarm-churn'
+          scenario === 'swarm' ||
+          scenario === 'swarm-churn' ||
+          scenario === 'particles'
             ? 'max'
             : 'default',
         assets:
@@ -222,11 +262,145 @@ function createCozyAdapter(ctx: BenchContext): Adapter {
         };
       }
 
+      if (scenario === 'text') {
+        const msdf = params.variant !== 'canvas';
+        const font: GPU.FontAsset | GPU.SystemFont = msdf
+          ? (
+              await r.assets.load<GPU.FontAsset>({
+                url: new URL('./dist/fonts/cozy.json', location.href).href,
+                kind: 'font',
+              })
+            ).value
+          : { family: 'monospace' };
+        const perLabel = Math.round(params.count / T1_LABELS);
+        const pool = textPool(params.seed, T1_POOL, perLabel);
+        const labels: GPU.Text[] = [];
+        const rows = T1_LABELS / T1_COLUMNS;
+        const colW = params.width / T1_COLUMNS;
+        for (let i = 0; i < T1_LABELS; i++) {
+          const t = new GPU.Text(pool[i & (T1_POOL - 1)], {
+            font,
+            size: T1_SIZE,
+            fill: T1_FILL,
+            wrap: 'none',
+          });
+          t.setPosition(
+            4 + Math.floor(i / rows) * colW,
+            4 + (i % rows) * T1_ROW,
+          );
+          r.stage.addChild(t);
+          labels.push(t);
+        }
+        await Promise.all(labels.map(l => l.ready));
+        let next = T1_LABELS;
+        let cursor = 0;
+        m3Frame = () => {
+          for (let k = 0; k < T1_CHANGE; k++) {
+            labels[cursor].text = pool[next & (T1_POOL - 1)];
+            next++;
+            cursor = cursor + 1 === T1_LABELS ? 0 : cursor + 1;
+          }
+        };
+        return {
+          cpuSim: false,
+          tool: msdf ? 'Text (MSDF)' : 'Text (canvas glyph atlas)',
+        };
+      }
+
+      if (scenario === 'particles') {
+        const texture = GPU.Texture.fromPixels(
+          SPRITE_TEXTURE_SIZE,
+          SPRITE_TEXTURE_SIZE,
+          ctx.pixels,
+        );
+        particles = new GPU.Particles({
+          capacity: p1Capacity(params.count),
+          texture,
+          autoStep: false,
+          emitter: {
+            rate: p1Rate(params.count),
+            shape: { disc: { radius: P1_RADIUS } },
+            x: params.width / 2,
+            y: params.height / 2,
+            speed: [P1_SPEED[0], P1_SPEED[1]],
+            size: [P1_SIZE[0], P1_SIZE[1]],
+            life: [P1_LIFE_MIN, P1_LIFE_MAX],
+          },
+          over: { alpha: [1, 0], size: [1, P1_END_SCALE] },
+        });
+        r.stage.addChild(particles);
+        const fx = particles;
+        m3Frame = () => fx.step(SIM_DT);
+        return {
+          cpuSim: false,
+          tool: `Particles (${fx.swarm.allocation})`,
+        };
+      }
+
       const texture = GPU.Texture.fromPixels(
         SPRITE_TEXTURE_SIZE,
         SPRITE_TEXTURE_SIZE,
         ctx.pixels,
       );
+      if (scenario === 'filtered' || scenario === 'masked-moving') {
+        const g = new GPU.Group();
+        group = g;
+        r.stage.addChild(g);
+        const scale = SPRITE_SIZE / SPRITE_TEXTURE_SIZE;
+        for (let i = 0; i < sim.count; i++) {
+          g.addChild(
+            new GPU.Sprite({
+              texture,
+              anchor: 0.5,
+              x: sim.x[i],
+              y: sim.y[i],
+              scale,
+            }),
+          );
+        }
+        let tool: string;
+        if (scenario === 'filtered') {
+          const fast = params.variant === 'fast';
+          g.filterOptions = {
+            area: { x: 0, y: 0, width: params.width, height: params.height },
+          };
+          g.filters = [
+            GPU.filters.blur({
+              strength: F1_BLUR,
+              quality: fast ? 'fast' : 'good',
+            }),
+            GPU.filters.colorMatrix().saturate(F1_SATURATE).hue(F1_HUE),
+          ];
+          tool = `Group filters [blur ${fast ? 'fast' : 'good'}, colorMatrix]`;
+        } else {
+          if (params.variant === 'scissor') {
+            g.mask = { ...M1_RECT };
+          } else {
+            const disc = new GPU.Sprite({
+              texture,
+              anchor: 0.5,
+              x: params.width / 2,
+              y: params.height / 2,
+              // Stencil keeps texels with alpha >= 0.5, which the soft disc
+              // reaches at 5/6 of its radius: grow it so the clip matches
+              // Pixi's radius-M1_RADIUS Graphics circle.
+              scale:
+                ((params.variant === 'stencil' ? 1.2 : 1) * (M1_RADIUS * 2)) /
+                SPRITE_TEXTURE_SIZE,
+            });
+            g.mask = {
+              source: disc,
+              mode: params.variant === 'stencil' ? 'stencil' : 'alpha',
+            };
+          }
+          m3Frame = () => {
+            g.x = m1Offset(m3Frames);
+          };
+          tool = `Group mask (${params.variant})`;
+        }
+        await g.ready;
+        return { cpuSim: false, tool };
+      }
       const world = addSprites(texture);
       if (scenario === 'sprites-moving' && params.variant === 'columns') {
         // M2.5 §19.1: register once, commit per frame.
@@ -246,7 +420,10 @@ function createCozyAdapter(ctx: BenchContext): Adapter {
 
     frame(_ctx, cpuSim) {
       const r = renderer!;
-      if (columns !== null) {
+      if (m3Frame !== null) {
+        m3Frame();
+        m3Frames++;
+      } else if (columns !== null) {
         columns.commit(ctx.sim.count);
       } else if (cpuSim) {
         const { x, y, count } = ctx.sim;
@@ -276,6 +453,26 @@ function createCozyAdapter(ctx: BenchContext): Adapter {
       // Skipped frames inside the measured window only (A3, §19.5); the
       // finish phase below may hold frames behind a deep GPU queue.
       measuredSkipped = (renderer?.stats.skippedFrames ?? 0) - skippedAtStart;
+      if (particles !== null) {
+        const fx = particles;
+        let done = false;
+        fx.swarm.aliveCount().then(
+          v => {
+            aliveAtEnd = v;
+            done = true;
+          },
+          () => {
+            done = true;
+          },
+        );
+        const t0 = performance.now();
+        while (!done && performance.now() - t0 < 5000) {
+          fx.step(SIM_DT);
+          renderer!.render();
+          await new Promise(res => requestAnimationFrame(res));
+        }
+        return;
+      }
       if (swarm === null || spawnOptions === null) return;
       // The readback resolves after a later render(), so keep the same churn
       // frames running (steady state unchanged) until it lands (≤ 5 s).
@@ -316,6 +513,19 @@ function createCozyAdapter(ctx: BenchContext): Adapter {
         ...assetInfo,
       };
       if (pickOrder !== null) out.pick = picks.summary();
+      if (group !== null) {
+        const binding = (
+          group as unknown as {
+            _maskBinding: { mode: string } | null;
+          }
+        )._maskBinding;
+        if (binding) out.maskMode = binding.mode;
+      }
+      if (particles !== null) {
+        out.aliveAtEnd = aliveAtEnd;
+        out.spawnPerFrame = Math.round(p1Rate(params.count) * SIM_DT);
+        out.capacity = particles.swarm.capacity;
+      }
       if (spawnOptions !== null) {
         out.aliveAtEnd = aliveAtEnd;
         out.spawnPerFrame = CHURN_SPAWN_PER_FRAME;

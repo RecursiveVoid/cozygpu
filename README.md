@@ -2,8 +2,18 @@
 
 Lightweight, WebGPU-first 2D graphics library: a Pixi-like scene graph plus
 **Swarm**, which simulates and draws millions of objects entirely on the GPU.
-It runs on the main thread or in a worker with the same API. Graphics only,
-zero runtime dependencies. (WebGL2 fallback is planned for M2.)
+It runs on the main thread or in a worker with the same API, on WebGPU or,
+where that is missing, WebGL2. Graphics only, zero runtime dependencies.
+
+**[Live demo](https://recursivevoid.github.io/cozygpu/)**
+
+## Live demo
+
+[recursivevoid.github.io/cozygpu](https://recursivevoid.github.io/cozygpu/)
+runs Swarm (1M objects), a 100k-sprite bunnymark, particle presets, MSDF
+text, filters and masking in the browser, with a WebGPU/WebGL2 switch and a
+live fps / frame-time HUD. The page lives in `site/`; build it locally with
+`npm run build:site` (output in `site-dist/`).
 
 ## Quick start
 

@@ -8,6 +8,7 @@ import {
   createTargetPool,
   currentPassDesc,
   releaseTargetPool,
+  resetTargetPool,
   setCurrentPassDesc,
 } from './targets';
 
@@ -178,5 +179,37 @@ describe('shared pool (filters + masks)', () => {
     setCurrentPassDesc(backend, null);
     expect(currentPassDesc(backend)).toBeNull();
     releaseTargetPool(backend);
+  });
+
+  it("forgets the lost device's targets on a restore without destroying them", () => {
+    const backend = new FakeBackend();
+    const pool = acquireTargetPool(backend);
+    const old = pool.acquire(64, 64) as FakeTexture;
+    pool.endFrame();
+    expect(pool.bytes).toBeGreaterThan(0);
+    setCurrentPassDesc(backend, {
+      color: { target: 'canvas', load: 'clear' },
+    });
+    // The backend object survives a device restore, and so does the shared
+    // record: its textures belong to the lost device and must not be reused.
+    resetTargetPool(backend);
+    expect(pool.bytes).toBe(0);
+    expect(currentPassDesc(backend)).toBeNull();
+    expect(old.destroyed).toBe(false);
+    const fresh = pool.acquire(64, 64);
+    expect(fresh).not.toBe(old);
+    releaseTargetPool(backend);
+    expect(old.destroyed).toBe(false);
+  });
+
+  it('can hand out a target of exactly the asked size', () => {
+    const pool = createTargetPool(new FakeBackend());
+    const t = pool.acquire(640, 480, undefined, 1, true) as FakeTexture;
+    expect(t.width).toBe(640);
+    expect(t.height).toBe(480);
+    // A rounded request does not take the exact target (and vice versa).
+    pool.release(t);
+    expect(pool.acquire(640, 480)).not.toBe(t);
+    pool.destroy();
   });
 });

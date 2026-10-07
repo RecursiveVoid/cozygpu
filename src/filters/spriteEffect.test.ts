@@ -181,9 +181,15 @@ describe('sprite core: cheap effects', () => {
     expect(before).toBeGreaterThan(0);
     await system.restore(ctx);
     await settle();
-    expect(
-      backend.buffers.filter(b => b.label === 'cozygpu.sprite.effects').length,
-    ).toBeGreaterThan(before);
+    const effects = backend.buffers.filter(
+      b => b.label === 'cozygpu.sprite.effects',
+    );
+    expect(effects.length).toBeGreaterThan(before);
+    // The lost device's buffer is dropped, never deleted on the new one
+    // (WebGL2 reports that as an error).
+    expect((effects[0] as unknown as { destroyed: boolean }).destroyed).toBe(
+      false,
+    );
     system.destroy();
   });
 

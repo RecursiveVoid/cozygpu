@@ -508,6 +508,41 @@ describe('worker transport + host', () => {
     transport.destroy();
   });
 
+  it('keeps a packet held until every lazy system it needs has loaded', async () => {
+    // A mask and a swarm created in the same frame: two chunks to wait for.
+    let releaseMask!: () => void;
+    let releaseSwarm!: () => void;
+    const mask = new Promise<void>(r => (releaseMask = r));
+    const swarm = new Promise<void>(r => (releaseSwarm = r));
+    let asked = 0;
+    const lazyDeps: WorkerHostDeps = {
+      ...deps,
+      pendingLoad: () => {
+        const n = asked++;
+        return n === 0 ? mask : n === 1 ? swarm : null;
+      },
+    };
+    const { worker } = createFakeWorkerPair(lazyDeps);
+    const transport = await connectWorkerTransport(
+      worker,
+      canvas as unknown as OffscreenCanvas,
+      options,
+      size,
+    );
+    const { encoder, packet } = encodeFrame(transport);
+    transport.submit(packet, encoder.transferList);
+    for (let i = 0; i < 5; i++) await flush();
+    releaseMask();
+    for (let i = 0; i < 5; i++) await flush();
+    // Still waiting: running it now would drop the swarm's commands.
+    expect(core!.seen).toHaveLength(0);
+    expect(transport.busy).toBe(true);
+    releaseSwarm();
+    while (transport.busy) await flush();
+    expect(core!.seen).toHaveLength(1);
+    transport.destroy();
+  });
+
   it('acks the frame and reports an error when the core throws', async () => {
     const { worker } = createFakeWorkerPair(deps);
     const transport = await connectWorkerTransport(

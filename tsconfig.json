@@ -18,6 +18,6 @@
       "cozygpu": ["./src/index.ts"]
     }
   },
-  "include": ["src/**/*", "examples/**/*", "benchmarks/**/*"],
+  "include": ["src/**/*", "examples/**/*", "benchmarks/**/*", "site/**/*"],
   "exclude": ["node_modules", "dist", "build"]
 }

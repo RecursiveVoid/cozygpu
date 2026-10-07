@@ -176,6 +176,82 @@ describe('webgl2 stencil passes and draws', () => {
     pass.end();
   });
 
+  it('re-enables color writes before a later pass clears the canvas', async () => {
+    const { fake, backend } = await makeBackend();
+    const shader = backend.createShaderModule({
+      glsl: { vertex: maskVert as string, fragment: maskFrag as string },
+    });
+    const [view, texture] = layouts(backend);
+    const masked = await backend.createRenderPipeline({
+      shader,
+      bindGroupLayouts: [view, texture],
+      vertexBuffers: VERTEX_BUFFERS,
+      topology: 'triangle-strip',
+      blend: 'none',
+      depthFormat: 'depth24plus-stencil8',
+      colorWriteDisabled: true,
+      stencil: { compare: 'equal', passOp: 'decrement-clamp' },
+    });
+    const instances = backend.createBuffer({
+      size: 400,
+      usage: BufferUsage.VERTEX | BufferUsage.COPY_DST,
+    });
+    // A frame whose last draw is a stencil write leaves the color mask off.
+    let list = backend.beginCommands();
+    let pass = list.beginRenderPass({
+      color: { target: 'canvas', load: 'clear' },
+    });
+    pass.setPipeline(masked);
+    pass.setVertexBuffer(0, instances);
+    pass.draw(4, 1);
+    pass.end();
+    list.submit();
+    // The next frame's clear must reach the color buffer.
+    fake.clear();
+    list = backend.beginCommands();
+    pass = list.beginRenderPass({
+      color: { target: 'canvas', load: 'clear' },
+    });
+    pass.end();
+    const mask = fake.calls.indexOf('colorMask(true, true, true, true)');
+    const clear = fake.calls.indexOf(`clear(${G.COLOR_BUFFER_BIT})`);
+    expect(mask).toBeGreaterThanOrEqual(0);
+    expect(clear).toBeGreaterThan(mask);
+  });
+
+  it('clips a reopened pass by the reference a mask puts back', async () => {
+    const { fake, backend } = await makeBackend();
+    const shader = backend.createShaderModule({
+      glsl: { vertex: maskVert as string, fragment: maskFrag as string },
+    });
+    const [view, texture] = layouts(backend);
+    const plain = await backend.createRenderPipeline({
+      shader,
+      bindGroupLayouts: [view, texture],
+      vertexBuffers: VERTEX_BUFFERS,
+      topology: 'triangle-strip',
+      blend: 'normal',
+    });
+    const instances = backend.createBuffer({
+      size: 400,
+      usage: BufferUsage.VERTEX | BufferUsage.COPY_DST,
+    });
+    const list = backend.beginCommands();
+    // The canvas reopened after a soft mask's capture: no stencil draw in
+    // this pass, but the outer stencil mask is still open at level 1.
+    const pass = list.beginRenderPass({
+      color: { target: 'canvas', load: 'load' },
+    });
+    fake.clear();
+    pass.setStencilReference(1);
+    pass.setPipeline(plain);
+    pass.setVertexBuffer(0, instances);
+    pass.draw(3, 1);
+    pass.end();
+    expect(fake.calls).toContain(`enable(${G.STENCIL_TEST})`);
+    expect(fake.calls).toContain(`stencilFunc(${G.EQUAL}, 1, 255)`);
+  });
+
   it('leaves the stencil alone in a pass without masks', async () => {
     const { fake, backend } = await makeBackend();
     const shader = backend.createShaderModule({

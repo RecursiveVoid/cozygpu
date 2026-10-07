@@ -1,0 +1,392 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>cozygpu: WebGPU-first 2D graphics</title>
+    <meta
+      name="description"
+      content="cozygpu is a lightweight, graphics-only 2D library: WebGPU first with a WebGL2 fallback, a Pixi-like scene graph, and Swarm, which simulates millions of objects on the GPU."
+    />
+    <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="./style.css" />
+    <script type="module" src="./assets/main.js"></script>
+  </head>
+  <body>
+    <a class="skip" href="#demos">Skip to the demos</a>
+    <header class="top">
+      <div class="wrap top-row">
+        <a class="brand" href="./" aria-label="cozygpu home">
+          <img src="./favicon.svg" alt="" width="24" height="24" />
+          <span>cozygpu</span>
+        </a>
+        <nav aria-label="Sections">
+          <a href="#demos">Demos</a>
+          <a href="#numbers">Numbers</a>
+          <a href="#start">Get started</a>
+          <a href="https://github.com/RecursiveVoid/cozygpu">GitHub</a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero wrap">
+        <p class="eyebrow">WebGPU first · WebGL2 fallback · graphics only</p>
+        <h1>Millions of objects on the GPU, in a few dozen kilobytes.</h1>
+        <p class="lede">
+          cozygpu is a small 2D rendering library with a Pixi-like scene graph
+          and <strong>Swarm</strong>, which simulates and draws millions of
+          objects without the CPU touching them. It runs on the main thread or
+          in a worker with the same API, and has zero runtime dependencies.
+        </p>
+        <ul class="pills" aria-label="Highlights">
+          <li>WebGPU, then WebGL2</li>
+          <li>Sprites · Swarm · Particles</li>
+          <li>MSDF text</li>
+          <li>Filters &amp; masks</li>
+          <li>Worker mode</li>
+          <li>0 dependencies</li>
+        </ul>
+        <div class="cta">
+          <a class="btn primary" href="#demos">Run the demos</a>
+          <a class="btn" href="https://github.com/RecursiveVoid/cozygpu"
+            >View on GitHub</a
+          >
+        </div>
+      </section>
+
+      <section id="demos" class="demos wrap" aria-labelledby="demos-h">
+        <h2 id="demos-h">Live demos</h2>
+        <p id="gpu-notice" class="notice" role="status" hidden>
+          WebGPU is not available in this browser, so the demos run on the
+          WebGL2 backend. Same code, same scene; Swarm and particles simulate
+          with transform feedback instead of compute shaders.
+        </p>
+
+        <div id="demo-tabs" class="tabs" role="tablist" aria-label="Demos">
+          <noscript>The demos need JavaScript.</noscript>
+        </div>
+
+        <div class="player">
+          <div id="stage" class="stage" role="tabpanel">
+            <div id="stage-overlay" class="stage-overlay">Loading…</div>
+            <dl class="hud" aria-live="off">
+              <div>
+                <dt>backend</dt>
+                <dd id="hud-backend">–</dd>
+              </div>
+              <div>
+                <dt>fps</dt>
+                <dd id="hud-fps">–</dd>
+              </div>
+              <div>
+                <dt>frame</dt>
+                <dd id="hud-frame">–</dd>
+              </div>
+              <div>
+                <dt>objects</dt>
+                <dd id="hud-objects">–</dd>
+              </div>
+              <div>
+                <dt>render cpu</dt>
+                <dd id="hud-cpu">–</dd>
+              </div>
+            </dl>
+          </div>
+
+          <div class="controls">
+            <button
+              id="demo-run"
+              class="btn primary"
+              type="button"
+              aria-pressed="false"
+            >
+              Start
+            </button>
+            <div class="seg" role="group" aria-label="Backend">
+              <button type="button" data-backend="webgpu" aria-pressed="true">
+                WebGPU
+              </button>
+              <button type="button" data-backend="webgl2" aria-pressed="false">
+                WebGL2
+              </button>
+            </div>
+            <label class="check">
+              <input id="demo-worker" type="checkbox" />
+              Worker<sup><a href="#fn-worker" aria-label="note">*</a></sup>
+            </label>
+            <label id="demo-count-wrap" class="range">
+              <span id="demo-count-label">Objects</span>
+              <input id="demo-count" type="range" min="0" max="6" step="1" />
+              <output id="demo-count-value" for="demo-count">–</output>
+            </label>
+          </div>
+
+          <div class="about">
+            <h3 id="demo-title">Swarm</h3>
+            <p id="demo-blurb"></p>
+            <p id="demo-hint" class="hint"></p>
+            <a id="demo-source" class="source" href="#">View source</a>
+          </div>
+        </div>
+        <p class="footnote">
+          Live fps is capped by your display's refresh rate; the benchmark
+          numbers below run with the frame-rate limit off.
+        </p>
+      </section>
+
+      <section class="features wrap" aria-labelledby="features-h">
+        <h2 id="features-h">What is in the box</h2>
+        <div class="grid">
+          <article>
+            <h3>Scene graph</h3>
+            <p>
+              Containers, sprites and textures with a familiar API. Sprites
+              batch into one draw per texture, and bulk writers or bound
+              typed-array columns move 100k of them per frame.
+            </p>
+          </article>
+          <article>
+            <h3>Swarm</h3>
+            <p>
+              GPU-resident objects with composable behaviors: velocity, gravity,
+              attractors, bounds, or your own WGSL/GLSL. Compute on WebGPU,
+              transform feedback on WebGL2.
+            </p>
+          </article>
+          <article>
+            <h3>Particles</h3>
+            <p>
+              Emitters, presets and over-life curves built on Swarm. An emitter
+              costs one spawn command per frame, however many particles it keeps
+              alive.
+            </p>
+          </article>
+          <article>
+            <h3>Text</h3>
+            <p>
+              MSDF fonts that stay sharp at any size, wrapping and alignment,
+              plus a Canvas2D path for any installed font. Glyphs batch with
+              your sprites.
+            </p>
+          </article>
+          <article>
+            <h3>Filters &amp; masks</h3>
+            <p>
+              Blur, glow, color matrix and custom filters on a Group. Masks pick
+              the cheapest path that is exact: scissor, stencil or alpha.
+            </p>
+          </article>
+          <article>
+            <h3>Worker mode</h3>
+            <p>
+              Move the whole GPU side into a worker with one option. The scene
+              stays on the main thread; frames travel as a compact command
+              stream.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section id="numbers" class="numbers wrap" aria-labelledby="numbers-h">
+        <h2 id="numbers-h">Headline numbers</h2>
+        <p class="lede small">
+          From the repository's benchmark suite (run <code>m25-final</code>, 19
+          September 2026). Lower is better in every chart; cozygpu is
+          highlighted.
+        </p>
+
+        <div class="stats">
+          <div class="stat">
+            <span class="stat-value">117.5 fps</span>
+            <span class="stat-label">1M-object Swarm, WebGL2</span>
+          </div>
+          <div class="stat">
+            <span class="stat-value">0.10 ms</span>
+            <span class="stat-label">CPU per frame at 1M objects</span>
+          </div>
+          <div class="stat">
+            <span class="stat-value">60.4 KB</span>
+            <span class="stat-label">JS loaded, min+gzip (WebGPU)</span>
+          </div>
+          <div class="stat">
+            <span class="stat-value">5.65 ms</span>
+            <span class="stat-label"
+              >frame at 1M spawn/kill churn (Pixi: 67.74 ms)</span
+            >
+          </div>
+        </div>
+
+        <figure class="chart">
+          <figcaption>
+            Swarm, 1,000,000 moving objects: average frame time
+          </figcaption>
+          <ol class="bars">
+            <li class="me">
+              <span class="name">cozygpu · WebGL2 (transform feedback)</span>
+              <span class="bar" style="--v: 33%"></span>
+              <span class="val">8.51 ms · 117.5 fps</span>
+            </li>
+            <li class="me">
+              <span class="name">cozygpu · WebGPU (compute)</span>
+              <span class="bar" style="--v: 36.4%"></span>
+              <span class="val">9.37 ms · 106.8 fps</span>
+            </li>
+            <li>
+              <span class="name">three · WebGPU (TSL compute + Sprite)</span>
+              <span class="bar" style="--v: 41.3%"></span>
+              <span class="val">10.65 ms · 93.9 fps</span>
+            </li>
+            <li>
+              <span class="name">three · WebGPU (InstancedMesh)</span>
+              <span class="bar" style="--v: 59.5%"></span>
+              <span class="val">15.34 ms · 65.2 fps</span>
+            </li>
+            <li>
+              <span class="name">pixi · WebGL (ParticleContainer)</span>
+              <span class="bar" style="--v: 67.5%"></span>
+              <span class="val">17.40 ms · 57.5 fps</span>
+            </li>
+            <li>
+              <span class="name">pixi · WebGPU (ParticleContainer)</span>
+              <span class="bar" style="--v: 77.2%"></span>
+              <span class="val">19.90 ms · 50.2 fps</span>
+            </li>
+            <li>
+              <span class="name">three · WebGL (InstancedMesh)</span>
+              <span class="bar" style="--v: 100%"></span>
+              <span class="val">25.77 ms · 38.8 fps</span>
+            </li>
+          </ol>
+        </figure>
+
+        <figure class="chart">
+          <figcaption>
+            Swarm, 2,000,000 objects: best result per library
+          </figcaption>
+          <ol class="bars">
+            <li class="me">
+              <span class="name">cozygpu · WebGL2 (transform feedback)</span>
+              <span class="bar" style="--v: 44.8%"></span>
+              <span class="val">16.20 ms · 61.7 fps</span>
+            </li>
+            <li>
+              <span class="name">three · WebGPU (TSL compute + Sprite)</span>
+              <span class="bar" style="--v: 65.4%"></span>
+              <span class="val">23.64 ms · 42.3 fps</span>
+            </li>
+            <li>
+              <span class="name">pixi · WebGL (ParticleContainer)</span>
+              <span class="bar" style="--v: 100%"></span>
+              <span class="val">36.12 ms · 27.7 fps</span>
+            </li>
+          </ol>
+        </figure>
+
+        <figure class="chart">
+          <figcaption>
+            JavaScript the benchmark page loads, min+gzip (includes a ~2 KB
+            harness)
+          </figcaption>
+          <ol class="bars">
+            <li class="me">
+              <span class="name">cozygpu · WebGPU</span>
+              <span class="bar" style="--v: 24.1%"></span>
+              <span class="val">60.4 KB</span>
+            </li>
+            <li class="me">
+              <span class="name">cozygpu · WebGL2</span>
+              <span class="bar" style="--v: 24.8%"></span>
+              <span class="val">62.2 KB</span>
+            </li>
+            <li>
+              <span class="name">three · WebGL</span>
+              <span class="bar" style="--v: 57.8%"></span>
+              <span class="val">144.8 KB</span>
+            </li>
+            <li>
+              <span class="name">pixi · WebGPU or WebGL</span>
+              <span class="bar" style="--v: 71.7%"></span>
+              <span class="val">179.4 KB</span>
+            </li>
+            <li>
+              <span class="name">three · WebGPU</span>
+              <span class="bar" style="--v: 100%"></span>
+              <span class="val">250.3 KB</span>
+            </li>
+          </ol>
+        </figure>
+
+        <p class="footnote">
+          Test machine: Apple M4, 16 GB, macOS (darwin 27.0.0, arm64), Apple GPU
+          via Metal 3; Google Chrome 153.0.8010.48 (headless, vsync and
+          frame-rate limit off); 1280×720 canvas at 1×. Each case: 2 s warm-up,
+          5 s measured, fresh browser, three interleaved runs, median reported.
+          Frame time is the interval between animation frames, so it includes
+          GPU back-pressure. Compared against pixi.js 8.20.1 and three 0.186.0.
+          Full tables:
+          <a
+            href="https://github.com/RecursiveVoid/cozygpu/blob/main/benchmarks/results/m25-final.md"
+            >benchmarks/results/m25-final.md</a
+          >.
+        </p>
+      </section>
+
+      <section id="start" class="start wrap" aria-labelledby="start-h">
+        <h2 id="start-h">Get started</h2>
+        <pre><code>import * as GPU from 'cozygpu';
+
+const renderer = await GPU.createRenderer({
+  canvas: document.querySelector('canvas'),
+  backend: 'auto', // WebGPU, else WebGL2
+});
+
+const swarm = new GPU.Swarm({
+  capacity: 1_000_000,
+  shape: 'circle',
+  blendMode: 'add',
+  behaviors: [
+    GPU.behaviors.velocity(),
+    GPU.behaviors.bounds({ x: 0, y: 0, width: 800, height: 600, mode: 'bounce' }),
+  ],
+});
+renderer.stage.addChild(swarm);
+swarm.spawn(1_000_000, {
+  x: [0, 800],
+  y: [0, 600],
+  speed: [10, 60],
+  angle: [0, 6.28],
+});
+
+GPU.ticker(renderer);</code></pre>
+        <p>
+          The README covers the API, worker mode and the examples; every demo
+          above links to its full example in
+          <a href="https://github.com/RecursiveVoid/cozygpu/tree/main/examples"
+            >examples/</a
+          >.
+        </p>
+      </section>
+    </main>
+
+    <footer class="wrap foot">
+      <p id="fn-worker" class="footnote">
+        * Worker mode on this page: GitHub Pages cannot send the
+        Cross-Origin-Opener-Policy and Cross-Origin-Embedder-Policy headers, so
+        the page is not cross-origin isolated and SharedArrayBuffer is off.
+        cozygpu then transfers each frame's command buffer to the worker instead
+        of sharing a ring with it. Everything works; it is just not zero-copy
+        here. The HUD shows "worker (transfer)" in that case.
+      </p>
+      <p>
+        cozygpu ·
+        <a href="https://github.com/RecursiveVoid/cozygpu">source on GitHub</a>
+        ·
+        <a href="https://github.com/RecursiveVoid/cozygpu/blob/main/LICENSE"
+          >license</a
+        >
+      </p>
+    </footer>
+  </body>
+</html>
