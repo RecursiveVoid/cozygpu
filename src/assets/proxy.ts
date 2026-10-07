@@ -1,5 +1,5 @@
 /**
- * Owner: "assets". The object behind `renderer.assets` (ARCHITECTURE §15.1).
+ * The object behind `renderer.assets` (ARCHITECTURE §15.1).
  *
  * Renderer.ts imports ONLY this module statically, so it stays tiny
  * (< 1 KB min+gzip) and imports the implementation with a dynamic

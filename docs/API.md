@@ -8,6 +8,8 @@ This covers the **M1** and **M2** surface (M2 items are marked **M2**),
 the **M2.5** integration hooks (marked **M2.5**, see
 [Integration hooks](#integration-hooks-m25)) and the **M3** visual
 features — masks, filters, text and particles. All of it is implemented.
+[Graphics](#graphics-m4) (**M4**) is designed and its API settled, but it
+is **not implemented yet**: its methods throw `NOT_IMPLEMENTED`.
 Everything exported in `src/index.ts` is listed here.
 
 Everything is in stage pixels (CSS pixels, origin top-left, y down),
@@ -885,10 +887,138 @@ fx.swarm.aliveCount().then(n => console.log(n));
 
 ---
 
+## Graphics (M4)
+
+> **Status: designed, not implemented yet.** The API below is settled
+> (design: `docs/ARCHITECTURE.md` §26); calling it today throws
+> `CozyGPUError('NOT_IMPLEMENTED')`.
+
+Vector shapes with a Pixi v8-style API. Rectangles, rounded rectangles,
+circles, ellipses, single line segments and arcs are drawn **analytically
+on the GPU** — one small instance each, anti-aliased, with fill and stroke
+in one draw and nothing tessellated — so changing them every frame is
+cheap. Polygons, curves, holes and texture fills are tessellated once into a
+mesh and cached until the shape changes.
+
+```ts
+const g = new GPU.Graphics({ x: 40, y: 40 });
+stage.addChild(g);
+
+g.rect(0, 0, 120, 80).fill(0x334155);
+g.roundRect(140, 0, 120, 80, 12)
+  .fill({ color: 0x0ea5e9, alpha: 0.8 })
+  .stroke({ width: 3, color: 0xffffff });
+g.circle(320, 40, 40).stroke({ width: 2, color: '#f43f5e' });
+
+g.moveTo(0, 120)
+  .lineTo(80, 160)
+  .quadraticCurveTo(140, 100, 200, 160)
+  .bezierCurveTo(240, 200, 300, 120, 360, 160)
+  .stroke({ width: 4, color: 0xfacc15, join: 'round', cap: 'round' });
+
+// A hole: the circle is cut out of the rectangle just filled.
+g.rect(0, 200, 160, 100).fill(0x22c55e).circle(80, 250, 30).cut();
+
+await g.ready; // first use loads the graphics chunks
+g.clear(); // removes everything; draw again whenever you like
+```
+
+**Path model (as in Pixi v8).** Shape calls (`rect`, `roundRect`,
+`circle`, `ellipse`, `poly`, `regularPoly`, `star`) and path calls
+(`moveTo`, `lineTo`, `quadraticCurveTo`, `bezierCurveTo`, `arc`, `arcTo`,
+`closePath`) build the current path. `fill()` and `stroke()` paint it;
+`rect(...).fill(...).stroke(...)` paints the same rect twice, and the next
+shape call after a paint starts a new path. `cut()` makes the current path
+a hole in the last fill/stroke (both, when you painted both; a stroked
+shape also strokes its hole's outline). A `cut()` right after a paint has
+no path to cut and does nothing. `beginPath()` discards an unpainted path.
+Every method returns `this`.
+
+| style            | fields (defaults)                                                                                                                   |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `fill(style?)`   | a color, or `{ color = 0xffffff, alpha = 1, texture?, textureSpace = 'local', matrix? }`; no argument uses `setFillStyle`           |
+| `stroke(style?)` | a color, or the fill fields plus `{ width = 1, join = 'miter', cap = 'butt', miterLimit = 10, alignment = 0.5, pixelLine = false }` |
+
+- `alignment`: 0.5 centres the stroke on the edge, 1 puts it inside, 0
+  outside (closed shapes; open paths are always centred).
+- `pixelLine: true` keeps the stroke width in device pixels whatever the
+  scale (hairlines, grids).
+- `textureSpace: 'local'` stretches the texture over the filled shape's
+  bounds; `'global'` maps one texture pixel to one unit from the origin.
+  `matrix` (`[a, b, c, d, tx, ty]`) transforms that mapping.
+
+**Transforms inside a drawing.** `setTransform(a, b, c, d, tx, ty)`,
+`resetTransform()`, `save()` / `restore()`, and
+`translateTransform` / `rotateTransform` / `scaleTransform` on a node
+(`translate` / `rotate` / `scale` on a context) affect the shapes recorded
+after them. They compose like canvas 2D: each call multiplies onto the
+right of the current transform (current × new), so
+`translate(100, 0).rotate(a)` rotates shapes about (100, 0). Pixi v8's
+`GraphicsContext` composes the other way round. Stroke widths are not
+scaled by these transforms. The node's own `x`, `rotation`, `scaleX`, …
+move the whole drawing as for any node.
+
+**Sharing with `GraphicsContext`.** A context is the recorded drawing; any
+number of nodes can draw the same one. Its geometry is built once, and
+consecutive nodes that share it are drawn together:
+
+```ts
+const star = new GPU.GraphicsContext()
+  .star(0, 0, 5, 12, 5)
+  .fill(0xfacc15)
+  .stroke({ width: 1.5, color: 0x78350f });
+
+for (let i = 0; i < 5000; i++) {
+  stage.addChild(
+    new GPU.Graphics({
+      context: star,
+      x: (i % 100) * 10,
+      y: ((i / 100) | 0) * 10,
+    }),
+  );
+}
+star.clear().circle(0, 0, 6).fill(0xffffff); // every node updates
+```
+
+`new GPU.Graphics(context)` is shorthand for `{ context }`. Recording calls
+on a node record into its context, shared or not. `destroy()` destroys a
+node's own context but not a shared one (pass `{ context: true }` to
+force).
+
+| member                                                      | notes                                                                                      |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `new GPU.Graphics(options? \| context)`                     | `GraphicsOptions`: node options plus `context?`, `tint = 0xffffff`, `blendMode = 'normal'` |
+| `g.context`                                                 | get / set (swapping is cheap)                                                              |
+| `g.tint`, `g.blendMode`                                     | multiply every color / blend mode of all its draws                                         |
+| `g.bounds`, `context.bounds`                                | `{ minX, minY, maxX, maxY }` in local space                                                |
+| `g.ready`                                                   | resolves when the node can draw                                                            |
+| `new GPU.GraphicsContext({ tolerance = 0.25, sdf = true })` | `tolerance`: curve accuracy in device px; `sdf: false` tessellates everything              |
+| `context.info`                                              | `{ sdfShapes, meshVertices, meshTriangles, version }`                                      |
+| `GPU.loadGraphics(which = 'all')`                           | preloads the chunks (`'core'` skips the tessellator)                                       |
+
+- **Batching.** All Graphics that follow each other in draw order share
+  draw calls, whatever shapes they hold. A Graphics between two sprites
+  splits the sprite batch (like a Swarm does).
+- **Picking.** Like other non-sprite nodes, a Graphics is not pickable by
+  default: set `pickable: true`. Hits report the node and its `userId`
+  (`instance` is -1). Hits follow the exact outline: a stroke-only ring
+  does not pick in its hole. A fill with alpha 0 still picks, so it works
+  as a hit area, also under a visible stroke.
+- **Masks and filters.** A Graphics can be a mask source
+  (`group.mask = shapeGraphics`): one plain rect becomes a scissor, any
+  other shape masks exactly by its outline. Filters apply to Graphics like
+  to any content of a group.
+- **Anti-aliasing.** Analytic shapes are always smooth. Tessellated paths
+  are smooth with `antialias: true` (MSAA) and pixel-edged otherwise.
+- **Worker mode**, both backends, device-loss recovery: supported; nothing
+  to do on your side.
+
+---
+
 ## Later milestones (sketches)
 
-These are **not implemented** and their API may change: a `Graphics` node
-(vector shapes), a public render-to-texture API, custom blend factors, a
+These are **not implemented** and their API may change: a public
+render-to-texture API, custom blend factors, a
 camera API, and bounds readback.
 
 Known limits of the M3 features:

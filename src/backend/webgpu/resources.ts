@@ -1,5 +1,5 @@
 /**
- * Owner: "backend". RHI resource wrappers around WebGPU objects.
+ * RHI resource wrappers around WebGPU objects.
  * The RHI interfaces are GPU-type free; these classes carry the raw object in
  * `raw` and are cast back inside the WebGPU backend only.
  */

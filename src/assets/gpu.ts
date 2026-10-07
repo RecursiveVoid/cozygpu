@@ -1,5 +1,5 @@
 /**
- * Owner: "assets". Front-side GPU texture units of the asset manager
+ * Front-side GPU texture units of the asset manager
  * (ARCHITECTURE §15.5–§15.7): standalone textures and atlas pages. Both are
  * `TextureProvider`s (the scene seam), LRU nodes (eviction) and own their
  * texId. Pixels only pass through: a pending ImageBitmap / level buffer is

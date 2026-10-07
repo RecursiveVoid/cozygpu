@@ -1,5 +1,5 @@
 /**
- * Owner: "webgl2". Capability detection for WebGL2 (ARCHITECTURE §7 table,
+ * Capability detection for WebGL2 (ARCHITECTURE §7 table,
  * §13.4). Pure given a context-like object, so it is Node-testable.
  */
 import type { Capabilities } from '../types';

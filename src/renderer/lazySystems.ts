@@ -1,5 +1,5 @@
 /**
- * Owner: "worker+build". Lazily registered core systems for main-thread
+ * Lazily registered core systems for main-thread
  * renderers (bundle size, ARCHITECTURE §18.1).
  *
  * A sprite-only program should not ship the Swarm core (~13 KB minified).

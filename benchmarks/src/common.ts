@@ -23,7 +23,15 @@ export type ScenarioId =
   /** M3 M1m: a masked container of `count` sprites moving under a fixed mask. */
   | 'masked-moving'
   /** M3 P1: emitter-driven particles, ~`count` alive in steady state. */
-  | 'particles';
+  | 'particles'
+  /** M4 G1: `count` static Graphics nodes, one mixed shape each. */
+  | 'graphics-static'
+  /** M4 G2: G1, but every node moves and rotates each frame. */
+  | 'graphics-animated'
+  /** M4 G3: `count` Graphics nodes cleared and redrawn (new geometry) per frame. */
+  | 'graphics-redraw'
+  /** M4 G4: one complex filled path with `count` holes rebuilt per frame. */
+  | 'graphics-path';
 export type LibId = 'cozygpu' | 'pixi' | 'three';
 
 export interface BenchParams {
@@ -350,5 +358,112 @@ export class SkipError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'SkipError';
+  }
+}
+
+/** G1–G3: fill colours, cycled by index. */
+export const G_COLORS: readonly number[] = [
+  0x38bdf8, 0xf472b6, 0xfacc15, 0x34d399,
+];
+/** G1–G4: the shared stroke (one object, so no per-frame literal). */
+export const G_STROKE = { width: 1, color: 0xffffff } as const;
+/** G1–G3: shape kind of node `i` (0 rect, 1 circle, 2 round rect, 3 star). */
+export const gShape = (i: number): number => i & 3;
+/** G1–G3: half-size of node `i` in px (6–13). */
+export const gSize = (i: number): number => 6 + ((i * 7) & 7);
+/** G2: rotation speed in rad/frame of node `i`. */
+export const gSpin = (i: number): number => 0.01 + (i % 5) * 0.01;
+/** G3: size multiplier of node `i` at frame `f` (0.6–1.4). */
+export const gPulse = (i: number, f: number): number =>
+  1 + 0.4 * Math.sin(f * 0.05 + i);
+/**
+ * G4: the outer contour (a wavy closed curve of quadratic segments around the
+ * canvas centre) and the holes (a grid of circles and rects, sizes animated).
+ */
+export const G4 = {
+  cx: 640,
+  cy: 360,
+  radius: 330,
+  segments: 96,
+  wave: 0.07,
+  lobes: 7,
+  spacing: 36,
+  hole: 11,
+  color: 0x6366f1,
+} as const;
+
+/**
+ * Records G1–G3 shape `i` at the local origin on any Pixi-like builder.
+ * `k` scales the size (G3 animates it).
+ */
+export interface GBuilder {
+  rect(x: number, y: number, w: number, h: number): this;
+  roundRect(x: number, y: number, w: number, h: number, r?: number): this;
+  circle(x: number, y: number, r: number): this;
+  star(x: number, y: number, n: number, r: number, inner?: number): this;
+  fill(color: number): this;
+  stroke(style: { width: number; color: number }): this;
+}
+export function gDraw(g: GBuilder, i: number, k: number): void {
+  const s = gSize(i) * k;
+  const c = G_COLORS[i & 3];
+  switch (gShape(i)) {
+    case 0:
+      g.rect(-s, -s, 2 * s, 2 * s).fill(c);
+      break;
+    case 1:
+      g.circle(0, 0, s).fill(c).stroke(G_STROKE);
+      break;
+    case 2:
+      g.roundRect(-s, -0.7 * s, 2 * s, 1.4 * s, 3).fill(c);
+      break;
+    default:
+      g.star(0, 0, 5, s, 0.5 * s)
+        .fill(c)
+        .stroke(G_STROKE);
+  }
+}
+
+/** G4: rebuilds the path with `holes` holes at frame `f`. */
+export interface GPathBuilder extends GBuilder {
+  moveTo(x: number, y: number): this;
+  quadraticCurveTo(cpx: number, cpy: number, x: number, y: number): this;
+  closePath(): this;
+  cut(): this;
+}
+export function gPath(g: GPathBuilder, holes: number, f: number): void {
+  const { cx, cy, radius, segments, wave, lobes, spacing, hole } = G4;
+  const t = f * 0.03;
+  const step = (Math.PI * 2) / segments;
+  for (let j = 0; j <= segments; j++) {
+    const a = j * step;
+    const r = radius * (1 + wave * Math.sin(lobes * a + t));
+    const x = cx + Math.cos(a) * r;
+    const y = cy + Math.sin(a) * r * 0.62;
+    if (j === 0) {
+      g.moveTo(x, y);
+      continue;
+    }
+    // Control point pushed outwards between the two samples.
+    const am = a - step * 0.5;
+    const rm = radius * (1 + wave * 1.6 * Math.sin(lobes * am + t));
+    g.quadraticCurveTo(
+      cx + Math.cos(am) * rm,
+      cy + Math.sin(am) * rm * 0.62,
+      x,
+      y,
+    );
+  }
+  g.closePath().fill(G4.color).stroke(G_STROKE);
+  const cols = Math.ceil(Math.sqrt(holes * 1.6));
+  const rows = Math.ceil(holes / cols);
+  const x0 = cx - ((cols - 1) * spacing) / 2;
+  const y0 = cy - ((rows - 1) * spacing * 0.8) / 2;
+  for (let h = 0; h < holes; h++) {
+    const x = x0 + (h % cols) * spacing;
+    const y = y0 + Math.floor(h / cols) * spacing * 0.8;
+    const s = hole * (0.75 + 0.25 * Math.sin(t * 2 + h));
+    if (h & 1) g.rect(x - s, y - s, 2 * s, 2 * s).cut();
+    else g.circle(x, y, s).cut();
   }
 }

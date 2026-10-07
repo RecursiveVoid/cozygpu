@@ -2,6 +2,7 @@
 // aliased to src/index.ts) and driven through page.evaluate(). Every scenario
 // returns plain JSON; the Node side decides pass/fail.
 import * as GPU from 'cozygpu';
+import { installGfx } from './stress-gfx.js';
 import { installM3 } from './stress-m3.js';
 
 const S = globalThis.__stress;
@@ -2967,4 +2968,6 @@ Object.assign(
   globalThis.stress,
   installM3({ createCtx, startLoop, stopLoop, registerCtx, getCtx, settle, sleep, raf, errText, phase, swarmSupported }),
 );
+// Graphics scenarios.
+Object.assign(globalThis.stress, installGfx({ createCtx, startLoop, stopLoop, registerCtx, getCtx, settle, sleep, raf, errText, phase }));
 globalThis.__stressReady = true;

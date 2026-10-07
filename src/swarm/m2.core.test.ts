@@ -1,5 +1,5 @@
 /**
- * Owner: "swarm". M2 core paths against the fake RHI: allocation 'gpu'
+ * M2 core paths against the fake RHI: allocation 'gpu'
  * (free list + compaction + drawIndirect), alive counts, picking, and the
  * WebGL2 transform-feedback core.
  */

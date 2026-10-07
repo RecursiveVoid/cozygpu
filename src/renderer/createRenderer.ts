@@ -1,5 +1,5 @@
 /**
- * Owner: "renderer-hooks" (M2.5; was "worker+build"). Public entry point.
+ * Public entry point.
  *  main-thread: createLocalTransport(canvas, coreOptions) → new RendererImpl(...)
  *  worker:      import('../worker/WorkerTransport') (a separate chunk, §18.1),
  *               createWorkerTransport(canvas, coreOptions, url, size) → new RendererImpl(...)

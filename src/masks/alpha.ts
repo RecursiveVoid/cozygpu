@@ -62,6 +62,19 @@ export interface AlphaMasks {
     frame: CoreFrameState,
   ): RenderPassDesc | null;
   /**
+   * M4 (ARCHITECTURE §26.8). A mask whose geometry another system draws (a
+   * Graphics, `MaskFlag.EXTERNAL`): takes the targets like `begin` and
+   * returns the coverage pass the geometry draws into (multisampled when the
+   * main pass is, since the geometry uses the main-pass pipelines), or null
+   * when nothing can be captured.
+   */
+  beginExternal(invert: boolean, frame: CoreFrameState): RenderPassDesc | null;
+  /**
+   * M4. MASK_GEOMETRY_END: the coverage pass was ended by the core; returns
+   * the capture pass of the innermost soft mask.
+   */
+  endExternal(): RenderPassDesc | null;
+  /**
    * The innermost capture pass was ended by the core: the pass it
    * interrupted (the enclosing capture, or the main pass) becomes current
    * again, for the composite.
@@ -88,6 +101,8 @@ interface Level {
   /** Multisampled capture attachment that resolves into `capture` (MSAA). */
   msaa: RhiTexture | null;
   coverage: RhiTexture | null;
+  /** M4: multisampled coverage attachment of an external mask (MSAA). */
+  coverageMsaa: RhiTexture | null;
   invert: boolean;
   prev: RenderPassDesc | null;
   readonly pass: RenderPassDesc;
@@ -101,6 +116,7 @@ function makeLevel(): Level {
     capture: null,
     msaa: null,
     coverage: null,
+    coverageMsaa: null,
     invert: false,
     prev: null,
     pass: {
@@ -164,9 +180,43 @@ class AlphaMasksImpl implements AlphaMasks {
     invert: boolean,
     frame: CoreFrameState,
   ): RenderPassDesc | null {
-    if (!quads || count === 0 || this.depth >= this.levels.length) {
-      return null;
-    }
+    if (!quads || count === 0) return null;
+    const level = this.open(invert, frame, false);
+    if (!level) return null;
+    // 1. Coverage: the mask's own alpha, on its own pass.
+    const coverage = this.coveragePass.color;
+    coverage.target = level.coverage!;
+    coverage.resolveTarget = undefined;
+    const pass = list.beginRenderPass(this.coveragePass);
+    pass.setPipeline(this.coveragePipeline);
+    pass.setBindGroup(0, this.ctx.viewBindGroup);
+    pass.setBindGroup(1, texture);
+    pass.setVertexBuffer(0, quads);
+    pass.draw(QUAD_VERTICES, count, 0, first);
+    pass.end();
+    return this.capture(level);
+  }
+
+  beginExternal(invert: boolean, frame: CoreFrameState): RenderPassDesc | null {
+    const level = this.open(invert, frame, true);
+    if (!level) return null;
+    const coverage = this.coveragePass.color;
+    coverage.target = level.coverageMsaa ?? level.coverage!;
+    coverage.resolveTarget = level.coverageMsaa ? level.coverage! : undefined;
+    return this.coveragePass;
+  }
+
+  endExternal(): RenderPassDesc | null {
+    return this.depth > 0 ? this.capture(this.levels[this.depth - 1]) : null;
+  }
+
+  /** Takes the targets of the next soft mask level. */
+  private open(
+    invert: boolean,
+    frame: CoreFrameState,
+    external: boolean,
+  ): Level | null {
+    if (this.depth >= this.levels.length) return null;
     const backend = this.ctx.backend;
     // Exactly the frame's size, so the capture is drawn with the main pass'
     // viewport and scissor rects need no mapping (§21.3).
@@ -178,7 +228,7 @@ class AlphaMasksImpl implements AlphaMasks {
     // The subtree is drawn by the sprite pipelines, which are built for the
     // main pass' sample count, so under MSAA the capture attachment has to be
     // multisampled and resolve into the single-sampled texture the composite
-    // samples.
+    // samples. External mask geometry is drawn the same way.
     const samples = this.ctx.sampleCount;
     const msaa =
       samples === 1
@@ -188,25 +238,27 @@ class AlphaMasksImpl implements AlphaMasks {
     level.coverage = coverage;
     level.capture = capture;
     level.msaa = msaa;
+    level.coverageMsaa =
+      external && msaa
+        ? this.pool.acquire(width, height, format, samples, true)
+        : null;
     level.invert = invert;
     level.prev = currentPassDesc(backend);
-    // 1. Coverage: the mask's own alpha, on its own pass.
-    this.coveragePass.color.target = coverage;
-    const pass = list.beginRenderPass(this.coveragePass);
-    pass.setPipeline(this.coveragePipeline);
-    pass.setBindGroup(0, this.ctx.viewBindGroup);
-    pass.setBindGroup(1, texture);
-    pass.setVertexBuffer(0, quads);
-    pass.draw(QUAD_VERTICES, count, 0, first);
-    pass.end();
-    // 2. Capture: the core opens this one and the subtree draws into it. An
-    // inner effect reopens it (with load) after its own capture.
+    return level;
+  }
+
+  /**
+   * 2. Capture: the core opens this one and the subtree draws into it. An
+   * inner effect reopens it (with load) after its own capture.
+   */
+  private capture(level: Level): RenderPassDesc {
+    const msaa = level.msaa;
     const color = level.pass.color;
-    color.target = msaa ?? capture;
-    color.resolveTarget = msaa ? capture : undefined;
+    color.target = msaa ?? level.capture!;
+    color.resolveTarget = msaa ? level.capture! : undefined;
     color.keepMultisampled = msaa !== null;
     color.load = 'clear';
-    setCurrentPassDesc(backend, level.pass);
+    setCurrentPassDesc(this.ctx.backend, level.pass);
     return level.pass;
   }
 
@@ -244,6 +296,7 @@ class AlphaMasksImpl implements AlphaMasks {
     this.pool.release(capture);
     this.pool.release(coverage);
     if (level.msaa) this.pool.release(level.msaa);
+    if (level.coverageMsaa) this.pool.release(level.coverageMsaa);
     this.clear(level);
   }
 
@@ -251,6 +304,7 @@ class AlphaMasksImpl implements AlphaMasks {
     level.capture = null;
     level.msaa = null;
     level.coverage = null;
+    level.coverageMsaa = null;
     level.prev = null;
   }
 

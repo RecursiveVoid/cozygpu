@@ -1,5 +1,5 @@
 /**
- * Owner: "worker+build". Static server for the repo root WITH COOP/COEP
+ * Static server for the repo root WITH COOP/COEP
  * headers, so worker examples get crossOriginIsolated + SharedArrayBuffer
  * (the command ring, ARCHITECTURE §17). No build, no watch.
  *

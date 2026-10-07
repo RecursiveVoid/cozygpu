@@ -1,5 +1,5 @@
 /**
- * Owner: "backend". WebGPU implementation of the RHI (src/backend/types.ts).
+ * WebGPU implementation of the RHI (src/backend/types.ts).
  *
  * - DOM-free: works on the main thread and in a worker (OffscreenCanvas).
  * - One color format everywhere: `navigator.gpu.getPreferredCanvasFormat()`.

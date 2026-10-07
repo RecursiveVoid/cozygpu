@@ -1,4 +1,4 @@
-/** Owner: "worker". Single-listener delivery that buffers messages until the listener is set. */
+/** Single-listener delivery that buffers messages until the listener is set. */
 import type { CoreMessage } from '../types/transport';
 
 /** Cap on messages kept while no listener is attached (oldest dropped). */

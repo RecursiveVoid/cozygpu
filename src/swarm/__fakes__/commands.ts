@@ -1,5 +1,5 @@
 /**
- * Owner: "swarm". Minimal in-memory command writer/reader used by swarm unit
+ * Minimal in-memory command writer/reader used by swarm unit
  * tests and the swarm GPU harness (examples/swarm/harness). Implements the
  * CommandWriter / CommandReader contracts from src/commands/types.ts well
  * enough for opcode range 0x03; the real implementation lives in

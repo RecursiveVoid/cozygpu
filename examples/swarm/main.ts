@@ -1,4 +1,4 @@
-// Owner: "swarm". GPU-simulated objects; the CPU only sends a few commands.
+// GPU-simulated objects; the CPU only sends a few commands.
 //   ?count=1000000    objects (default 1M)
 //   ?shape=circle     'circle' (SDF, default) or 'quad' (textured atlas frames)
 //   ?mode=bounce      'bounce' (immortal, bounds bounce, default), 'wrap', or

@@ -1,5 +1,5 @@
 /**
- * Owner: "worker". Main-thread transport: executes packets synchronously on a
+ * Main-thread transport: executes packets synchronously on a
  * RenderCore in the same heap. Zero copies: the core decodes the encoder's own
  * ArrayBuffer, and the same buffer is handed back for the next frame.
  */

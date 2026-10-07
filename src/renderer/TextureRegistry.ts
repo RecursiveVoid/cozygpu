@@ -1,5 +1,5 @@
 /**
- * Owner: "assets" in M2 (was "backend"). Core-side texture registry
+ * Core-side texture registry
  * (opcodes 0x0100–0x0106).
  *
  * - GPU textures hold **premultiplied** color: straight-alpha pixel uploads

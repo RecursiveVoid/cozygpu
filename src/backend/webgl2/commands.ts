@@ -1,5 +1,5 @@
 /**
- * Owner: "webgl2". Reused per-frame recording wrappers (ARCHITECTURE §13.1).
+ * Reused per-frame recording wrappers (ARCHITECTURE §13.1).
  *
  * WebGL executes immediately: a "pass" binds state as calls arrive and
  * `submit()` only closes open passes. One command list, one render pass and

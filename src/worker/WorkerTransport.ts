@@ -1,5 +1,5 @@
 /**
- * Owner: "worker". Worker transport (docs/ARCHITECTURE.md §8).
+ * Worker transport (docs/ARCHITECTURE.md §8).
  *
  *  - Hands the canvas to the worker with transferControlToOffscreen() and waits
  *    for `ready{caps}` (10 s timeout → UNSUPPORTED).

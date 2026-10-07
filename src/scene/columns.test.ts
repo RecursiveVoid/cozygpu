@@ -1,5 +1,5 @@
 /**
- * Owner: "scene-hooks" (M2.5). External columns (`Container.bindColumns`,
+ * External columns (`Container.bindColumns`,
  * ARCHITECTURE §19.1) and `SceneNode.userId` (§19.3). A column commit must be
  * a pure fast path: the store bytes, the dirty bits and the packed instances
  * it leaves behind equal what the per-node setters produce.

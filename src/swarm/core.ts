@@ -1,5 +1,5 @@
 /**
- * Owner: "swarm". Core-side (render thread) system for opcode range 0x03.
+ * Core-side (render thread) system for opcode range 0x03.
  * DOM-free: runs on the main thread or in the worker.
  *
  * `createSwarmCoreSystem()` picks the implementation from the backend's

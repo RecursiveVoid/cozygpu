@@ -1,5 +1,5 @@
 /**
- * Owner: "renderer-hooks". M2.5 readback ring on WebGPU (ARCHITECTURE §19.6).
+ * M2.5 readback ring on WebGPU (ARCHITECTURE §19.6).
  *
  * One MAP_READ | COPY_DST buffer per slot, created once. `copyTexture`
  * records copyTextureToBuffer on the frame's encoder; the backend's

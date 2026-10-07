@@ -1,5 +1,5 @@
 /**
- * Owner: "swarm". CPU free list of slot ranges for `allocation: 'manual'`.
+ * CPU free list of slot ranges for `allocation: 'manual'`.
  * Free ranges are kept sorted and merged. Not a per-frame structure.
  */
 export class RangeAllocator {

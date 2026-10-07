@@ -1,4 +1,4 @@
-/** Owner: "worker". Factories for the binary command stream. */
+/** Factories for the binary command stream. */
 import { CommandDecoderImpl } from './decoder';
 import { CommandEncoderImpl, DEFAULT_ENCODER_BYTES } from './encoder';
 import type { CommandDecoder, CommandEncoder } from './types';

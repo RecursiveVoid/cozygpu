@@ -1,4 +1,4 @@
-/** Owner: "worker+build". The default core systems, used by LocalTransport and the worker entry. */
+/** The default core systems, used by LocalTransport and the worker entry. */
 import { createSpriteCoreSystem } from '../sprites/core';
 import { OpcodeRange } from '../commands/opcodes';
 import type { CoreSystem } from '../types/core';
@@ -26,6 +26,9 @@ export function createDefaultCoreSystems(): CoreSystem[] {
     // without a Group never load either (ARCHITECTURE §21.6).
     new LazyCoreSystem(OpcodeRange.MASK, 'mask'),
     new LazyCoreSystem(OpcodeRange.FILTER, 'filter'),
+    // M4. Graphics: the `graphics` front chunk registers the loader (main
+    // thread), `src/worker/entry.ts` its own (ARCHITECTURE §26.7).
+    new LazyCoreSystem(OpcodeRange.GRAPHICS, 'graphics'),
   ];
 }
 

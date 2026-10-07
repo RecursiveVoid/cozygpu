@@ -1,5 +1,5 @@
 /**
- * Owner: "backend". Pure RHI → WebGPU translation helpers (no device access,
+ * Pure RHI → WebGPU translation helpers (no device access,
  * Node-testable). Flag constants are numeric literals from the WebGPU spec so
  * this module also loads where `GPUBufferUsage` globals do not exist.
  */

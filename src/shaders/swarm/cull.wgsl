@@ -1,4 +1,4 @@
-// cozygpu swarm culling / alive compaction. Owner: "swarm".
+// cozygpu swarm culling / alive compaction.
 // Appended to the compute module when the CULL render flag or allocation
 // 'gpu' is set. Writes the slots of alive (and, with SWARM_CULL_OFFSCREEN,
 // on-screen) objects into `visible` and their count into the indirect draw

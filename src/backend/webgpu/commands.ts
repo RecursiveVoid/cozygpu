@@ -1,5 +1,5 @@
 /**
- * Owner: "backend". Reused per-frame recording wrappers.
+ * Reused per-frame recording wrappers.
  *
  * One `WebGPUCommandList`, one `WebGPURenderPass` and one `WebGPUComputePass`
  * exist per backend. Each frame creates a GPUCommandEncoder (unavoidable) but

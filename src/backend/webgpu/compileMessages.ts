@@ -1,5 +1,5 @@
 /**
- * Owner: "backend". Readable WGSL compilation diagnostics. Pure string
+ * Readable WGSL compilation diagnostics. Pure string
  * formatting (unit-tested in Node); WebGPUBackend imports it lazily, only
  * when a shader reports messages, so it stays off the minimal program.
  */

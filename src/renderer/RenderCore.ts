@@ -1,5 +1,5 @@
 /**
- * Owner: "renderer-hooks" (M2.5). Render-thread executor: the same code runs on the main
+ * Render-thread executor: the same code runs on the main
  * thread (LocalTransport) and in the worker (src/worker/entry.ts).
  *
  * Per packet (ARCHITECTURE §2 "Frame lifecycle"):
@@ -64,6 +64,7 @@ import {
 import type { CoreMessage } from '../types/transport';
 import type { Canvas } from '../types/types';
 import { createCorePicking } from './pickingCore';
+import { beginPickPipeline, endPickPipeline } from './pickingPipelines';
 import { TextureRegistry, type ExternalImage } from './TextureRegistry';
 
 type Post = (message: CoreMessage, transfer?: Transferable[]) => void;
@@ -142,6 +143,11 @@ export class Context implements CoreContext {
 
   getExternalBuffer(externalId: number): RhiBuffer | undefined {
     return this.ext.get(externalId);
+  }
+
+  pickPipelinePending(delta: 1 | -1): void {
+    if (delta > 0) beginPickPipeline(this);
+    else endPickPipeline(this);
   }
 }
 

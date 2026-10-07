@@ -1,5 +1,5 @@
 /**
- * Owner: "swarm". SpawnOptions → SpawnParams (112 B, layouts.ts §4.4).
+ * SpawnOptions → SpawnParams (112 B, layouts.ts §4.4).
  * Runs once per spawn() call, never per object.
  */
 import { toPackedColor } from '../math/color';

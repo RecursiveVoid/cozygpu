@@ -23,6 +23,11 @@
  *      (rect / circle: Graphics stencil masks; sprite: alpha mask).
  *   P1 particles: ParticleContainer + a CPU emitter (spawn in a disc, age,
  *      move, alpha and scale over life, swap-remove), stepped with SIM_DT.
+ * M4 (Graphics; shapes and paths from common.ts, identical in cozygpu.ts):
+ *   G1 graphics-static: N Graphics nodes, one mixed shape each, nothing moves.
+ *   G2 graphics-animated: G1 with position.set + rotation on every node.
+ *   G3 graphics-redraw: N nodes, clear() + a resized shape every frame.
+ *   G4 graphics-path: one curved path with N holes (cut()), rebuilt per frame.
  */
 import {
   Application,
@@ -78,6 +83,10 @@ import {
   T1_SIZE,
   assetCell,
   assetUrl,
+  gDraw,
+  gPath,
+  gPulse,
+  gSpin,
   estimateTextureBytes,
   m1Offset,
   p1Capacity,
@@ -195,6 +204,57 @@ function createPixiAdapter(ctx: BenchContext): Adapter {
           cpuSim: false,
           tool: `Assets.load (${kind === 'png' ? 'png' : 'BC1 as KTX1'})`,
         };
+      }
+
+      if (
+        scenario === 'graphics-static' ||
+        scenario === 'graphics-animated' ||
+        scenario === 'graphics-redraw'
+      ) {
+        const world = new Container();
+        app.stage.addChild(world);
+        const nodes: Graphics[] = [];
+        for (let i = 0; i < sim.count; i++) {
+          const g = new Graphics();
+          g.position.set(sim.x[i], sim.y[i]);
+          gDraw(g, i, 1);
+          nodes.push(world.addChild(g));
+        }
+        if (scenario === 'graphics-animated') {
+          m3Frame = () => {
+            const { x, y, count } = sim;
+            const f = m3Frames;
+            for (let i = 0; i < count; i++) {
+              const g = nodes[i];
+              g.position.set(x[i], y[i]);
+              g.rotation = f * gSpin(i);
+            }
+          };
+          return { cpuSim: true, tool: 'Graphics nodes, position + rotation' };
+        }
+        if (scenario === 'graphics-redraw') {
+          m3Frame = () => {
+            const f = m3Frames;
+            for (let i = 0; i < nodes.length; i++) {
+              const g = nodes[i];
+              g.clear();
+              gDraw(g, i, gPulse(i, f));
+            }
+          };
+          return { cpuSim: false, tool: 'Graphics nodes, clear() + redraw' };
+        }
+        return { cpuSim: false, tool: 'Graphics nodes, own context each' };
+      }
+
+      if (scenario === 'graphics-path') {
+        const g = new Graphics();
+        app.stage.addChild(g);
+        gPath(g, sim.count, 0);
+        m3Frame = () => {
+          g.clear();
+          gPath(g, sim.count, m3Frames);
+        };
+        return { cpuSim: false, tool: 'Graphics path + cut() holes' };
       }
 
       if (scenario === 'text') {

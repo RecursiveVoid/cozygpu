@@ -1,4 +1,4 @@
-// Owner: "assets". renderer.assets demo (ARCHITECTURE §15):
+// renderer.assets demo (ARCHITECTURE §15):
 //   - a bundle (48 small PNG icons packed into one atlas page, a hero PNG and
 //     a TexturePacker spritesheet) with a progress bar,
 //   - KTX2: RGBA8 with a mip chain (every GPU) and BC1 (when caps allow),

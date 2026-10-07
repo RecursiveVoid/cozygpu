@@ -6,7 +6,9 @@
  *   node tests/browser/stress.mjs --only=swarm,loss    subset (swarm,burst,sprites,
  *     resize,dpr,loss,recreate,regress,assets,pick,gpualloc,ring,soak; M2.5 hooks:
  *     columns,pickuid,events,fallback,pickalloc,external; M3: m3masks,m3filters,
- *     m3text,m3particles,m3loss — --m3-seconds=N churn length, --m3-particles=N)
+ *     m3text,m3particles,m3loss — --m3-seconds=N churn length, --m3-particles=N;
+ *     Graphics: gfxsdf,gfxpaths,gfxshared,gfxmask,gfxpick,gfxloss,gfxalloc —
+ *     --gfx-seconds=N, --gfx-count=N animated shapes, --gfx-rounds=N pick rounds)
  *   node tests/browser/stress.mjs --mode=main          main | worker | both (default both)
  *   node tests/browser/stress.mjs --backend=webgl2     webgpu | webgl2 | both (default both)
  *   node tests/browser/stress.mjs --quick              short durations (burst 10 s, sprites 5 s)
@@ -59,7 +61,7 @@ const argv = Object.fromEntries(
   }),
 );
 const QUICK = !!argv.quick;
-const ALL = ['swarm', 'burst', 'sprites', 'resize', 'dpr', 'loss', 'recreate', 'regress', 'assets', 'pick', 'gpualloc', 'ring', 'soak', 'columns', 'pickuid', 'events', 'fallback', 'pickalloc', 'external', 'm3masks', 'm3filters', 'm3text', 'm3particles', 'm3loss'];
+const ALL = ['swarm', 'burst', 'sprites', 'resize', 'dpr', 'loss', 'recreate', 'regress', 'assets', 'pick', 'gpualloc', 'ring', 'soak', 'columns', 'pickuid', 'events', 'fallback', 'pickalloc', 'external', 'm3masks', 'm3filters', 'm3text', 'm3particles', 'm3loss', 'gfxsdf', 'gfxpaths', 'gfxshared', 'gfxmask', 'gfxpick', 'gfxloss', 'gfxalloc'];
 const ONLY = argv.only ? String(argv.only).split(',') : ALL;
 const MODES = argv.mode && argv.mode !== 'both' ? [String(argv.mode)] : ['main', 'worker'];
 /** M2: every scenario runs on both backends unless one is named. */
@@ -451,7 +453,9 @@ async function cleanup() {
     await new Promise(r => server.close(() => r()));
     server = null;
   }
-  if (outDir) await rm(outDir, { recursive: true, force: true }).catch(() => {});
+  // --keep-bundle: leave page.js (heap-profile line numbers refer to it) on disk.
+  if (outDir && !argv['keep-bundle']) await rm(outDir, { recursive: true, force: true }).catch(() => {});
+  else if (outDir) console.log(`bundle kept in ${outDir}`);
 }
 for (const sig of ['SIGINT', 'SIGTERM', 'SIGALRM']) {
   process.on(sig, async () => {
@@ -2238,6 +2242,244 @@ async function runM3Loss(mode, backend) {
   });
 }
 
+// ─── Graphics scenarios: SDF shapes, paths, shared contexts, masks, picking, loss, allocations ──
+
+const GFX_S = Number(argv['gfx-seconds'] ?? (QUICK ? 4 : 8));
+const GFX_N = Number(argv['gfx-count'] ?? 50_000);
+const GFX_ROUNDS = Number(argv['gfx-rounds'] ?? (QUICK ? 3 : 6));
+
+const gfxShot = (p, id, regionsMap, scale = 0) => m3shot(p, id, regionsMap, scale);
+function gfxProbeChecks(label, R) {
+  check(`${label}: probe shapes (red circle, blue roundRect, green ellipse, stroke-only ring)`, R.red.red > 0.95 && R.blue.blue > 0.95 && R.green.green > 0.9 && R.ringCenter.lit < 0.02 && R.ringBand.lit > 0.9, { red: fmt(R.red), blue: fmt(R.blue), green: fmt(R.green), ringCenter: fmt(R.ringCenter), ringBand: fmt(R.ringBand) });
+}
+
+async function runGfxSdf(mode, backend) {
+  const worker = mode === 'worker';
+  for (const variant of ['nodes', 'redraw', 'batched']) {
+    await scenario(`graphics: ${GFX_N.toLocaleString('en')} animated SDF shapes (${variant}) ${GFX_S}s [${backend}/${mode}]`, async p => {
+      const r = await withTimeout(p.page.evaluate(o => stress.gfxSdfInit(o), { worker, backend, count: GFX_N, variant, seconds: GFX_S }), GFX_S * 1000 + 240000, 'gfxSdfInit');
+      note('run', { buildMs: r.buildMs, summary: r.summary, nodeInfo: r.nodeInfo, probeInfo: r.probeInfo });
+      check('no render() throws', r.loopThrows.length === 0, r.loopThrows);
+      check('probe context: 4 SDF shapes, no mesh', r.probeInfo.sdfShapes === 4 && r.probeInfo.meshVertices === 0, r.probeInfo);
+      const want = variant === 'nodes' ? 1 : variant === 'redraw' ? GFX_N : Math.ceil(GFX_N / 500);
+      check(`first node: ≥ ${want} SDF shapes, no mesh (all primitives on the SDF path)`, r.nodeInfo.sdfShapes >= want && r.nodeInfo.sdfShapes <= want * 1.25 && r.nodeInfo.meshVertices === 0, r.nodeInfo);
+      const img = await gfxShot(p, r.ctxId, r.regions);
+      gfxProbeChecks('while animating', img.regions);
+      check('moving shapes visible in their band', img.regions.band.lit > 0.3, fmt(img.regions.band));
+      const s = r.summary;
+      if (!worker) check('draw calls stay batched (≤ 6)', s.drawCalls && s.drawCalls.max <= 6, s.drawCalls);
+      else note('draw calls (worker)', s.drawCalls);
+      check(`fps ≥ 20 (${s.fps})`, s.fps >= 20, { fps: s.fps, frameMs: s.frameMs });
+      note('front CPU per frame: render() / recording (driver)', { cpuMs: s.cpuMs, recordMs: s.recordMs, packetBytes: s.packetBytes });
+      m3CleanLogs(p, 0, '');
+      await p.page.evaluate(id => stress.dropCtx(id), r.ctxId);
+    });
+  }
+}
+
+async function runGfxPaths(mode, backend) {
+  const worker = mode === 'worker';
+  await scenario(`graphics: complex paths rebuilt every frame ${GFX_S}s [${backend}/${mode}]`, async p => {
+    const h0 = await heapBoth(p);
+    const r = await withTimeout(p.page.evaluate(o => stress.gfxPathsInit(o), { worker, backend, seconds: GFX_S }), GFX_S * 1000 + 120000, 'gfxPathsInit');
+    note('run', { summary: r.summary, info: r.info });
+    check('no exceptions recording', r.throws.length === 0, r.throws);
+    check('no render() throws', r.loopThrows.length === 0, r.loopThrows);
+    check('chart (1000-point stroke) tessellated', r.info.chart.meshVertices >= 2000, r.info.chart);
+    check('square with hole tessellated', r.info.square.meshTriangles > 0, r.info.square);
+    check('every blob tessellated', r.info.blobs.every(b => b.meshTriangles > 0), r.info.blobs.map(b => b.meshTriangles));
+    for (let k = 0; k < 3; k++) {
+      const img = await gfxShot(p, r.ctxId, r.regions);
+      const R = img.regions;
+      check(`shot ${k + 1}: square fill red, hole empty (cut)`, R.squareFill.red > 0.9 && R.hole.lit < 0.05, { fill: fmt(R.squareFill), hole: fmt(R.hole) });
+      check(`shot ${k + 1}: flip node (SDF rect ↔ mesh polygon every frame) blue`, R.flip.blue > 0.95, fmt(R.flip));
+      check(`shot ${k + 1}: chart, textured polygon, blobs drawn`, R.chart.green > 0.02 && R.textured.lit > 0.3 && R.blobs.lit > 0.1, { chart: fmt(R.chart), textured: fmt(R.textured), blobs: fmt(R.blobs) });
+    }
+    const s = r.summary;
+    check(`fps ≥ 20 (${s.fps})`, s.fps >= 20, { fps: s.fps, frameMs: s.frameMs });
+    note('front CPU per frame: render() / recording (driver)', { cpuMs: s.cpuMs, recordMs: s.recordMs, packetBytes: s.packetBytes, drawCalls: s.drawCalls });
+    await new Promise(res => setTimeout(res, 4000));
+    const h1 = await heapBoth(p);
+    note('heap', { before: h0, after: h1 });
+    check('page heap growth < 8 MB while rebuilding', h1.pageMB - h0.pageMB < 8, { before: h0.pageMB, after: h1.pageMB });
+    m3CleanLogs(p, 0, '');
+    await p.page.evaluate(id => stress.dropCtx(id), r.ctxId);
+  });
+}
+
+async function runGfxShared(mode, backend) {
+  const worker = mode === 'worker';
+  await scenario(`graphics: shared contexts (2 × 4000 nodes, swaps, 2nd renderer, destroy) [${backend}/${mode}]`, async p => {
+    const r = await withTimeout(p.page.evaluate(o => stress.gfxSharedInit(o), { worker, backend }), 120000, 'gfxSharedInit');
+    const id = r.ctxId;
+    const step = (s, o) => withTimeout(p.page.evaluate((i, st, oo) => stress.gfxSharedStep(i, st, oo), id, s, o ?? {}), 60000, `gfxSharedStep ${s}`);
+    note('init', r);
+    let R = (await gfxShot(p, id, r.regions)).regions;
+    check('init: left = red SDF circles, right = blue mesh stars', R.left.red > 0.3 && R.left.blue < 0.01 && R.right.blue > 0.2 && R.right.red < 0.01, { left: fmt(R.left), right: fmt(R.right) });
+    if (!worker) check('init: 8000 nodes on 2 contexts in ≤ 4 draws', r.drawCalls <= 4, r.drawCalls);
+    let s = await step('recolor');
+    R = (await gfxShot(p, id, r.regions)).regions;
+    check('recolor shared contexts: every node follows (left green, right red)', s.throws.length === 0 && R.left.green > 0.3 && R.left.red < 0.01 && R.right.red > 0.2 && R.right.blue < 0.01, { throws: s.throws, left: fmt(R.left), right: fmt(R.right) });
+    await step('swapStart');
+    await new Promise(res => setTimeout(res, GFX_S * 1000));
+    s = await step('swapStop');
+    R = (await gfxShot(p, id, r.regions)).regions;
+    check('context swaps + tint churn (1000 nodes/frame): no throws', s.swapThrows.length === 0 && s.loopThrows.length === 0, { swap: s.swapThrows, loop: s.loopThrows });
+    check('after swaps: every node back on its context', R.left.green > 0.3 && R.left.red < 0.01 && R.right.red > 0.2 && R.right.green < 0.01, { left: fmt(R.left), right: fmt(R.right) });
+    s = await step('second', { worker, backend });
+    const secondId = s.secondId;
+    const regions2 = s.regions2;
+    const R2 = (await gfxShot(p, secondId, regions2, 1)).regions;
+    check('2nd renderer draws the same contexts', R2.left.green > 0.2 && R2.right.red > 0.2, { left: fmt(R2.left), right: fmt(R2.right) });
+    s = await step('recolorBlue');
+    R = (await gfxShot(p, id, r.regions)).regions;
+    const R2b = (await gfxShot(p, secondId, regions2, 1)).regions;
+    check('recolor seen by renderer 2', R2b.left.blue > 0.2 && R2b.left.green < 0.01, fmt(R2b.left));
+    check('recolor seen by renderer 1', R.left.blue > 0.3 && R.left.green < 0.01, fmt(R.left));
+    s = await step('destroySecond');
+    await new Promise(res => setTimeout(res, 400));
+    R = (await gfxShot(p, id, r.regions)).regions;
+    check('2nd renderer destroyed: contexts alive, renderer 1 unaffected', s.contextsAlive.A && s.contextsAlive.B && R.left.blue > 0.3 && R.right.red > 0.2 && s.loopThrows.length === 0, { alive: s.contextsAlive, left: fmt(R.left), right: fmt(R.right) });
+    s = await step('destroyNodes');
+    R = (await gfxShot(p, id, r.regions)).regions;
+    check('destroying nodes keeps the shared context', s.contextsAlive.A && s.throws.length === 0 && R.left.blue > 0.1, { alive: s.contextsAlive, throws: s.throws, left: fmt(R.left) });
+    s = await step('destroyContextB');
+    R = (await gfxShot(p, id, r.regions)).regions;
+    check('destroying a context still drawn by 4000 nodes: they draw nothing, no throws', s.throws.length === 0 && s.loopThrows.length === 0 && R.right.lit < 0.02, { throws: s.throws, loop: s.loopThrows, right: fmt(R.right) });
+    s = await step('rehomeRight');
+    R = (await gfxShot(p, id, r.regions)).regions;
+    check('orphaned nodes take another context and draw again', s.throws.length === 0 && R.right.blue > 0.2, { throws: s.throws, right: fmt(R.right) });
+    m3CleanLogs(p, 0, 'whole scenario: ');
+    await p.page.evaluate(i => stress.dropCtx(i), id);
+  });
+}
+
+function gfxMaskPixelChecks(label, R, { center = false } = {}) {
+  const bad = [];
+  for (const row of ['A', 'B']) {
+    for (let i = 0; i < 3; i++) {
+      const inR = R[`${row}${i}.in`];
+      const out = R[`${row}${i}.right`];
+      const inOk = row === 'A' ? inR.blue > 0.9 : inR.lit < 0.02;
+      const outOk = row === 'A' ? out.lit < 0.02 : out.blue > 0.9;
+      if (!inOk) bad.push({ panel: `${row}${i}`, region: 'in', expect: row === 'A' ? 'blue' : 'dark', got: fmt(inR) });
+      if (!outOk && !center) bad.push({ panel: `${row}${i}`, region: 'right', expect: row === 'A' ? 'dark' : 'blue', got: fmt(out) });
+    }
+  }
+  check(`${label}: masked pixels (rect/roundRect/polygon masks, normal + inverted)`, bad.length === 0, bad.slice(0, 6));
+  check(`${label}: control outside every group red`, R.ctrl.red > 0.95, fmt(R.ctrl));
+}
+
+async function runGfxMask(mode, backend) {
+  const worker = mode === 'worker';
+  await scenario(`graphics: Graphics as mask (scissor/SDF/mesh, inverted, churn, rotation) [${backend}/${mode}]`, async p => {
+    const r = await withTimeout(p.page.evaluate(o => stress.gfxMaskInit(o), { worker, backend }), 120000, 'gfxMaskInit');
+    const id = r.ctxId;
+    note('modes', { modes: r.modes, stencilCap: r.stencilCap });
+    check('rect Graphics mask → scissor', r.modes[0] === 'A0:scissor', r.modes);
+    check('roundRect and polygon masks → stencil (WebGL2) / alpha (WebGPU)', [r.modes[1], r.modes[2]].every(m => m.endsWith(backend === 'webgl2' ? ':stencil' : ':alpha')), r.modes);
+    // Inverted Graphics masks take 'alpha' on both backends (src/masks/mask.ts: an external stencil mask cannot be inverted).
+    check('inverted Graphics masks → alpha', r.modes.slice(3).every(m => m.endsWith(':alpha')), r.modes.slice(3));
+    gfxMaskPixelChecks('init', (await gfxShot(p, id, r.regions)).regions);
+    const c = await withTimeout(p.page.evaluate((i, o) => stress.gfxMaskChurn(i, o), id, { seconds: GFX_S }), GFX_S * 1000 + 60000, 'gfxMaskChurn');
+    note('churn', c);
+    check('churn (mask re-recorded every frame, mask on/off, forced modes): no throws', c.throws.length === 0 && c.loopThrows.length === 0 && c.toggles > 0 && c.modeSwaps > 0, { throws: c.throws, loop: c.loopThrows, toggles: c.toggles, modeSwaps: c.modeSwaps });
+    gfxMaskPixelChecks('after churn', (await gfxShot(p, id, r.regions)).regions);
+    const rot = await p.page.evaluate(i => stress.gfxMaskRotate(i, 45), id);
+    note('rotated 45° modes', rot.modes);
+    check('rotated rect mask leaves the scissor path', !rot.modes[0].endsWith(':scissor'), rot.modes);
+    const Rr = (await gfxShot(p, id, r.regions)).regions;
+    const centers = {};
+    for (const k of Object.keys(r.regions)) if (k.endsWith('.in')) centers[k] = r.regions[k].map((v, j) => (j < 2 ? v + 40 : 20));
+    const C = (await gfxShot(p, id, centers)).regions;
+    const badC = Object.entries(C).filter(([k, v]) => (k.startsWith('A') ? v.blue < 0.9 : v.lit > 0.02)).map(([k, v]) => ({ k, got: fmt(v) }));
+    check('rotated masks: panel centres masked correctly', badC.length === 0, badC);
+    check('rotated masks: control red', Rr.ctrl.red > 0.95, fmt(Rr.ctrl));
+    await p.page.evaluate(i => stress.gfxMaskRotate(i, 0), id);
+    gfxMaskPixelChecks('rotated back', (await gfxShot(p, id, r.regions)).regions);
+    m3CleanLogs(p, 0, 'whole scenario: ');
+    await p.page.evaluate(i => stress.dropCtx(i), id);
+  });
+}
+
+async function runGfxPick(mode, backend) {
+  const worker = mode === 'worker';
+  await scenario(`graphics: picking + userId (SDF, stroke-only, alpha-0, mesh, shared, rotated) ×${GFX_ROUNDS} [${backend}/${mode}]`, async p => {
+    const r = await withTimeout(p.page.evaluate(o => stress.gfxPickInit(o), { worker, backend }), 120000, 'gfxPickInit');
+    // Round 0 includes the first pick ever (pick pipelines, readback ring): its frame count is reported, not checked.
+    const rounds = [];
+    for (let k = 0; k <= GFX_ROUNDS; k++) rounds.push(await withTimeout(p.page.evaluate((i, kk) => stress.gfxPickRound(i, kk), r.ctxId, k), 120000, `gfxPickRound ${k}`));
+    note('first round (cold picks) max frames', rounds[0].maxFrames);
+    const bad = rounds.flatMap(x => x.bad.map(b => ({ round: x.round, ...b })));
+    note('rounds', rounds.map(x => ({ round: x.round, cases: x.cases, bad: x.bad.length, maxFrames: x.maxFrames })));
+    if (bad.length) note('mismatches (first 10)', bad.slice(0, 10));
+    check(`every pick answered the right Graphics + userId (${rounds.reduce((a, x) => a + x.cases, 0)} cases)`, bad.length === 0, { bad: bad.length, kinds: [...new Set(bad.map(b => b.name))] });
+    check('no pick timed out or threw', rounds.every(x => x.timeouts === 0 && x.errors.length === 0), rounds.flatMap(x => x.errors).slice(0, 4));
+    const maxFrames = Math.max(...rounds.slice(1).map(x => x.maxFrames ?? 0));
+    check('warm picks resolve within 3 frames', maxFrames <= 3, maxFrames);
+    check('no render() throws', rounds.at(-1).loopThrows.length === 0, rounds.at(-1).loopThrows);
+    m3CleanLogs(p, 0, '');
+    await p.page.evaluate(i => stress.dropCtx(i), r.ctxId);
+  });
+}
+
+async function runGfxLoss(mode, backend) {
+  const worker = mode === 'worker';
+  await scenario(`graphics: device loss ×3 (SDF, shared mesh, texture fill, mask, live rebuild, pick) [${backend}/${mode}]`, async p => {
+    const r = await withTimeout(p.page.evaluate(o => stress.gfxLossInit(o), { worker, backend }), 120000, 'gfxLossInit');
+    const id = r.ctxId;
+    const verify = async (label, k) => {
+      await new Promise(res => setTimeout(res, 600));
+      const after = await withTimeout(p.page.evaluate((i, kk) => stress.gfxLossAfter(i, kk), id, k), 30000, 'gfxLossAfter');
+      const regs = { ...r.regions, fresh: [612, 452, 16, 16] };
+      const R = (await gfxShot(p, id, regs)).regions;
+      gfxProbeChecks(label, R);
+      check(`${label}: shared mesh stars, texture fill, live bars`, R.stars.blue > 0.2 && R.textured.lit > 0.3 && R.bars.green > 0.2, { stars: fmt(R.stars), textured: fmt(R.textured), bars: fmt(R.bars) });
+      check(`${label}: Graphics mask (polygon) clips`, R.maskIn.blue > 0.9 && R.maskOut.lit < 0.02, { in: fmt(R.maskIn), out: fmt(R.maskOut) });
+      check(`${label}: a Graphics created now draws`, R.fresh.lit > 0.9, fmt(R.fresh));
+      check(`${label}: alpha-0 hit area picks with userId 77`, after.pick.label === 'pickMe' && after.pick.userId === 77, after.pick);
+      check(`${label}: no render() throws`, after.loopThrows.length === 0, after.loopThrows);
+    };
+    await verify('before loss', 0);
+    for (const [k, kind] of [[1, 'single'], [2, 'double'], [3, 'single']]) {
+      const loss = await lossAndWait(p, id, worker, kind);
+      check(`loss #${k} (${kind}): onDeviceLost → onDeviceRestored, paired`, loss.res === 'ok' && loss.restoredOk, { res: loss.res, lost: loss.after.lost, restored: loss.after.restored });
+      await verify(`after loss #${k}`, k);
+    }
+    m3CleanLogs(p, 0, 'whole scenario: ');
+    await p.page.evaluate(i => stress.dropCtx(i), id);
+  });
+}
+
+async function runGfxAlloc(mode, backend) {
+  const worker = mode === 'worker';
+  await scenario(`graphics: static scene allocations (100k SDF shapes in 1k Graphics + shared mesh + texture) [${backend}/${mode}]`, async p => {
+    const r = await withTimeout(p.page.evaluate(o => stress.gfxStaticInit(o), { worker, backend }), 120000, 'gfxStaticInit');
+    const id = r.ctxId;
+    note('empty stage front CPU (baseline)', r.emptyStageCpuMs);
+    await new Promise(res => setTimeout(res, 3000));
+    const targets = await allocStart(p);
+    const f0 = await p.page.evaluate(i => stress.loopFrames(i), id);
+    await new Promise(res => setTimeout(res, 6000));
+    const f1 = await p.page.evaluate(i => stress.loopFrames(i), id);
+    const alloc = await allocStop(targets);
+    const frames = f1.frames - f0.frames;
+    const perFrame = Object.fromEntries(Object.entries(alloc).map(([k, a]) => [k, perUnit(a, frames)]));
+    note('allocations per frame', { frames, perFrame });
+    note('top allocation sites', Object.fromEntries(Object.entries(alloc).map(([k, a]) => [k, a.top.slice(0, 8)])));
+    check('library JS allocations on the page < 1 KB per 600 frames', perFrame.page.library * 600 < 1024, perFrame.page);
+    if (worker) check('library JS allocations in the worker < 1 KB per 600 frames', (perFrame.worker?.library ?? 0) * 600 < 1024, perFrame.worker);
+    const m = await p.page.evaluate(i => stress.gfxStaticMeasure(i, 120), id);
+    note('steady frame', m);
+    check('no render() throws', m.loopThrows.length === 0, m.loopThrows);
+    check('packet size constant frame to frame (nothing re-uploaded)', m.packetBytes.max === m.packetBytes.p50, m.packetBytes);
+    check('packet small (< 2 KB per frame)', m.packetBytes.max < 2048, m.packetBytes);
+    check('front CPU avg < 0.1 ms (budget: 100k static SDF shapes in 1k Graphics)', m.cpuMs.avg < 0.1, m.cpuMs);
+    m3CleanLogs(p, 0, '');
+    await p.page.evaluate(i => stress.dropCtx(i), id);
+  });
+}
+
 async function main() {
   outDir = await mkdtemp(path.join(os.tmpdir(), 'cozygpu-stress-'));
   console.log(`bundling → ${outDir}`);
@@ -2275,6 +2517,14 @@ async function main() {
     ['m3text', runM3Text],
     ['m3particles', runM3Particles],
     ['m3loss', runM3Loss],
+    // Graphics.
+    ['gfxsdf', runGfxSdf],
+    ['gfxpaths', runGfxPaths],
+    ['gfxshared', runGfxShared],
+    ['gfxmask', runGfxMask],
+    ['gfxpick', runGfxPick],
+    ['gfxloss', runGfxLoss],
+    ['gfxalloc', runGfxAlloc],
   ];
   if (argv['crash-test']) {
     const kind = String(argv['crash-test']);

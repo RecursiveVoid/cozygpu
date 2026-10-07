@@ -1,5 +1,5 @@
 /**
- * Owner: "swarm". Built-in behaviors + defineBehavior.
+ * Built-in behaviors + defineBehavior.
  *
  * Snippet contract (see BehaviorDefinition in ./types.ts): each `update` is
  * inlined in its own `{ }` block of cs_step, after aging, in array order.

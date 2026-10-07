@@ -1,5 +1,5 @@
 /**
- * Owner: "swarm-hooks". M2.5 Swarm hooks against the fake RHI
+ * M2.5 Swarm hooks against the fake RHI
  * (ARCHITECTURE §19.3, §19.4): instance user ids in the pick output, and
  * external instance sources (front validation, stream, WebGPU core binding,
  * WebGL2 refusal).

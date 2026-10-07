@@ -1,4 +1,4 @@
-// Owner: "sprites". Bunnymark: N bouncing sprites from a 4-frame atlas.
+// Bunnymark: N bouncing sprites from a 4-frame atlas.
 //   ?count=100000   initial sprites (default 100k)
 //   ?add=5000       sprites added per click / key press
 //   ?rotate=1       also spin every sprite (exercises the trig path)

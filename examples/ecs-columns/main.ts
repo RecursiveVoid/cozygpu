@@ -1,4 +1,4 @@
-// Owner: "docs-recipe". Using cozygpu with an ECS (docs/recipes/ecs.md).
+// Using cozygpu with an ECS (docs/recipes/ecs.md).
 //
 // The "ECS" is plain typed arrays (./world.ts): 100k entities, one column
 // per component field, moved by a plain index loop. cozygpu draws them

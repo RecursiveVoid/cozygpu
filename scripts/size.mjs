@@ -1,6 +1,5 @@
 /**
- * Bundle budgets (ARCHITECTURE §10, §18.3). Budgets: architect; script:
- * worker+build.
+ * Bundle budgets (ARCHITECTURE §10, §18.3).
  *
  *   node scripts/size.mjs                    → tables + JSON, exit 1 when a check fails
  *   node scripts/size.mjs --json             → JSON only
@@ -12,10 +11,11 @@
  * (level 9) and runs three checks (M2.5 budgets):
  *
  * 1. Fixtures: the chunks each program actually loads.
- *      minimal-webgpu  entry + static imports + WebGPU backend + sprite WGSL   ≤ 41 KB
- *      minimal-webgl2  entry + static imports + WebGL2 backend + sprite GLSL   ≤ 43 KB
+ *      minimal-webgpu  entry + static imports + WebGPU backend + sprite WGSL   ≤ 44 KB
+ *      minimal-webgl2  entry + static imports + WebGL2 backend + sprite GLSL   ≤ 46 KB
  *      worker-webgpu   src/worker/entry.ts + the WebGPU chunks                 ≤ 25 KB
- *      worker-webgl2   src/worker/entry.ts + the WebGL2 chunks                 ≤ 25 KB
+ *      worker-webgl2   src/worker/entry.ts + the WebGL2 chunks                 ≤ 26 KB
+ *      graphics-webgpu the minimal program + Graphics and every graphics chunk ≤ 65 KB
  *      all-exports     every chunk (reported, no absolute budget)
  * 2. Feature chunks: each lazily imported feature chunk of the all-exports
  *    build, found by the source module it contains, against its own budget
@@ -88,6 +88,11 @@ const BACKEND_WEBGL2 = 'src/backend/webgl2/WebGL2Backend.ts';
 /** Sprite shaders load per language when the sprite core starts. */
 const SPRITE_WGSL = 'src/sprites/shadersWGSL.ts';
 const SPRITE_GLSL = 'src/sprites/shadersGLSL.ts';
+/** Graphics chunks (ARCHITECTURE §26.9). */
+const GRAPHICS_EMIT = 'src/graphics/emit.ts';
+const GRAPHICS_TESS = 'src/graphics/tess.ts';
+const GRAPHICS_CORE = 'src/graphics/core.ts';
+const GRAPHICS_WGSL = 'src/graphics/shadersWGSL.ts';
 
 export const FIXTURES = [
   {
@@ -103,6 +108,20 @@ export const FIXTURES = [
     what: 'createRenderer + Texture + Sprite, WebGL2 chunks',
     budget: 46 * KB,
     dynamic: [BACKEND_WEBGL2, SPRITE_GLSL],
+  },
+  {
+    id: 'graphics-webgpu',
+    file: 'scripts/size-fixtures/graphics-webgpu.ts',
+    what: 'minimal WebGPU program + Graphics, every graphics chunk',
+    budget: 65 * KB,
+    dynamic: [
+      BACKEND_WEBGPU,
+      SPRITE_WGSL,
+      GRAPHICS_EMIT,
+      GRAPHICS_TESS,
+      GRAPHICS_CORE,
+      GRAPHICS_WGSL,
+    ],
   },
   {
     id: 'all-exports',
@@ -178,8 +197,10 @@ export const CHUNKS = [
   // entries. Six of the seven came down from their freeze targets; `mask-core`
   // is the exception (5.0 KB target, 5.6 KB measured — it carries the front
   // packer, the scissor stack, the stencil pipelines and the bounds
-  // fallbacks, with the soft-mask half already split into `alpha`).
-  { id: 'mask-core', module: 'src/masks/core.ts', budget: 6000 },
+  // fallbacks, with the soft-mask half already split into `alpha`). M4 added
+  // Graphics mask geometry (MaskFlag.EXTERNAL, MASK_GEOMETRY_END and the
+  // Graphics-mask front path): 6.4 KB measured, re-budgeted by the same rule.
+  { id: 'mask-core', module: 'src/masks/core.ts', budget: 6900 },
   { id: 'filter-core', module: 'src/filters/core.ts', budget: 6900 },
   { id: 'filters-builtin', module: 'src/filters/builtin.ts', budget: 2100 },
   { id: 'sprite-effects', module: 'src/sprites/effects.ts', budget: 2100 },
@@ -187,6 +208,15 @@ export const CHUNKS = [
   { id: 'text-msdf', module: 'src/text/msdf.ts', budget: 1800 },
   { id: 'text-canvas', module: 'src/text/canvas.ts', budget: 2500 },
   { id: 'particles', module: 'src/particles/emitter.ts', budget: 4300 },
+  // M4 Graphics chunks (ARCHITECTURE §26.9): the front emitter, the
+  // recording compiler it shares with tessellation, tessellation, the core
+  // system and its shaders. Measured min+gzip + ~0.5 KB, rounded to 0.1 KB.
+  { id: 'graphics', module: GRAPHICS_EMIT, budget: 4000 },
+  { id: 'graphics-compile', module: 'src/graphics/compile.ts', budget: 2900 },
+  { id: 'graphics-tess', module: GRAPHICS_TESS, budget: 7300 },
+  { id: 'graphics-core', module: GRAPHICS_CORE, budget: 3800 },
+  { id: 'graphics-wgsl', module: GRAPHICS_WGSL, budget: 2500 },
+  { id: 'graphics-glsl', module: 'src/graphics/shadersGLSL.ts', budget: 2300 },
 ];
 
 const gz = bytes => gzipSync(bytes, { level: 9 }).length;

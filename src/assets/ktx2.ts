@@ -1,5 +1,5 @@
 /**
- * Owner: "assets". KTX2 container parser (ARCHITECTURE §15.3). Pure,
+ * KTX2 container parser (ARCHITECTURE §15.3). Pure,
  * DOM-free, Node-tested. Reads the header, the level index and the basic
  * data format descriptor; level bytes are sliced on demand.
  *

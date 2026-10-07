@@ -1,4 +1,4 @@
-/** Owner: "worker". Converts thrown values into `error` CoreMessages. */
+/** Converts thrown values into `error` CoreMessages. */
 import { CozyGPUError } from '../types/errors';
 import type { CozyGPUErrorCode } from '../types/errors';
 import type { CoreMessage } from '../types/transport';

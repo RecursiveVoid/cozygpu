@@ -18,6 +18,14 @@
  *   alpha    the subtree is captured into a pooled target, the mask's
  *            coverage into another, and MASK_POP composites them.
  *
+ * M4 (§26.8): a push with `MaskFlag.EXTERNAL` carries no quads; the mask
+ * geometry is drawn by the graphics system's DRAW commands up to
+ * MASK_GEOMETRY_END. Stencil: the push only sets the reference, the geometry
+ * increments, MASK_GEOMETRY_END moves to the new level, and MASK_POP lowers
+ * every value above the old level back to it with one canvas quad. Alpha: the
+ * geometry draws into the coverage target, MASK_GEOMETRY_END opens the
+ * capture.
+ *
  * Anything that cannot be done (no stencil attachment because the main pass
  * is multisampled, pipelines still compiling, no target pool yet) falls back
  * to a scissor of the mask's bounds: a mask never draws its subtree
@@ -33,6 +41,7 @@ import type {
   RhiRenderPipeline,
   RhiShaderModule,
   RhiTexture,
+  StencilState,
 } from '../backend/types';
 import {
   CommandFlag,
@@ -72,6 +81,8 @@ export class MaskCoreSystem implements CoreSystem {
   private shader: RhiShaderModule | null = null;
   private increment: RhiRenderPipeline | null = null;
   private decrement: RhiRenderPipeline | null = null;
+  /** M4: lowers every stencil value above the reference to it (external pop). */
+  private reset: RhiRenderPipeline | null = null;
   /** Bumped on restore/destroy so late pipeline promises are dropped. */
   private epoch = 0;
 
@@ -122,6 +133,8 @@ export class MaskCoreSystem implements CoreSystem {
   private scissorOn = false;
 
   private alpha: AlphaMasks | null = null;
+  /** M4: stack index whose external geometry is being drawn, else -1. */
+  private external = -1;
   /** The last MASK_PUSH_ALPHA's capture opened (passBreak → draw). */
   private alphaOpen = false;
   /** The pass the last pass break reopened (null: the main pass). */
@@ -159,6 +172,7 @@ export class MaskCoreSystem implements CoreSystem {
     this.stencilDirtyFrame = -1;
     this.depth = 0;
     this.level = 0;
+    this.external = -1;
     // The shared target pool outlives the restore; its textures do not.
     this.alpha?.lost();
     this.alpha = null;
@@ -175,6 +189,7 @@ export class MaskCoreSystem implements CoreSystem {
     const epoch = ++this.epoch;
     this.increment = null;
     this.decrement = null;
+    this.reset = null;
     const backend = ctx.backend;
     // One language per backend: the other never loads (smaller programs).
     const sources =
@@ -194,7 +209,7 @@ export class MaskCoreSystem implements CoreSystem {
       backend.caps.backend === 'webgl2' && ctx.sampleCount === 1;
     const make = (
       label: string,
-      passOp: 'increment-clamp' | 'decrement-clamp',
+      stencil: StencilState,
     ): Promise<RhiRenderPipeline> =>
       backend.createRenderPipeline({
         label,
@@ -208,19 +223,29 @@ export class MaskCoreSystem implements CoreSystem {
         depthFormat: MASK_STENCIL_FORMAT,
         sampleCount: ctx.sampleCount,
         colorWriteDisabled: true,
-        stencil: { compare: 'equal', passOp },
+        stencil,
       });
-    const [increment, decrement] = await Promise.all([
-      make('cozygpu.mask.increment', 'increment-clamp'),
-      make('cozygpu.mask.decrement', 'decrement-clamp'),
+    const [increment, decrement, reset] = await Promise.all([
+      make('cozygpu.mask.increment', {
+        compare: 'equal',
+        passOp: 'increment-clamp',
+      }),
+      make('cozygpu.mask.decrement', {
+        compare: 'equal',
+        passOp: 'decrement-clamp',
+      }),
+      // Passes where reference < stencil and writes the reference.
+      make('cozygpu.mask.reset', { compare: 'less', passOp: 'replace' }),
     ]);
     if (epoch !== this.epoch) {
       increment.destroy();
       decrement.destroy();
+      reset.destroy();
       return;
     }
     this.increment = increment;
     this.decrement = decrement;
+    this.reset = reset;
   }
 
   // ── execute ────────────────────────────────────────────────────────────────
@@ -336,17 +361,27 @@ export class MaskCoreSystem implements CoreSystem {
       if (!alpha) {
         this.loadAlpha();
       } else {
-        desc = alpha.begin(
-          list,
-          this.buffers[u32[at + 1]] ?? null,
-          u32[at + 2],
-          u32[at + 3],
-          ctx.getTexture(u32[at + 4]).bindGroup,
-          (u32[at + 5] & MaskFlag.INVERT) !== 0,
-          frame,
-        );
+        const flags = u32[at + 5];
+        const invert = (flags & MaskFlag.INVERT) !== 0;
+        desc =
+          (flags & MaskFlag.EXTERNAL) !== 0
+            ? alpha.beginExternal(invert, frame)
+            : alpha.begin(
+                list,
+                this.buffers[u32[at + 1]] ?? null,
+                u32[at + 2],
+                u32[at + 3],
+                ctx.getTexture(u32[at + 4]).bindGroup,
+                invert,
+                frame,
+              );
         this.alphaOpen = desc !== null;
       }
+    } else if (op === MaskOp.MASK_GEOMETRY_END) {
+      // The coverage pass of an external soft mask ended: open its capture.
+      const i = this.external;
+      if (alpha && i >= 0 && this.kinds[i] === ALPHA)
+        desc = alpha.endExternal();
     } else if (op === MaskOp.MASK_POP && alpha) {
       // Only a soft mask that really opened a capture ends one.
       let i = this.depth - 1;
@@ -498,6 +533,24 @@ export class MaskCoreSystem implements CoreSystem {
         const texId = reader.u32();
         const flags = reader.u32();
         reader.f32();
+        if ((flags & MaskFlag.EXTERNAL) !== 0) {
+          // M4: the graphics system's MASK_WRITE draws that follow compare
+          // against the current level and increment. Without a stencil (or
+          // inverted: the front routes those to 'alpha') there are no quads
+          // to bound the shape with, so the subtree is clipped away.
+          if (
+            this.reset &&
+            (flags & MaskFlag.INVERT) === 0 &&
+            this.stencilReady(frame) &&
+            !this.alpha?.capturing
+          ) {
+            this.external = this.push(STENCIL, id, this.level, flags, 0, 0, 0);
+            pass.setStencilReference(this.level);
+          } else {
+            this.pushScissor(pass, frame, id, 0, 0, 0, 0);
+          }
+          return;
+        }
         this.pushStencil(
           ctx,
           pass,
@@ -523,15 +576,32 @@ export class MaskCoreSystem implements CoreSystem {
         const width = reader.f32();
         const height = reader.f32();
         reader.f32();
+        const external = (flags & MaskFlag.EXTERNAL) !== 0;
         if (this.alpha && this.alphaOpen) {
           this.alphaOpen = false;
-          this.push(ALPHA, id, 0, 0, bufferId, 0, 0);
+          const at = this.push(ALPHA, id, 0, 0, bufferId, 0, 0);
+          if (external) this.external = at;
+        } else if (external) {
+          // No capture (soft masks still loading): neither the geometry nor
+          // the subtree may reach the canvas unmasked, so both are clipped
+          // away until the capture works.
+          this.pushScissor(pass, frame, id, x, y, 0, 0);
         } else if ((flags & MaskFlag.INVERT) !== 0) {
           // See pushStencil: an inverted mask cannot fall back to a rect.
           this.pushScissor(pass, frame, id, x, y, 0, 0);
         } else {
           // No target pool yet: clip to the mask's bounds instead.
           this.pushScissor(pass, frame, id, x, y, width, height);
+        }
+        return;
+      }
+      case MaskOp.MASK_GEOMETRY_END: {
+        // M4: the external geometry of the top stencil mask is drawn.
+        const at = this.external;
+        this.external = -1;
+        if (at >= 0 && at === this.depth - 1 && this.kinds[at] === STENCIL) {
+          this.level = this.levels[at] + 1;
+          pass.setStencilReference(this.level);
         }
         return;
       }
@@ -721,6 +791,23 @@ export class MaskCoreSystem implements CoreSystem {
     }
     if (kind === STENCIL) {
       const level = this.levels[at];
+      if ((this.flagsOf[at] & MaskFlag.EXTERNAL) !== 0 && this.reset) {
+        // M4: external geometry cannot be redrawn here. Every value above
+        // the level belongs to this mask (inner masks popped already), so
+        // one canvas quad lowers them all back; its quads entry is empty.
+        const full = this.fullBuffer(ctx, frame);
+        if (full) {
+          this.drawQuads(
+            pass,
+            this.reset,
+            level,
+            full,
+            ctx.whiteTexture.bindGroup,
+            0,
+            1,
+          );
+        }
+      }
       const buffer = this.buffers[this.quads[at * 4]];
       const increment = this.increment;
       const decrement = this.decrement;
@@ -822,6 +909,7 @@ export class MaskCoreSystem implements CoreSystem {
     }
     this.depth = 0;
     this.level = 0;
+    this.external = -1;
     this.scissorOn = false;
     this.alphaOpen = false;
     this.reopened = null;
@@ -839,8 +927,10 @@ export class MaskCoreSystem implements CoreSystem {
     this.stencilTexture = null;
     this.increment?.destroy();
     this.decrement?.destroy();
+    this.reset?.destroy();
     this.increment = null;
     this.decrement = null;
+    this.reset = null;
     this.shader?.destroy();
     this.shader = null;
     this.alpha?.destroy();

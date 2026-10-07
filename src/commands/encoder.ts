@@ -1,5 +1,5 @@
 /**
- * Owner: "worker". Binary command encoder (docs/ARCHITECTURE.md §3.6).
+ * Binary command encoder (docs/ARCHITECTURE.md §3.6).
  *
  * One growable ArrayBuffer with cached u8/u32/f32 views. Views are rebuilt
  * only when the buffer grows or a different (recycled) buffer is adopted.

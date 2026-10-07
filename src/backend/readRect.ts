@@ -1,5 +1,5 @@
 /**
- * Owner: "renderer-hooks" (M2.5). The texel-readback rect check, shared by
+ * The texel-readback rect check, shared by
  * the two readback-ring chunks (which also serve `readTexture`). A module of
  * its own, not in ./utils: utils is on the minimal program and this is not.
  */

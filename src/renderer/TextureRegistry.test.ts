@@ -1,4 +1,4 @@
-/** Owner: "assets" (M2 texture ops of the core registry). */
+/** M2 texture ops of the core registry. */
 import type { RhiBindGroupLayout, RhiTexture } from '../backend/types';
 import {
   TEXTURE_MIP_LEVELS_SHIFT,

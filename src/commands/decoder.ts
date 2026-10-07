@@ -1,5 +1,5 @@
 /**
- * Owner: "worker". Binary command decoder (docs/ARCHITECTURE.md §3.6).
+ * Binary command decoder (docs/ARCHITECTURE.md §3.6).
  *
  * `reset()` validates the whole packet (magic, lengths, every command end,
  * command count) before anything executes, so a corrupted packet is dropped

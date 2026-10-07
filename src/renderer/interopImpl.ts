@@ -1,5 +1,5 @@
 /**
- * Owner: "renderer-hooks". Front half of device interop (ARCHITECTURE §19.4),
+ * Front half of device interop (ARCHITECTURE §19.4),
  * a lazily imported chunk: `renderer.interop()` loads it on first use, so the
  * minimal program pays only for the method stub. Main-thread mode only: the
  * core half (coreInterop.ts, re-exported here so it ships in this chunk) is

@@ -1,5 +1,5 @@
 /**
- * Owner: "worker+build". JS allocation per frame in examples/worker, on the
+ * JS allocation per frame in examples/worker, on the
  * main thread AND inside the worker (ARCHITECTURE §10, §17).
  *
  *   EXAMPLES=1 npx rollup -c rollup.config.cjs     (build the examples first)

@@ -1,4 +1,4 @@
-// Owner: "webgl2". WebGL2 variant of the basic RHI demo (?mode=rhi on a
+// WebGL2 variant of the basic RHI demo (?mode=rhi on a
 // glsl300es backend): the same textured quads, animated by a transform
 // feedback pass that ping-pongs two instance buffers instead of a compute
 // pass writing a storage buffer.

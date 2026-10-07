@@ -1,5 +1,5 @@
 /**
- * Owner: "webgl2". TEST-ONLY recording WebGL2 context. Every method call is
+ * TEST-ONLY recording WebGL2 context. Every method call is
  * appended to `calls` as `name(arg, ...)` (objects print as their fake id) so
  * tests can assert call sequences without a GPU.
  */

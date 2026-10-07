@@ -1,5 +1,5 @@
 /**
- * Owner: "backend". Validation diagnostics: a deduplicating console logger.
+ * Validation diagnostics: a deduplicating console logger.
  * WGSL compilation-message formatting is in ./compileMessages (a lazy
  * chunk: it only runs when a shader reports messages).
  */

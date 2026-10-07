@@ -1,4 +1,4 @@
-// Owner: "docs-recipe". A deliberately tiny "ECS": one table of entities
+// A deliberately tiny "ECS": one table of entities
 // stored as typed-array columns (structure of arrays). It stands in for any
 // column-based ECS (cozyECS or another archetype/table store); cozygpu
 // never sees this module, only the arrays it exposes.

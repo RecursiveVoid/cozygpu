@@ -1,5 +1,5 @@
 /**
- * Owner: "renderer-hooks" (M2.5; was "sprites"). Core half of GPU picking
+ * Core half of GPU picking
  * (ARCHITECTURE §16.3, §19.6). DOM-free. RenderCore creates it on the first
  * PICK command and calls `request`, `render`, `poll`, `failAll`, `restore`
  * and `destroy`.

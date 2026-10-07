@@ -1,5 +1,5 @@
 /**
- * Owner: "assets". Texture format tables shared by the KTX2 parser, target
+ * Texture format tables shared by the KTX2 parser, target
  * selection and the GPU byte estimate. Pure (Node-testable).
  */
 import type { Capabilities, TextureFormat } from '../backend/types';

@@ -1,5 +1,5 @@
 /**
- * Owner: "worker". The worker-side message loop (DOM-free).
+ * The worker-side message loop (DOM-free).
  *
  * `entry.ts` binds it to the real worker global scope and the real
  * `createRenderCore`; tests bind it to fakes.

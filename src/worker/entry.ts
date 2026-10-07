@@ -1,5 +1,5 @@
 /**
- * Owner: "worker+build". Worker bundle entry → dist/cozygpu.worker.js.
+ * Worker bundle entry → dist/cozygpu.worker.js.
  * Receives WorkerInboundMessage ('init' | 'frame' | 'destroy'), creates the
  * RenderCore with createDefaultCoreSystems(), posts CoreMessage back.
  * DOM-free: only `globalThis` is used. Outside a worker scope (e.g. when the
@@ -26,6 +26,7 @@ const LAZY_RANGES = [
   OpcodeRange.SWARM,
   OpcodeRange.MASK,
   OpcodeRange.FILTER,
+  OpcodeRange.GRAPHICS,
 ] as const;
 
 registerCoreSystemLoader(OpcodeRange.SWARM, () =>
@@ -36,6 +37,9 @@ registerCoreSystemLoader(OpcodeRange.MASK, () =>
 );
 registerCoreSystemLoader(OpcodeRange.FILTER, () =>
   import('../filters/core').then(m => m.createFilterCoreSystem),
+);
+registerCoreSystemLoader(OpcodeRange.GRAPHICS, () =>
+  import('../graphics/core').then(m => m.createGraphicsCoreSystem),
 );
 
 const scan = createCommandDecoder();

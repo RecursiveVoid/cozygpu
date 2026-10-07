@@ -1,5 +1,5 @@
 /**
- * Owner: "assets". Concurrency limiter for fetch + decode jobs
+ * Concurrency limiter for fetch + decode jobs
  * (ARCHITECTURE §15.4): at most `limit` running, the rest wait FIFO; low
  * priority jobs (`preload`) run after every normal job.
  */

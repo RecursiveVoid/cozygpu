@@ -1,5 +1,5 @@
 /**
- * Owner: "webgl2". WebGL2 implementation of the RHI (ARCHITECTURE §13).
+ * WebGL2 implementation of the RHI (ARCHITECTURE §13).
  * Loaded only through `import('./webgl2/WebGL2Backend')` in createBackend.ts.
  * DOM-free (worker-safe): OffscreenCanvas or HTMLCanvasElement via
  * `canvas.getContext('webgl2', …)`, `globalThis` only.

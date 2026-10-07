@@ -1,5 +1,5 @@
 /**
- * Owner: "renderer-hooks". M2.5 readback ring on WebGL2 (ARCHITECTURE §19.6).
+ * M2.5 readback ring on WebGL2 (ARCHITECTURE §19.6).
  *
  * One PIXEL_PACK buffer per slot, created once. `copyTexture` runs
  * readPixels into the slot's buffer (WebGL executes immediately) and inserts

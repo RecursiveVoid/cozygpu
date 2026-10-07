@@ -1,5 +1,5 @@
 /**
- * Owner: "swarm". Pure shader composition (unit-testable without a GPU).
+ * Pure shader composition (unit-testable without a GPU).
  *
  * `composeSwarmShaders(behaviors, renderFlags, language)` builds, for WGSL:
  *  - compute: prelude + params structs + helpers + cs_step (behaviors inlined

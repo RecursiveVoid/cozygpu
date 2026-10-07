@@ -1,5 +1,5 @@
 /**
- * Owner: "webgl2". WebGL2 enum values as plain top-level constants.
+ * WebGL2 enum values as plain top-level constants.
  *
  * Numeric literals instead of `gl.TEXTURE_2D` lookups: the minifier inlines
  * them, they exist in Node tests (no WebGL2RenderingContext global), and they

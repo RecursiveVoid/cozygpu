@@ -1,4 +1,4 @@
-// cozygpu swarm step program (WebGL2 transform feedback). Owner: "swarm".
+// cozygpu swarm step program (WebGL2 transform feedback).
 // Reads one hot + cold record per vertex (gl_VertexID = slot) and writes the
 // next hot record (h0, h1, h2 interleaved = the 40-byte SwarmHot layout).
 // Same semantics as cs_step in compute.wgsl.

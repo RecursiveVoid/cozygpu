@@ -1,4 +1,4 @@
-// cozygpu swarm prelude: shared structs + helpers. Owner: "swarm".
+// cozygpu swarm prelude: shared structs + helpers.
 // Struct layouts are normative (src/types/layouts.ts, ARCHITECTURE §4).
 
 // @size 40

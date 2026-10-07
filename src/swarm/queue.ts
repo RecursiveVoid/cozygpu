@@ -1,5 +1,5 @@
 /**
- * Owner: "swarm". A swarm's own small growable command queue (front side).
+ * A swarm's own small growable command queue (front side).
  *
  * Mutating Swarm calls (spawn/kill/write) encode here in the normal binary
  * command format (8-byte header + 4-aligned payload). `_emitDraw` copies the

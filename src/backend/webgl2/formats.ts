@@ -1,5 +1,5 @@
 /**
- * Owner: "webgl2". Pure RHI → WebGL2 translation tables (no context access,
+ * Pure RHI → WebGL2 translation tables (no context access,
  * Node-testable).
  */
 import type {

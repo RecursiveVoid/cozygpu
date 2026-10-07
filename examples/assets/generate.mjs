@@ -1,4 +1,4 @@
-// Owner: "assets". Generates the example's asset files (no dependencies):
+// Generates the example's asset files (no dependencies):
 //   node examples/assets/generate.mjs
 // Writes examples/assets/files/: PNG icons (atlas packing), a hero PNG, a
 // TexturePacker spritesheet, KTX2 textures (RGBA8 with mips, BC1 with mips)

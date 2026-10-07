@@ -1,5 +1,5 @@
 /**
- * Owner: "renderer-hooks". Core half of device interop (ARCHITECTURE §19.4),
+ * Core half of device interop (ARCHITECTURE §19.4),
  * main-thread mode only: LocalTransport.interop(create) builds it over the
  * core in the same heap. Only the lazy interop chunk (interopImpl.ts) imports
  * it, so neither the minimal program nor the worker bundle carries it.

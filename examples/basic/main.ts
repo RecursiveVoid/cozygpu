@@ -1,4 +1,4 @@
-// Owner: "webgl2" (M2; was "backend"). Entry points:
+// Entry points:
 //   /examples/basic/               Public API: clear color + a textured quad (plus a tinted copy)
 //                                  through createRenderer. Add ?worker=1 to render in a Web Worker.
 //   /examples/basic/?mode=rhi      RHI demo: clear color + textured quads straight through the

@@ -1,4 +1,4 @@
-// Owner: "worker". The same scene on the main thread or in a worker.
+// The same scene on the main thread or in a worker.
 //
 //   /examples/worker/            main-thread mode
 //   /examples/worker/?worker=1   worker mode (OffscreenCanvas)

@@ -1,5 +1,5 @@
 /**
- * Owner: "assets". TexturePacker JSON (hash and array formats) and CPU alpha
+ * TexturePacker JSON (hash and array formats) and CPU alpha
  * masks. Pure, Node-tested.
  */
 import { CozyGPUError } from '../types/errors';

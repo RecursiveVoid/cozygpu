@@ -1,5 +1,5 @@
 /**
- * Owner: "swarm". Front-side Swarm node (see ./types.ts for the contract).
+ * Front-side Swarm node (see ./types.ts for the contract).
  *
  * Holds no GPU objects. Everything it does is encoded into its own command
  * queue and flushed into the frame by `_emitDraw` (called by the ScenePacker

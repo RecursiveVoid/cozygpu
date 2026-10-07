@@ -9,6 +9,11 @@
  * MASK_PUSH_* / MASK_POP around the group's subtree. Zero allocations once
  * the mask stopped changing: the quads are packed into a reused buffer and
  * only uploaded when their bytes changed.
+ *
+ * M4 (ARCHITECTURE §26.8): a mask source that draws its own geometry (a
+ * `Graphics`, `MaskDrawable`) is never packed into quads. One plain rect
+ * becomes a scissor; any other shape is pushed with `MaskFlag.EXTERNAL`, the
+ * node emits its draws as mask geometry, and MASK_GEOMETRY_END follows.
  */
 import {
   CommandFlag,
@@ -31,7 +36,7 @@ import {
 } from '../scene/store';
 import { ensureTextureUploaded } from '../scene/Texture';
 import type { ContainerNode, SceneNode } from '../scene/types';
-import type { FrontFrame } from '../types/core';
+import type { FrontFrame, MaskDrawable } from '../types/core';
 import { MASK_ALPHA_THRESHOLD, SPRITE_INSTANCE_BYTES } from '../types/layouts';
 import { createMaskCoreSystem } from './core';
 import type { MaskBinding, MaskMode, MaskRect, MaskTarget } from './types';
@@ -64,6 +69,8 @@ let stencilBreakRenderer = -1;
 const parentWorld = new Float32Array(6);
 const localWorld = new Float32Array(6);
 const childWorld = new Float32Array(6);
+/** A MaskDrawable's plain rect (local x, y, width, height). */
+const drawableRect = new Float32Array(4);
 
 /**
  * True when draws of other systems inside the pass are clipped by the stencil
@@ -75,6 +82,24 @@ const childWorld = new Float32Array(6);
  */
 function stencilClipsSubtree(backend: string): boolean {
   return backend === 'webgl2';
+}
+
+/** World transform of a detached mask node into `localWorld` (§21.1). */
+function placeDetached(n: SceneNode): void {
+  affineFromTRS(
+    localWorld,
+    0,
+    n.x,
+    n.y,
+    n.rotation,
+    n.scaleX,
+    n.scaleY,
+    n.skewX,
+    n.skewY,
+    n.pivotX,
+    n.pivotY,
+  );
+  affineMultiply(localWorld, 0, parentWorld, 0, localWorld, 0);
 }
 
 function isRect(source: unknown): source is MaskRect {
@@ -156,6 +181,15 @@ class MaskBindingImpl implements MaskBinding {
     // Local mode may still be importing the chunk this module registered.
     if (!frame.isSystemReady(OpcodeRange.MASK)) return false;
     this.readParentWorld();
+    const source = this.source;
+    // Duck-typed (not isMaskDrawable): importing it would split a shared
+    // chunk off the minimal program.
+    if (
+      typeof (source as Partial<MaskDrawable> | null)?._emitMaskGeometry ===
+      'function'
+    ) {
+      return this.emitDrawable(frame, source as SceneNode & MaskDrawable);
+    }
     this.pack(frame);
     // A mask with no geometry masks everything away; it never draws the
     // subtree unclipped.
@@ -270,23 +304,7 @@ class MaskBindingImpl implements MaskBinding {
     // A mask node that sits in the scene tree already has a world transform;
     // a detached one is placed relative to the masked group's parent.
     const stored = root.parent !== null;
-    if (!stored) {
-      const n = root;
-      affineFromTRS(
-        localWorld,
-        0,
-        n.x,
-        n.y,
-        n.rotation,
-        n.scaleX,
-        n.scaleY,
-        n.skewX,
-        n.skewY,
-        n.pivotX,
-        n.pivotY,
-      );
-      affineMultiply(localWorld, 0, parentWorld, 0, localWorld, 0);
-    }
+    if (!stored) placeDetached(root);
     this.walk(frame, root, stored, localWorld, 0);
   }
 
@@ -433,6 +451,64 @@ class MaskBindingImpl implements MaskBinding {
     }
   }
 
+  // ── external geometry (M4, ARCHITECTURE §26.8) ─────────────────────────────
+
+  private emitDrawable(
+    frame: FrontFrame,
+    node: SceneNode & MaskDrawable,
+  ): boolean {
+    // Like a mask without geometry, a hidden or destroyed one masks
+    // everything away.
+    if (node.destroyed || !node.visible) return false;
+    let world: Float32Array = localWorld;
+    let offset = 0;
+    if (node.parent !== null) {
+      world = node.worldTransform;
+      offset = node.worldTransformOffset;
+    } else {
+      placeDetached(node);
+    }
+    this.minX = this.minY = this.maxX = this.maxY = this.count = 0;
+    // Only a plain rect can become a scissor: anything else counts as
+    // rotated for the mode choice.
+    this.axisAligned = false;
+    if (node._maskRect(drawableRect)) {
+      // Stage bounds of the rect (the scissor itself when axis-aligned).
+      const r = drawableRect;
+      this.minX = this.minY = Infinity;
+      this.maxX = this.maxY = -Infinity;
+      this.axisAligned = true;
+      this.writeQuad(world, offset, r[0], r[1], r[2], r[3], 0, 0, 0, 0, 0);
+    }
+    // No quads travel with an external push (count 0).
+    this.count = 0;
+    let mode = this.resolveMode(frame);
+    // An external stencil mask cannot be inverted (no quads to redraw).
+    if (mode === 'stencil' && this.invert) mode = 'alpha';
+    this.mode = mode;
+    if (mode === 'scissor') {
+      this.emitScissor(frame);
+      this.pushedMode = mode;
+      return true;
+    }
+    const stencil = mode === 'stencil';
+    if (stencil) this.emitStencil(frame, MaskFlag.EXTERNAL);
+    else this.emitAlpha(frame, MaskFlag.EXTERNAL);
+    // From here the push is out, so the stack has to stay balanced: geometry
+    // that cannot draw yet leaves the subtree fully masked for this frame.
+    node._emitMaskGeometry(frame, world, offset, stencil);
+    const enc = frame.encoder;
+    enc.begin(
+      MaskOp.MASK_GEOMETRY_END,
+      4,
+      stencil ? CommandFlag.DRAW : CommandFlag.DRAW | CommandFlag.PASS_BREAK,
+    );
+    enc.u32(this.group.id);
+    enc.end();
+    this.pushedMode = mode;
+    return true;
+  }
+
   // ── mode and commands ──────────────────────────────────────────────────────
 
   private resolveMode(frame: FrontFrame): Exclude<MaskMode, 'auto'> {
@@ -467,7 +543,7 @@ class MaskBindingImpl implements MaskBinding {
     enc.end();
   }
 
-  private emitStencil(frame: FrontFrame): void {
+  private emitStencil(frame: FrontFrame, external = 0): void {
     const enc = frame.encoder;
     // One pass break per frame adds the stencil attachment (§21.3).
     let flags = CommandFlag.DRAW;
@@ -485,12 +561,12 @@ class MaskBindingImpl implements MaskBinding {
     enc.u32(0);
     enc.u32(this.count);
     enc.u32(this.texId);
-    enc.u32(this.maskFlags());
+    enc.u32(this.maskFlags() | external);
     enc.f32(this.threshold);
     enc.end();
   }
 
-  private emitAlpha(frame: FrontFrame): void {
+  private emitAlpha(frame: FrontFrame, external = 0): void {
     const enc = frame.encoder;
     enc.begin(
       MaskOp.MASK_PUSH_ALPHA,
@@ -502,7 +578,7 @@ class MaskBindingImpl implements MaskBinding {
     enc.u32(0);
     enc.u32(this.count);
     enc.u32(this.texId);
-    enc.u32(this.maskFlags());
+    enc.u32(this.maskFlags() | external);
     enc.f32(this.minX);
     enc.f32(this.minY);
     enc.f32(this.maxX - this.minX);

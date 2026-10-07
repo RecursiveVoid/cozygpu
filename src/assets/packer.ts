@@ -1,5 +1,5 @@
 /**
- * Owner: "assets". Skyline bottom-left rectangle packer (ARCHITECTURE §15.7).
+ * Skyline bottom-left rectangle packer (ARCHITECTURE §15.7).
  * Pure and Node-tested. Freed rectangles are never reused (M2).
  *
  * `pack(w, h)` reserves `w + 2·padding` × `h + 2·padding` and reports the

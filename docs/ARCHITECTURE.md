@@ -1,9 +1,10 @@
 # cozygpu architecture
 
-Status: **M2.5** (M1, M2 and the M2.5 integration hooks are built;
-§13–§19 describe them as built). Sections marked _normative_ are binding;
+Status: **M4 in design** (M1–M3 are built; §13–§24 describe them as built,
+§26 is the Graphics design for M4). Sections marked _normative_ are binding;
 code in `src/types/**`, `src/backend/types.ts`,
 `src/scene/types.ts`, `src/swarm/types.ts`, `src/assets/types.ts`,
+`src/graphics/types.ts`,
 `src/commands/opcodes.ts`, and `src/commands/types.ts` mirrors them. If the
 code and this document disagree, the document is the reference; fix one of them.
 
@@ -27,6 +28,12 @@ code and this document disagree, the document is the reference; fix one of them.
 - [18. Bundle and build (M2)](#18-bundle-and-build-m2)
 - [19. Integration hooks (M2.5)](#19-integration-hooks-m25)
 - [20. Later milestones (design notes only)](#20-later-milestones-design-notes-only)
+- [21. Masking (M3)](#21-masking-m3)
+- [22. Filters (M3)](#22-filters-m3)
+- [23. Text (M3)](#23-text-m3)
+- [24. Particles (M3)](#24-particles-m3)
+- [25. M3 contract additions](#25-m3-contract-additions)
+- [26. Graphics (M4)](#26-graphics-m4)
 
 ---
 
@@ -203,7 +210,8 @@ op     flags  payload=20   bufferId=1   first=0      count=500    texId=3      b
 
 Ranges: `0x00` core, `0x01` texture, shared memory, readback and picking
 (all handled by RenderCore), `0x02` sprite, `0x03` swarm, `0x04` mask (M3),
-`0x05` filter (M3), `0x06–0x7F` reserved, `0x80–0xFF` extensions. Unknown
+`0x05` filter (M3), `0x06` graphics (M4), `0x07–0x7F` reserved,
+`0x80–0xFF` extensions. Unknown
 opcodes are skipped using `payloadBytes`, with one warning per opcode.
 
 The flags column lists every bit a command carries; `DRAW+PASS_BREAK`
@@ -260,11 +268,25 @@ asks the owning system which pass to open next.
 | 0x0411 | MASK_PUSH_STENCIL            | DRAW+PASS_BREAK | M3. u32 maskId, bufferId, first, count, texId, flags, f32 threshold                                                           |
 | 0x0412 | MASK_PUSH_ALPHA              | DRAW+PASS_BREAK | M3. u32 maskId, bufferId, first, count, texId, flags, f32 x, y, width, height, resolution                                     |
 | 0x0418 | MASK_POP                     | DRAW+PASS_BREAK | M3. u32 maskId (PASS_BREAK only when it ends a stencil or alpha segment)                                                      |
+| 0x0419 | MASK_GEOMETRY_END            | DRAW+PASS_BREAK | M4. u32 maskId; ends external mask geometry (MaskFlag.EXTERNAL, §26.8); PASS_BREAK only for an alpha mask                     |
 | 0x0500 | FILTER_DEFINE                |                 | M3. u32 filterId, passCount, uniformBytes, flags, srcBytes, u8[srcBytes]                                                      |
 | 0x0501 | FILTER_DESTROY               |                 | M3. u32 filterId                                                                                                              |
 | 0x0502 | FILTER_SET_UNIFORMS          |                 | M3. u32 filterId, byteOffset, byteLength, u8[byteLength]                                                                      |
 | 0x0510 | FILTER_BEGIN                 | DRAW+PASS_BREAK | M3. u32 groupId, f32 x, y, width, height (css px), f32 resolution, u32 flags                                                  |
 | 0x0511 | FILTER_END                   | DRAW+PASS_BREAK | M3. u32 groupId, blendModeId, f32 alpha, u32 count, u32[count] filterIds                                                      |
+| 0x0600 | GFX_SHAPE_BUFFER_ALLOC       |                 | M4. u32 bufferId, capacity (shape instances, 64 B each)                                                                       |
+| 0x0601 | GFX_SHAPE_BUFFER_DESTROY     |                 | M4. u32 bufferId                                                                                                              |
+| 0x0602 | GFX_SHAPE_UPLOAD             |                 | M4. u32 bufferId, first, count, u8[count·64]                                                                                  |
+| 0x0603 | GFX_SHAPE_UPLOAD_SHARED      |                 | M4. u32 bufferId, first, count, sharedId, byteOffset                                                                          |
+| 0x0604 | GFX_NODE_BUFFER_ALLOC        |                 | M4. u32 bufferId, capacity (node records, 32 B each)                                                                          |
+| 0x0605 | GFX_NODE_BUFFER_DESTROY      |                 | M4. u32 bufferId                                                                                                              |
+| 0x0606 | GFX_NODE_UPLOAD              |                 | M4. u32 bufferId, first, count, u8[count·32]                                                                                  |
+| 0x0607 | GFX_NODE_UPLOAD_SHARED       |                 | M4. u32 bufferId, first, count, sharedId, byteOffset                                                                          |
+| 0x0610 | GFX_MESH_UPLOAD              |                 | M4. u32 meshId, vertexCount, indexCount, flags (U32_INDEX=1), u8[vertexCount·12], u16/u32[indexCount] (padded)                |
+| 0x0611 | GFX_MESH_UPLOAD_SHARED       |                 | M4. u32 meshId, vertexCount, indexCount, flags, sharedId, vertexByteOffset, indexByteOffset                                   |
+| 0x0612 | GFX_MESH_DESTROY             |                 | M4. u32 meshId                                                                                                                |
+| 0x0620 | GFX_DRAW_SHAPES              | DRAW            | M4. u32 bufferId, first, count, blendModeId, flags (GfxDrawFlag)                                                              |
+| 0x0621 | GFX_DRAW_MESH                | DRAW            | M4. u32 meshId, firstIndex, indexCount, nodeBufferId, firstNode, nodeCount, texId, blendModeId, flags, f32[6] uv matrix       |
 
 Format ids: `rgba8unorm`=0, `rgba8unorm-srgb`=1, `r8unorm`=2,
 `rgba16float`=3. M2 compressed format ids (names equal the RHI
@@ -332,6 +354,9 @@ owns `srcKind`), `INTERNAL` (non-cozygpu exception, also logged as
   (`src/commands/commands.test.ts`).
 
 ## 4. Memory layouts (normative)
+
+The M4 graphics layouts (shape instance, mesh vertex, node record) are in
+§26 and `src/types/layouts.ts`.
 
 Code: `src/types/layouts.ts`. WGSL structs (and, M2, GLSL std140 blocks
 and attribute layouts) must match. `src/types/layouts.test.ts` asserts
@@ -475,7 +500,7 @@ alpha is below `PICK_ALPHA_THRESHOLD` (0.5) are discarded. Readback is
 
 ## 5. Sprites: scene graph to GPU
 
-Owner: sprites. Files: `src/scene/*`, `src/sprites/front.ts`,
+Files: `src/scene/*`, `src/sprites/front.ts`,
 `src/sprites/core.ts`, `src/math/*`. This section describes M1 as built;
 M2 changes are in §16.
 
@@ -597,7 +622,7 @@ never flushes again.
 
 ## 6. Swarm: GPU simulation
 
-Owner: swarm. Files: `src/swarm/*`, `src/shaders/swarm/*`. This section
+Files: `src/swarm/*`, `src/shaders/swarm/*`. This section
 describes the WebGPU path built in M1; §14 adds WebGL2 and GPU free lists.
 
 ### 6.1 GPU objects per swarm (core)
@@ -861,7 +886,7 @@ and the `onReadbackLanded` callback slot (§19.6).
 
 ## 8. Worker mode
 
-Owner: worker+build (transport, entry, host, encoder and decoder).
+Scope: transport, entry, host, encoder and decoder.
 RenderCore is the same code in both modes.
 
 **Startup** (`createRenderer({ canvas, worker: true })`):
@@ -1153,6 +1178,29 @@ emitter needs and imports nothing, which took 6.5 KB back off the path.
 module that the library entry also reaches statically, unless that module
 is tiny.
 
+**M4 Graphics (2026-10-07).** Graphics is not on the minimal path. Its
+opcodes and layouts first went into `opcodes.ts` / `layouts.ts`, which the
+minimal program loads as shared chunks: every constant a graphics chunk
+imported from them was carried by the minimal program too (+0.27 KB). They
+now live in `src/commands/gfxOpcodes.ts` and `src/types/gfxLayouts.ts`,
+reached only from graphics chunks.
+
+| fixture         | end of M3 | M4 graphics | budget |
+| --------------- | --------- | ----------- | ------ |
+| minimal-webgpu  | 43.6 KB   | 43.7 KB     | 44 KB  |
+| minimal-webgl2  | 45.8 KB   | 45.9 KB     | 46 KB  |
+| graphics-webgpu | —         | 64.4 KB     | 65 KB  |
+| all-exports     | 145.2 KB  | 168.5 KB    | —      |
+| worker-webgpu   | 23.3 KB   | 23.4 KB     | 25 KB  |
+| worker-webgl2   | 25.6 KB   | 25.7 KB     | 26 KB  |
+
+The minimal program's remaining +0.09 KB is the frame-end hook loop in
+`Renderer.ts`, `Context.pickPipelinePending` in `RenderCore.ts` and the
+GRAPHICS lazy system. `mask-core` grew from 5.9 to 6.4 KB with Graphics mask
+geometry (`MaskFlag.EXTERNAL`, `MASK_GEOMETRY_END`, the Graphics-mask front
+path); its budget moved from 6.0 to 6.9 KB by the measured + 0.5 KB rule.
+The Graphics chunks are listed in §26.9.
+
 M2.5 added about 1.3 KB to the minimal path (events, userId, columns,
 picking poll, interop stub). It was recovered without API
 changes: the pick client (`picking.ts`) and the core half of interop
@@ -1245,7 +1293,7 @@ WebGPU `readTexture`.
 
 ## 13. WebGL2 backend (M2)
 
-Owner in M2: webgl2 (M2.5: renderer-hooks). Files: `src/backend/webgl2/**`.
+Files: `src/backend/webgl2/**`.
 This section describes the backend as built. It implements the same RHI
 (`Backend`) so RenderCore and systems do not change; systems branch only
 on capability flags.
@@ -1379,7 +1427,7 @@ feedback; the canvas framebuffer is unaffected.
 
 ## 14. Swarm in M2: WebGL2 and GPU free lists
 
-Owner in M2: swarm (M2.5: swarm-hooks). As built.
+As built.
 
 ### 14.1 Front selection
 
@@ -1617,9 +1665,6 @@ page provider, so sprites batch. Destroying the last handle calls
 
 ## 16. Sprites in M2: bulk API, incremental structure, picking
 
-Owner in M2: sprites (M2.5: scene-hooks for §16.1–§16.2, renderer-hooks for
-the picking modules in §16.3).
-
 ### 16.1 Bulk child transforms
 
 ```ts
@@ -1712,7 +1757,7 @@ in `pickingPipelines.ts` (`pickPipelinesPending`). Behavior:
 
 ## 17. Worker command ring (M2)
 
-Owner: worker+build. Goal: **zero allocations per frame** in worker mode
+Goal: **zero allocations per frame** in worker mode
 (M1: 18–25 KB/frame from transferred buffers, per-packet decoder views and
 `frame` message clones).
 
@@ -1887,6 +1932,8 @@ built.
 | text-msdf       | `src/text/msdf.ts`         | 5.0 KB |
 | text-canvas     | `src/text/canvas.ts`       | 4.0 KB |
 | particles       | `src/particles/emitter.ts` | 5.0 KB |
+
+M4 chunks follow the same rule; their targets are in §26.9.
 
 Each M3 chunk also carries what only it reaches: `mask-core` and
 `filter-core` hold their front half as well as the core system, and
@@ -2282,6 +2329,10 @@ particles were designed for M3: see §21–§24.
   fallback via transform-style ping-pong textures.
 - **Masks and filters in picking** (§21.5): the pick pass ignores both in
   M3, so a pick inside a masked group hits unclipped geometry.
+- **Graphics follow-ups** (§26): filled shapes in the sprite pipeline (a
+  shape flag in `SI_FLAGS`) so they batch with sprites; an anti-aliasing
+  fringe for meshes; the index of the hit shape in `PickHit.instance`;
+  dashed strokes (`GS_RESERVED` is kept for a dash phase); gradient fills.
 - **Text shaping** beyond kerning: no bidi, no complex-script shaping and
   no ligatures. The Canvas2D path inherits whatever the browser does per
   glyph, not per run.
@@ -2851,3 +2902,365 @@ the named module; the call sites stay where they are):
   `canvas`; `layoutText` and `createGlyphSource` are the stubs to replace.
 - `src/particles/Particles.ts` — the shell and `particlePresets`; the
   compiler in `src/particles/emitter.ts` is the stub to replace.
+
+## 26. Graphics (M4)
+
+Files: `src/graphics/**`, `src/shaders/graphics/**`, `examples/graphics/**`,
+the external-geometry path of the mask modules (§26.8), and the demo in
+`site/src/demos/graphics.ts`. Public API: `docs/API.md` "Graphics".
+
+Goal: a Pixi v8-shaped vector API that is faster and leaner than a
+tessellating renderer. The primitives people draw most (rects, rounded
+rects, circles, ellipses, lines, arcs) are never tessellated: each paint of
+one becomes a single 64-byte instance whose edges, fill and stroke are
+evaluated analytically on the GPU. Only true paths take the mesh route, and
+their meshes are cached in context space and shared by every node that
+draws the context.
+
+### 26.1 Shape of the feature
+
+```ts
+const g = new GPU.Graphics({ x: 100, y: 100 });
+g.roundRect(0, 0, 200, 120, 16)
+  .fill({ color: 0x1e293b })
+  .stroke({ width: 4, color: 0x38bdf8 }); // one SDF instance
+g.moveTo(0, 0).bezierCurveTo(60, -80, 140, 80, 200, 0).stroke(0xffffff); // mesh
+stage.addChild(g);
+
+const icon = new GPU.GraphicsContext().circle(0, 0, 8).fill(0xf43f5e);
+for (let i = 0; i < 10_000; i++) stage.addChild(new GPU.Graphics(icon));
+```
+
+`Graphics` is a leaf node (`kind: 'graphics'`, no children) and a
+`CustomDrawable` (§21.4): the packer flushes the open sprite batch and calls
+`_emitDraw` in draw order. Its recording methods forward to its
+`GraphicsContext`; a context passed in is shared, a private one is created
+otherwise.
+
+### 26.2 Recording (normative)
+
+- Shape calls (`rect`, `roundRect`, `circle`, `ellipse`, `poly`,
+  `regularPoly`, `star`) and path calls (`moveTo`, `lineTo`,
+  `quadraticCurveTo`, `bezierCurveTo`, `arc`, `arcTo`, `closePath`) add
+  sub-paths to the **current path**. `fill` and `stroke` paint it; several
+  paints in a row paint the same path; the first shape or path call after a
+  paint starts a new path. `cut()` turns the current path into holes of the
+  most recent paint group (the fill and/or stroke just applied). `beginPath`
+  drops an unpainted path. This is Pixi v8's model. A `cut()` right after a
+  paint (no current path) cuts nothing; a cut applies to every paint of the
+  latest group, and a stroked group also strokes the outlines of its holes.
+- The recording transform (`setTransform`, `translate` / `rotate` /
+  `scale` on a context, `*Transform` on a node, `save` / `restore`) applies
+  to what is recorded after it. Shapes keep their own transform: a rotated
+  rect stays an SDF rect. `translate` / `rotate` / `scale` post-multiply
+  (current × new), as in canvas 2D; Pixi v8's `GraphicsContext`
+  pre-multiplies, so a sequence of them reads in the opposite order there.
+  Stroke widths do not scale with the recording transform (they are divided
+  by `sqrt|det|` of it), on both the SDF and the mesh path.
+- A context records into growable typed arrays: an op stream (`Uint8Array`)
+  and an argument stream (`Float64Array`), plus a style table. Recording
+  never tessellates and never touches the GPU. Every call bumps
+  `version`; nodes compare versions per frame (one integer test).
+- Colours are resolved at record time (`toPackedColor`), so a string is
+  parsed once per call, never per frame.
+- Clear-and-redraw every frame is supported and allocation-free inside the
+  library when styles are numbers or reused objects and the shapes are SDF
+  eligible: `clear()` resets lengths, the arrays keep their capacity.
+
+### 26.3 Choosing the path (normative)
+
+Each paint operation is classified when a frame first draws the context
+after a change. A paint is **SDF** when all of the following hold, and
+**mesh** otherwise:
+
+| condition        | SDF                                                                                                                                                                                             |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| the current path | exactly one sub-path made by `rect`, `roundRect`, `circle` or `ellipse`; or one open `moveTo`+`lineTo` (stroke only); or one `arc` with nothing else in the path (stroke only)                  |
+| holes (`cut`)    | none                                                                                                                                                                                            |
+| texture fill     | none                                                                                                                                                                                            |
+| stroke join      | any: a `RECT` stroke resolves `miter` (Chebyshev distance outside the box; bevel when `miterLimit` < √2), `bevel` (45° clip) and `round` (Euclidean) in the shader; other kinds have no corners |
+| `context.sdf`    | not `false`                                                                                                                                                                                     |
+
+- **Fill + stroke in one instance.** A `fill` followed directly by a
+  `stroke` of the same SDF path becomes one instance with both colours
+  (stroke drawn over fill, as in call order). Stroke-then-fill stays two
+  instances, because the fill must cover the inner half of the stroke.
+- **Shape kinds** (`GfxShapeKind`): `RECT` (corner radius in `GS_P0`, 0 =
+  sharp), `ELLIPSE` (circle when the half extents are equal, which the shader
+  evaluates exactly; a true ellipse uses the standard gradient-normalised
+  approximation, accurate to well under a pixel at AA width), `SEGMENT`
+  (butt, round or square caps), `ARC` (ring sector with caps).
+- **May (optimisation):** an opaque polyline stroke with `join: 'round'`
+  and `cap: 'round'` may be emitted as one `SEGMENT` per edge (capsules
+  union exactly when alpha is 1). Any other polyline goes to the mesh path.
+- Everything else — polygons, stars, curves, `arcTo`, mixed sub-paths,
+  holes, joins on polylines, texture fills — is a **mesh** part.
+
+A context compiles into a list of **parts** in painter's order: runs of SDF
+instances (in context space) and mesh index ranges with their texture and
+uv matrix. Consecutive untextured mesh paints share one index range.
+
+### 26.4 Tessellation (`graphics-tess`)
+
+Pure functions over reused buffers (`src/graphics/tess.ts`), zero
+dependencies, DOM-free:
+
+- **Flattening, adaptive to scale.** With tolerance `tol` (device px,
+  default 0.25) and tessellation scale `s` (device px per context unit),
+  a quadratic uses `n = ceil(sqrt(|p0 − 2p1 + p2| · s / (4·tol)))`
+  (the chord error of `n` equal steps is `|p0 − 2p1 + p2| / (4n²)`)
+  segments, a cubic `n = ceil(sqrt(0.75 · max(|p0 − 2p1 + p2|, |p1 − 2p2 +
+p3|) · s / tol))`, an arc of radius r and sweep θ
+  `n = ceil(|θ| / (2·acos(1 − tol / (r·s))))` (at least 1, capped at 512).
+- **Scale buckets.** `s` is the largest world scale (column norm of the
+  world 2×2, times `resolution`) any node drawing the context had, rounded
+  up to a power of two. A node that needs a finer bucket triggers one
+  re-tessellation; shrinking never does. A context drawn at one scale
+  tessellates exactly once.
+- **Triangulation.** Ear clipping with hole bridging (outer ring first,
+  holes joined to it by their leftmost vertex) and a z-order hash above 80
+  vertices — the earcut algorithm, implemented here from its description.
+  Degenerate and self-intersecting rings are handled best-effort (no throw,
+  possibly missing triangles), as in Pixi.
+- **Strokes.** Per polyline: joins `miter` (falls back to bevel beyond
+  `miterLimit`), `round`, `bevel`; caps `butt`, `round`, `square`; closed
+  rings join at the start; `alignment` offsets the band on closed rings. A
+  stroke is triangles with the stroke colour baked into the vertices.
+  Overlapping parts of one translucent stroke blend twice (as in Pixi).
+- **Output.** `GFX_MESH_VERTEX_BYTES` vertices (x, y in context space,
+  straight RGBA8) and u16 indices (u32 above 65 535 vertices,
+  `GfxMeshFlag.U32_INDEX`).
+- **Anti-aliasing.** Meshes are not analytically anti-aliased; with
+  `antialias: true` MSAA covers them. An edge-fringe pass (1 px alpha ramp
+  generated with the outline) is the planned follow-up and needs no
+  contract change (it only adds vertices).
+
+### 26.5 Core side (`graphics-core`)
+
+`createGraphicsCoreSystem` (`src/graphics/core.ts`, range `0x06`) owns:
+
+- **Shape instance buffers** (`GFX_SHAPE_BUFFER_*`, vertex usage,
+  `stepMode: 'instance'`) and **node record buffers** (`GFX_NODE_*`), both
+  rewritten only by uploads.
+- **Meshes** (`GFX_MESH_UPLOAD*`): a vertex and an index buffer per meshId,
+  grown ×1.5 when too small, never shrunk in place; `GFX_MESH_DESTROY`
+  frees them.
+- **Pipelines**, created async at `init` and on `restore`: SDF shape and
+  mesh, each per blend mode (`normal`, `add`, `multiply`, `screen`), at the
+  main pass' sample count and `caps.canvasFormat`; the stencil-write
+  variants (`GfxDrawFlag.MASK_WRITE`, only where `caps.stencil`); the pick
+  variants (`PICK_TARGET_FORMAT`, sample count 1, writing
+  `vec4u(pickId, 0, 0, 0)`). The normal and pick variants are built at
+  `init` and `restore`, the others on first use; each pick variant is
+  reported through `CoreContext.pickPipelinePending` while it compiles, so
+  a pick issued meanwhile waits instead of missing (§16.3). Shader sources by `caps.shaderLanguage`
+  (`src/shaders/graphics/{shape,mesh}.wgsl`, `*.vert.glsl` / `*.frag.glsl`).
+  A draw whose pipeline is not ready yet is skipped, as the swarm core does.
+- **SDF shader.** The vertex shader expands the unit quad to the half
+  extents plus the outer stroke band plus `GFX_AA_PX`, converted to shape
+  units with the length of the affine's columns (times the View's scale and
+  `dpr`), and passes the shape-space position. The fragment shader computes
+  the signed distance d (negative inside) for the kind, then
+  `fill = aa(−d)`, `stroke = aa(d + strokeIn) − aa(d − strokeOut)` with
+  `aa(x) = clamp(x / fwidth(d) + 0.5, 0, 1)` (fwidth taken before any
+  branching, WGSL uniformity), premultiplies both colours and composites
+  stroke over fill. `PIXEL_LINE` divides the band by the derivative instead
+  of using shape units. Fragments with zero coverage are discarded.
+- **Mesh shader.** `world = node affine × vertex position`;
+  `colour = vertex colour × node colour`, premultiplied; with
+  `GfxDrawFlag.TEXTURED` the colour is multiplied by
+  `texture(uvMatrix × position)` (the uv matrix travels in the draw command
+  and is written to a dynamic-offset uniform, stride 256).
+- **Restore.** After a device loss `restore` recreates the pipelines; every
+  buffer and mesh is gone and the front re-sends them (§26.7). The core
+  keeps no CPU copies.
+
+### 26.6 Front side (`graphics`)
+
+`createGraphicsBinding(node)` (`src/graphics/emit.ts`) is the per-node
+binding; one module-level state per renderer (indexed by `rendererId`)
+holds:
+
+- **Draw-order arenas.** A shape-instance store (`GFX_SHAPE_BYTES` per
+  instance) and a node-record store (`GFX_NODE_BYTES`), each a growable
+  `ArrayBuffer` (a `SharedArrayBuffer` when `frame.useSharedArrayBuffer`)
+  mirrored by one GPU buffer. Every frame the cursor restarts at 0 (first
+  `_emitDraw` with a new `frameId`) and each drawn node takes the next
+  `count` slots. A node whose slot did not move and whose inputs did not
+  change writes nothing; one that moved rewrites its slots. So consecutive
+  Graphics always occupy consecutive slots, and a static scene moves and
+  uploads nothing.
+- **Change detection by value.** Per node: the context `version`, the 6
+  world floats, `worldAlpha`, `tint`, `blendMode`, and the slot start.
+  Any difference rewrites the node's instances: world × shape-local affine
+  (one 2×3 multiply per shape), colours × tint × worldAlpha, pick id from
+  `SceneNode.pickable`. Mesh nodes rewrite one 32-byte record.
+- **Uploads once per frame.** Dirty slots extend a dirty interval per store.
+  The binding registers a `FrontFrameHook` on the renderer once
+  (`frame._addFrameHook`); its `encodeFrameEnd` runs after the pack and
+  emits one `GFX_SHAPE_UPLOAD(_SHARED)` / `GFX_NODE_UPLOAD(_SHARED)` per
+  store for the dirty interval (one `subarray` each), and
+  `GFX_*_BUFFER_ALLOC` + a full upload after growth (×1.5) or a new
+  `generation`. Non-DRAW commands run before the render pass, so uploads
+  encoded after the draws still precede them.
+- **Draw coalescing.** A draw that continues the previous graphics draw is
+  merged into it instead of emitted: same kind, buffer, blend, flags (and
+  for meshes the same mesh range, texture and uv matrix), contiguous slots,
+  and **no DRAW command encoded since** — checked by walking the command
+  headers between the end of the previous graphics draw and
+  `encoder.cursor` (usually none). The merge adds to the count word in
+  place (`GFX_DRAW_SHAPES_COUNT_WORD`, `GFX_DRAW_MESH_COUNT_WORD`, read
+  through `encoder.u32View` at patch time, since the encoder may have
+  grown). So 10 000 Graphics sharing one icon context are one draw, and a
+  chart built from many nodes is a handful of draws.
+- **Meshes per context.** A context's mesh is uploaded once per renderer
+  (its meshId per renderer lives on the context) and re-sent only when the
+  context changed or the scale bucket grew. Mesh ids and buffer ids are
+  allocated by this module (they are private to the graphics core's
+  tables, like mask buffer ids).
+- **Zero allocations per frame** when nothing changed, and when only
+  transforms, alpha or tint change.
+
+Painter's order within a node is kept: a node whose parts are SDF, mesh,
+SDF emits three draws (the first may merge with the previous node, the last
+with the next).
+
+Graphics never share a draw with sprites: they use their own pipelines, so
+a Graphics between two sprites splits the sprite batch exactly like a Swarm
+does. What batches is everything graphics: all shape kinds, fills and
+strokes of all consecutive Graphics nodes. Putting filled shapes into the
+sprite pipeline (a shape flag in `SI_FLAGS`) would let them batch with
+sprites, at the price of sprite-shader bytes on the minimal path; it is
+recorded as a later option (§20), not part of M4.
+
+### 26.7 Loading, worker mode, device loss
+
+- **Chunks.** `Graphics` and `GraphicsContext` (the shell) are in the
+  entry chunk of any program that imports them — recording must be
+  synchronous. Constructing the first `Graphics` imports `graphics`
+  (`emit.ts`), which registers the loader of `graphics-core` for the
+  GRAPHICS range; the first frame that draws asks
+  `frame.isSystemReady(OpcodeRange.GRAPHICS)` (main thread: starts the core
+  import) and draws nothing until it is true. A context with a mesh part
+  imports `graphics-tess`; a node draws nothing until every part of its
+  context is ready, so a shape never appears half drawn. `graphics.ready` resolves when the node can draw;
+  `GPU.loadGraphics()` preloads all three.
+- **Worker mode.** All front work (recording, classification,
+  tessellation, packing) runs on the main thread; the worker bundle only
+  registers the `graphics-core` loader (`src/worker/entry.ts`), and the
+  worker host holds a packet with GRAPHICS commands until that chunk landed
+  (§21.6). Uploads use the `_SHARED` opcodes when `frame.sharedMemory`,
+  inline bytes otherwise.
+- **Device loss.** On a new `frame.generation` the binding state of that
+  renderer re-allocates both stores' GPU buffers, re-uploads them whole and
+  re-sends every live mesh from the context's CPU copy (contexts keep their
+  last tessellation for this and for sharing). `FrontFrameHook`
+  `onRendererDestroyed` drops the renderer's state.
+
+### 26.8 Masks, filters, picking
+
+- **Filters** need nothing: a Graphics inside a filtered `Group` draws into
+  the capture target like any drawable (same format, same sample count).
+- **Graphics as a mask source.** `Graphics` implements `MaskDrawable`
+  (`src/types/core.ts`):
+  - `_maskRect(out)` — one filled unrounded rect, no stroke: the mask
+    front treats it like an unrotated sprite and takes the **scissor** path
+    when the world transform allows (§21.2);
+  - otherwise the mask emits `MASK_PUSH_STENCIL` / `MASK_PUSH_ALPHA` with
+    `MaskFlag.EXTERNAL` and `count = 0`, calls
+    `_emitMaskGeometry(frame, world, offset, stencil)`, then emits
+    `MASK_GEOMETRY_END`.
+    **Stencil** (WebGL2, as §21.2): the mask core sets the reference to the
+    current level and does not draw; the graphics core draws the node with
+    `GfxDrawFlag.MASK_WRITE` (no colour write, compare `equal`, pass
+    `increment-clamp`, coverage < 0.5 discarded); `MASK_GEOMETRY_END` moves
+    the reference to the new level. Invert works as for quad masks.
+    **Alpha** (WebGPU, soft masks): `MASK_PUSH_ALPHA | EXTERNAL` opens a
+    pooled coverage target; the node draws normally into it (its
+    anti-aliased edges become a soft mask); `MASK_GEOMETRY_END`
+    (DRAW+PASS_BREAK) opens the capture target of the subtree; `MASK_POP`
+    composites capture × coverage alpha as today.
+  - A Graphics used as a mask and also drawn takes two arena slots.
+- **Picking.** The graphics core implements `drawPick` for both draw kinds:
+  SDF fragments with coverage ≥ `PICK_ALPHA_THRESHOLD` and every mesh
+  triangle write the node's pick id (bits 8–31 of `GS_FLAGS` / `GN_FLAGS`,
+  0 when `pickable` is false, which is the default for Graphics as for every
+  non-sprite node). A paint with alpha 0 still picks (hit areas): mesh
+  triangles always count, and an SDF instance whose paint has a fill carries
+  `GfxShapeFlag.FILL`, so its fill region picks (and masks) whatever the
+  fill colour's alpha; without the flag only the stroke band does. The pick
+  client resolves `userId` from the node (`PickHit.instance` is −1 for
+  graphics, the texel's instance word being 0).
+
+### 26.9 Budgets
+
+Performance (front CPU per frame, M1-class laptop, both backends):
+
+| case                                                      | target                                    |
+| --------------------------------------------------------- | ----------------------------------------- |
+| 100k static SDF shapes in 1k Graphics                     | < 0.1 ms, 0 bytes uploaded, 0 allocations |
+| 10k Graphics (1 shape each) all moving                    | < 2 ms, one upload, 1 draw                |
+| clear + redraw 10k SDF shapes in one Graphics every frame | < 3 ms, 0 library allocations             |
+| 10k nodes sharing one mesh context, all moving            | < 1.5 ms, 1 draw                          |
+| re-tessellate a 1k-vertex path with stroke                | < 0.5 ms                                  |
+
+Memory: an SDF circle is 64 B of GPU memory whatever its size; a tessellated
+circle at 0.25 px tolerance and radius 100 px is ~70 vertices and ~200
+indices (~1.2 KB) before its stroke. A shared context's mesh is stored once
+per renderer, plus 32 B per node.
+
+`benchmarks/graphics` compares against Pixi v8 Graphics on the same scenes
+(frame time, draw calls, GPU memory, heap growth over 10 s).
+
+Bundle (min+gzip; targets set before the build, then measured and budgeted
+in `scripts/size.mjs` by the §10 rule, measured + ~0.5 KB):
+
+| chunk            | module                        | target                          | measured | budget |
+| ---------------- | ----------------------------- | ------------------------------- | -------- | ------ |
+| graphics         | `src/graphics/emit.ts`        | 5.0 KB (with compile)           | 3.5 KB   | 4.0 KB |
+| graphics-compile | `src/graphics/compile.ts`     | (in graphics)                   | 2.4 KB   | 2.9 KB |
+| graphics-tess    | `src/graphics/tess.ts`        | 5.0 KB                          | 6.8 KB   | 7.3 KB |
+| graphics-core    | `src/graphics/core.ts`        | 6.5 KB (both shader languages)  | 3.2 KB   | 3.8 KB |
+| graphics-wgsl    | `src/graphics/shadersWGSL.ts` | (in graphics-core)              | 2.0 KB   | 2.5 KB |
+| graphics-glsl    | `src/graphics/shadersGLSL.ts` | (in graphics-core)              | 1.8 KB   | 2.3 KB |
+| shell            | `Graphics.ts` + context       | 2.5 KB, in the importer's entry | ~2.8 KB  | —      |
+
+`graphics-compile` is the recording compiler shared by `graphics` and
+`graphics-tess`; the shader chunks load one per backend, so a WebGPU
+program loads core + WGSL (5.2 KB) and a WebGL2 one core + GLSL (5.0 KB).
+`graphics-tess` is over its target: earcut ~2.5 KB, flattening ~1.9 KB,
+the stroker ~1.5 KB, the mesh builder ~1.7 KB (measured separately). The
+`graphics-webgpu` fixture (the minimal WebGPU program plus a Graphics with
+every graphics chunk it loads) measures 64.4 KB against a 65 KB budget, the
+minimal program plus 20.7 KB.
+
+The minimal program must not grow: no graphics module may be imported
+statically from the minimal path, and the graphics-only constants live in
+`src/commands/gfxOpcodes.ts` and `src/types/gfxLayouts.ts`, which only the
+graphics chunks import. (Every constant a lazily loaded chunk imports from
+a module the minimal program also uses lands in a chunk on the minimal
+path; `opcodes.ts` / `layouts.ts` holding them cost the minimal program
+about 0.27 KB.)
+
+### 26.10 M4 contract additions
+
+| file                          | additions                                                                                                                                                                                                                                                                                    |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/commands/opcodes.ts`     | `PROTOCOL_VERSION` 5; `OpcodeRange.GRAPHICS`; `MaskOp.MASK_GEOMETRY_END`; `MaskFlag.EXTERNAL`                                                                                                                                                                                                |
+| `src/commands/gfxOpcodes.ts`  | `GfxOp`; `GFX_DRAW_SHAPES_COUNT_WORD`, `GFX_DRAW_MESH_COUNT_WORD`, `GFX_DRAW_*_BYTES`; `GfxDrawFlag`, `GfxMeshFlag`; `GfxOpcode`                                                                                                                                                             |
+| `src/types/gfxLayouts.ts`     | `GFX_SHAPE_BYTES` + `GS_*`, `GfxShapeKind`, `GFX_KIND_MASK`, `GfxShapeFlag` (incl. `FILL`), `GFX_AA_PX`; `GFX_MESH_VERTEX_BYTES` + `GMV_*`; `GFX_NODE_BYTES` + `GN_*`                                                                                                                        |
+| `src/types/core.ts`           | `MaskDrawable`, `isMaskDrawable`; `FrontFrame._addFrameHook?`; `FrontFrameHook.encodeFrameEnd?`; `CoreContext.pickPipelinePending?`                                                                                                                                                          |
+| `src/scene/types.ts`          | `NodeKind` gains `'graphics'`                                                                                                                                                                                                                                                                |
+| `src/graphics/types.ts` (new) | `FillStyle`, `StrokeStyle`, `LineJoin`, `LineCap`, `PolygonPoints`, `Affine2D`, `GraphicsBounds`, `GraphicsInfo`, `GraphicsContextOptions`, `GraphicsBuilder`, `GraphicsContextApi`, `GraphicsOptions`, `GraphicsDestroyOptions`, `GraphicsNode`, `GraphicsBinding`, `CreateGraphicsBinding` |
+| `src/index.ts`                | values `Graphics`, `GraphicsContext`, `loadGraphics`; the matching types                                                                                                                                                                                                                     |
+
+Wiring: `src/renderer/systems.ts` (a `LazyCoreSystem` for GRAPHICS),
+`src/worker/entry.ts` (its loader and lazy range), `src/renderer/Renderer.ts`
+(`Frame._addFrameHook`, the `encodeFrameEnd` loop after the pack),
+`src/renderer/RenderCore.ts` (`Context.pickPipelinePending` over the
+§16.3 pending registry), `src/graphics/Graphics.ts` (the node shell:
+options, context sharing, forwarding, chunk load, `CustomDrawable` and
+`MaskDrawable` delegating to the binding), `src/graphics/emit.ts` (core
+loader registration, `loadTess`, `preloadGraphics`), `src/masks/alpha.ts`
+(`beginExternal` / `endExternal` and a coverage target per level for
+Graphics soft masks).

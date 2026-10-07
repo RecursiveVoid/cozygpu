@@ -1,5 +1,5 @@
 /**
- * Owner: "backend". TEST-ONLY recording implementation of the RHI Backend.
+ * TEST-ONLY recording implementation of the RHI Backend.
  * Every call is appended to `calls` as a short string so tests can assert
  * ordering (execute → compute → draw → submit). Not part of the library.
  */

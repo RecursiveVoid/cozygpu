@@ -93,7 +93,7 @@ function loadGrowthRows(): { growthRows: GrowthRows; slack: number } {
 }
 
 describe('size budgets (decided 2026-09-18, minimal re-measured at the end of M3)', () => {
-  it('fixture budgets: 44 KB WebGPU, 46 KB WebGL2, workers 25/26 KB, all-exports reported only', () => {
+  it('fixture budgets: 44 KB WebGPU, 46 KB WebGL2, workers 25/26 KB, graphics 65 KB, all-exports reported only', () => {
     const byId = Object.fromEntries(tables.fixtures.map(f => [f.id, f]));
     // End of M3: the four features cost the minimal program about 2.6 KB —
     // roughly half real code on the minimal path (the cheap-effect routing in
@@ -105,6 +105,8 @@ describe('size budgets (decided 2026-09-18, minimal re-measured at the end of M3
     expect(byId['minimal-webgl2'].budget).toBe(46_000);
     expect(byId['worker-webgpu'].budget).toBe(25_000);
     expect(byId['worker-webgl2'].budget).toBe(26_000);
+    // M4: the minimal WebGPU program plus Graphics and every graphics chunk.
+    expect(byId['graphics-webgpu'].budget).toBe(65_000);
     expect(byId['all-exports'].budget).toBeNull();
     // The all-exports build is where the feature chunks are measured.
     expect(byId['all-exports'].dynamic).toBe('all');

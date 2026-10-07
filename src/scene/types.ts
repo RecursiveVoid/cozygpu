@@ -17,7 +17,7 @@ import type { Filter, FilterOptions } from '../filters/types';
 import type { MaskTarget } from '../masks/types';
 import type { FrontFrame } from '../types/core';
 
-export type NodeKind = 'container' | 'sprite' | 'swarm' | 'group';
+export type NodeKind = 'container' | 'sprite' | 'swarm' | 'group' | 'graphics';
 
 export interface NodeOptions {
   label?: string;

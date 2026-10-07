@@ -1,5 +1,5 @@
 /**
- * Owner: "renderer-hooks" (M2.5; was "sprites"). Core half of GPU picking
+ * Core half of GPU picking
  * (ARCHITECTURE §16.3, §19.6). DOM-free. Loaded on the first PICK command by
  * the proxy in pickingCore.ts; RenderCore calls `request` (execute phase),
  * `render` (after the main pass, same CommandList), `poll` (start of every

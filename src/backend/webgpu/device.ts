@@ -1,5 +1,5 @@
 /**
- * Owner: "backend". Adapter + device acquisition and capability detection.
+ * Adapter + device acquisition and capability detection.
  * DOM-free (runs in a worker): uses `globalThis.navigator` only.
  */
 import { CozyGPUError } from '../../types/errors';

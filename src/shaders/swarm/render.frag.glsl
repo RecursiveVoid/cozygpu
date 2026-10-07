@@ -1,4 +1,4 @@
-// cozygpu swarm fragment programs (WebGL2). Owner: "swarm".
+// cozygpu swarm fragment programs (WebGL2).
 // MAIN is either the color output (premultiplied) or the pick output
 // (uvec4(pickId, slot + 1, user, 0) into the rgba32uint pick target).
 

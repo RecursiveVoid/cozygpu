@@ -1,5 +1,5 @@
 /**
- * Owner: "renderer-hooks" (M2.5; was "sprites"). Front half of GPU picking
+ * Front half of GPU picking
  * (ARCHITECTURE §16.3, §19.3). Renderer.ts creates one client per renderer
  * and calls:
  *   - `pick(x, y)` from renderer.pick()

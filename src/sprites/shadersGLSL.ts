@@ -1,5 +1,5 @@
 /**
- * Owner: "sprites". Sprite GLSL (ARCHITECTURE §13.3), loaded by core.ts with
+ * Sprite GLSL (ARCHITECTURE §13.3), loaded by core.ts with
  * a dynamic import on WebGL2 only, so WebGPU programs do not carry it.
  */
 import spriteFragGLSL from '../shaders/sprite/sprite.frag.glsl';

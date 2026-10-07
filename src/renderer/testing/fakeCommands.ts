@@ -1,5 +1,5 @@
 /**
- * Owner: "backend". TEST-ONLY minimal implementations of the command stream
+ * TEST-ONLY minimal implementations of the command stream
  * contracts (src/commands/types.ts), used to test RenderCore / Renderer in
  * isolation from the worker owner's encoder. Not part of the library.
  * Follows ARCHITECTURE §3 byte rules (16 B packet header, 8 B command header,

@@ -1,4 +1,4 @@
-// cozygpu swarm GLSL ES 3.0 prelude (WebGL2). Owner: "swarm".
+// cozygpu swarm GLSL ES 3.0 prelude (WebGL2).
 // Mirrors prelude.wgsl; the composer puts `#version 300 es` (and defines)
 // in front. Naming follows ARCHITECTURE §13.3: uniform blocks G{group}_B{binding}.
 precision highp float;

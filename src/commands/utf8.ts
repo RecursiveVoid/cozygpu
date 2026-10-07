@@ -1,4 +1,4 @@
-/** Owner: "worker". Shared UTF-8 helpers for the command stream (lazy, one instance per thread). */
+/** Shared UTF-8 helpers for the command stream (lazy, one instance per thread). */
 
 let encoder: TextEncoder | null = null;
 let decoder: TextDecoder | null = null;

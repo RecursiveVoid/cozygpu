@@ -1,4 +1,4 @@
-// Showcase page controller: one stage, six demos, each loaded on demand.
+// Showcase page controller: one stage, seven demos, each loaded on demand.
 // Every demo gets a fresh canvas (a canvas keeps the first context type it
 // was given, so switching between WebGPU and WebGL2 needs a new one).
 import type { BackendChoice, DemoHandle, DemoStart } from './demos/types';
@@ -42,6 +42,18 @@ const DEMOS: DemoDef[] = [
     stops: [1_000, 5_000, 10_000, 25_000, 50_000, 100_000, 200_000, 300_000],
     unit: 'count',
     defaultIndex: mobile => (mobile ? 2 : 5),
+  },
+  {
+    id: 'graphics',
+    title: 'Graphics',
+    blurb:
+      'Vector shapes with a Pixi-style API. Circles, rounded rects, arcs and lines are drawn analytically on the GPU, one 64-byte instance each, so thousands can be redrawn every frame; curves, stars and holes are tessellated once and reused.',
+    hint: 'The slider sets how many shapes are redrawn every frame. The gauges and the chart are live; the emblems are cached meshes.',
+    source: 'examples/graphics/main.ts',
+    load: () => import('./demos/graphics'),
+    stops: [1_000, 2_500, 5_000, 10_000, 20_000, 40_000],
+    unit: 'count',
+    defaultIndex: mobile => (mobile ? 1 : 2),
   },
   {
     id: 'particles',

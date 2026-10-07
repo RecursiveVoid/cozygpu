@@ -1,5 +1,5 @@
 /**
- * Owner: "webgl2". RHI resource wrappers around WebGL2 objects. The RHI
+ * RHI resource wrappers around WebGL2 objects. The RHI
  * interfaces are GL-type free; these classes are cast back inside the WebGL2
  * backend only. Every object dies with its context: after a context loss
  * callers recreate everything (same contract as a WebGPU device loss).

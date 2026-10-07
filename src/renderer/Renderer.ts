@@ -1,5 +1,5 @@
 /**
- * Owner: "renderer-hooks" (M2.5). Public Renderer (front side, always on the
+ * Public Renderer (front side, always on the
  * main thread).
  *
  * render() follows ARCHITECTURE §2 "Frame lifecycle": skip when the transport
@@ -125,6 +125,11 @@ class Frame implements FrontFrame {
    */
   _emit<K extends EventName>(name: K, payload: Events[K]): void {
     this.owner._emit(name, payload);
+  }
+
+  /** @internal M4 (ARCHITECTURE §26.6). Optional on FrontFrame consumers. */
+  _addFrameHook(hook: FrontFrameHook): () => void {
+    return this.owner._addFrameHook(hook);
   }
 
   registerShared(buffer: ArrayBuffer | SharedArrayBuffer): number {
@@ -333,6 +338,7 @@ export class RendererImpl implements Renderer, RendererHost {
       this.pickClient?.encode(frame);
       flushSwarmDestroys(frame);
       this.packer.pack(this.stage, frame);
+      for (let i = 0; i < hooks.length; i++) hooks[i].encodeFrameEnd?.(frame);
       encoder.begin(Op.FRAME_END, 0);
       encoder.end();
     } finally {

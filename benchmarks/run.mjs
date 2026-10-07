@@ -8,7 +8,7 @@
  * Options
  *   --label <name>        results/<name>.json (default: ISO timestamp)
  *   --filter <regex>      only cases whose id matches, e.g. "pixi|three"
- *   --scenarios <list>    s1,s1b,s2,s3,a1,a2,a3,t1,f1,m1m,p1 (default all; S4 is
+ *   --scenarios <list>    s1,s1b,s2,s3,a1,a2,a3,t1,f1,m1m,p1,g1,g2,g3,g4 (default all; S4 is
  *                         derived from S3; a1 = a1png + a1ktx2; m1m = m1ms +
  *                         m1mt + m1ma, one per mask path)
  *   --counts <list>       override object counts, e.g. 1000,50000 (debugging)
@@ -52,7 +52,7 @@ const LOAD_START = os.loadavg();
 const cfg = {
   label: opt('label', new Date().toISOString().replace(/[:.]/g, '-')),
   filter: opt('filter', null),
-  scenarios: opt('scenarios', 's1,s1b,s2,s3,a1,a2,a3,t1,f1,m1m,p1')
+  scenarios: opt('scenarios', 's1,s1b,s2,s3,a1,a2,a3,t1,f1,m1m,p1,g1,g2,g3,g4')
     .split(',')
     .flatMap(k =>
       k === 'a1'
@@ -313,6 +313,38 @@ const SCENARIOS = {
     counts: [500_000],
     kind: 'churn',
     engines: M3_BACKENDS('auto', ['particle']),
+  },
+  g1: {
+    id: 'graphics-static',
+    title:
+      'G1 — N static Graphics nodes, mixed shapes (rect, circle + stroke, round rect, star + stroke)',
+    counts: [10_000],
+    kind: 'm3',
+    engines: M3_BACKENDS('auto', ['graphics']),
+  },
+  g2: {
+    id: 'graphics-animated',
+    title:
+      'G2 — the G1 nodes, every node moved and rotated each frame (transform only)',
+    counts: [10_000],
+    kind: 'm3',
+    engines: M3_BACKENDS('auto', ['graphics']),
+  },
+  g3: {
+    id: 'graphics-redraw',
+    title:
+      'G3 — N Graphics nodes cleared and redrawn every frame (shape sizes change)',
+    counts: [1_000],
+    kind: 'm3',
+    engines: M3_BACKENDS('auto', ['graphics']),
+  },
+  g4: {
+    id: 'graphics-path',
+    title:
+      'G4 — one curved path (96 quadratic segments, fill + stroke) with N holes via cut(), rebuilt every frame',
+    counts: [100],
+    kind: 'm3',
+    engines: M3_BACKENDS('auto', ['graphics']),
   },
 };
 const SCENARIO_BY_ID = Object.fromEntries(

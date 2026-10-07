@@ -1,5 +1,5 @@
 /**
- * Owner: "worker+build". Encoder / decoder behavior with command-ring
+ * Encoder / decoder behavior with command-ring
  * SharedArrayBuffer slots (ARCHITECTURE §3.6, §17).
  */
 import { CommandFlag, Op, createCommandDecoder, createCommandEncoder } from '.';

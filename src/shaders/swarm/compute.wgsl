@@ -1,4 +1,4 @@
-// cozygpu swarm compute template. Owner: "swarm".
+// cozygpu swarm compute template.
 // The composer (src/swarm/composer.ts) prepends prelude.wgsl and replaces the
 // `//@...` marker lines. Entries: cs_step, cs_spawn, cs_spawn_pop, cs_kill,
 // cs_count, cs_free_init (+ cs_cull when culling or allocation 'gpu').

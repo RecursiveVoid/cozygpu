@@ -1,5 +1,5 @@
 /**
- * Owner: "swarm". CPU mirror of the behavior params uniform + Behavior
+ * CPU mirror of the behavior params uniform + Behavior
  * handles. `set()` writes typed-array slots and marks the mirror dirty; the
  * Swarm emits one SWARM_SET_PARAMS per frame when dirty.
  */

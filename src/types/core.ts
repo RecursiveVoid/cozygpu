@@ -85,6 +85,13 @@ export interface FrontFrame {
    * (ARCHITECTURE §17, §21.6).
    */
   isSystemReady(range: number): boolean;
+  /**
+   * M4 (ARCHITECTURE §26.6). `RendererHost._addFrameHook` of the renderer
+   * encoding this frame, for front modules that only ever see frames (the
+   * Graphics binding registers its per-renderer hook here, once). Optional:
+   * test frames need not implement it.
+   */
+  _addFrameHook?(hook: FrontFrameHook): () => void;
 }
 
 /**
@@ -94,6 +101,13 @@ export interface FrontFrame {
  */
 export interface FrontFrameHook {
   encodeFrame(frame: FrontFrame): void;
+  /**
+   * M4 (ARCHITECTURE §26.6). After the scene is packed, before FRAME_END.
+   * For non-DRAW commands that depend on what the pack wrote (the Graphics
+   * arena uploads): RenderCore executes every non-DRAW command of a packet
+   * before its render pass, so they still precede the draws that read them.
+   */
+  encodeFrameEnd?(frame: FrontFrame): void;
   /** After `deviceRestored` (generation already bumped): re-upload GPU-only data. */
   onDeviceRestored?(): void;
   /** Renderer destroyed: drop GPU bookkeeping (the core is gone). */
@@ -117,7 +131,7 @@ export interface RendererHost {
   _emit<K extends EventName>(name: K, payload: Events[K]): void;
 }
 
-/** Owner: "sprites" (src/sprites/front.ts → createScenePacker). */
+/** */
 export interface ScenePacker {
   /**
    * Walks `stage` in draw order: updates dirty world transforms, packs sprite
@@ -183,6 +197,45 @@ export function isRenderGroup(node: unknown): node is RenderGroup {
   );
 }
 
+/**
+ * M4 (ARCHITECTURE §26.8). A node that can draw its own geometry as mask
+ * geometry, so a mask uses its exact shape instead of quads. Implemented by
+ * `Graphics`; read by the mask front (`src/masks/mask.ts`) when such a node is
+ * a mask source.
+ */
+export interface MaskDrawable {
+  /**
+   * @internal When the node's geometry is exactly one filled, unrounded rect
+   * (no stroke, no hole), writes it as x, y, width, height in LOCAL space to
+   * `out[0..3]` and returns true; the mask then resolves to a scissor when
+   * the world transform has no rotation/skew. False otherwise.
+   */
+  _maskRect(out: Float32Array): boolean;
+  /**
+   * @internal Emits the node's draws as mask geometry with the given world
+   * transform, between the mask's MASK_PUSH_* (MaskFlag.EXTERNAL) and
+   * MASK_GEOMETRY_END. `stencil` true: draws carry GfxDrawFlag.MASK_WRITE;
+   * false (alpha mask): ordinary draws into the coverage target. Returns
+   * false when nothing can be drawn yet (chunk or core system loading); the
+   * mask then skips the group this frame (§21.4).
+   */
+  _emitMaskGeometry(
+    frame: FrontFrame,
+    world: Float32Array,
+    worldOffset: number,
+    stencil: boolean,
+  ): boolean;
+}
+
+export function isMaskDrawable(node: unknown): node is MaskDrawable {
+  return (
+    typeof node === 'object' &&
+    node !== null &&
+    typeof (node as { _emitMaskGeometry?: unknown })._emitMaskGeometry ===
+      'function'
+  );
+}
+
 // ─── CORE side ────────────────────────────────────────────────────────────────
 
 export interface CoreInitOptions {
@@ -234,6 +287,15 @@ export interface CoreContext {
    * provide it; RenderCore always does. Do not mutate it.
    */
   readonly mainPass?: RenderPassDesc;
+  /**
+   * M4 (ARCHITECTURE §26.5). A system's pick pipeline started (`1`) or
+   * finished (`-1`, resolved or failed) compiling. While any is pending the
+   * picking core keeps its requests queued instead of reading back a pass
+   * that skipped draws. Lets lazily loaded systems report it without
+   * importing the picking modules. Optional so test contexts need not
+   * provide it; RenderCore always does.
+   */
+  pickPipelinePending?(delta: 1 | -1): void;
   post(message: CoreMessage, transfer?: Transferable[]): void;
 }
 
@@ -325,8 +387,7 @@ export interface PickReplay {
 }
 
 /**
- * Owner: "sprites" (src/renderer/pickingCore.ts → createCorePicking).
- * RenderCore calls it; it owns the 1×1 pick target, the pick View uniforms
+ *  * RenderCore calls it; it owns the 1×1 pick target, the pick View uniforms
  * and the readbacks. DOM-free.
  */
 export interface CorePicking {
@@ -356,7 +417,7 @@ export interface CorePicking {
 }
 
 /**
- * Owner: "sprites" (src/renderer/picking.ts → createPickClient). Front half of
+ * Front half of
  * `renderer.pick()`; the Renderer forwards 'pick' messages to it.
  */
 export interface PickClient {
@@ -369,7 +430,7 @@ export interface PickClient {
   rejectAll(code: 'DEVICE_LOST' | 'DESTROYED', message: string): void;
 }
 
-/** Owner: "backend" (src/renderer/RenderCore.ts → createRenderCore). */
+/** */
 export interface RenderCore {
   readonly caps: Backend['caps'];
   /** M2. Why `backend: 'auto'` fell back to WebGL2, when it did (§13.5). */

@@ -1,5 +1,5 @@
 /**
- * Owner: "worker+build". Build-time WGSL / GLSL minifier (ARCHITECTURE §18.2).
+ * Build-time WGSL / GLSL minifier (ARCHITECTURE §18.2).
  *
  * Used by rollup.config.cjs (before rollup-plugin-string) and by
  * scripts/size.mjs. Jest keeps loading the raw sources.

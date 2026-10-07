@@ -1,5 +1,5 @@
 /**
- * Owner: "worker+build". Build-time shader minifier (ARCHITECTURE §18.2),
+ * Build-time shader minifier (ARCHITECTURE §18.2),
  * implemented in scripts/shader-minify.cjs. Lives here because Jest only
  * scans src/ and benchmarks/.
  */

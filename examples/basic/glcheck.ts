@@ -1,4 +1,4 @@
-// Owner: "webgl2". In-browser self-test of the WebGL2 backend
+// In-browser self-test of the WebGL2 backend
 // (/examples/basic/?mode=glcheck). Every check writes 'ok' or a failure
 // message to __basic.checks; __basic.done flips when all ran. Also usable in
 // a worker-less headless run: no DOM besides one canvas.

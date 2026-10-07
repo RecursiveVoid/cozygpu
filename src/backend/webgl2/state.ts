@@ -1,5 +1,5 @@
 /**
- * Owner: "webgl2". Redundant-call filter for WebGL2 state. WebGL executes
+ * Redundant-call filter for WebGL2 state. WebGL executes
  * immediately, so every pass and upload goes through this cache; `reset()`
  * after a context restore (or whenever GL state is changed behind its back).
  * Steady state allocates nothing.

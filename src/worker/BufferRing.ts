@@ -1,4 +1,4 @@
-/** Owner: "worker". Fixed-size FIFO of recycled packet buffers (no allocation after construction). */
+/** Fixed-size FIFO of recycled packet buffers (no allocation after construction). */
 
 /** ARCHITECTURE §3.6: the packet buffer pool holds up to 3 buffers. */
 export const PACKET_POOL_SIZE = 3;

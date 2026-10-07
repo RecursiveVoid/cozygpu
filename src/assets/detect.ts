@@ -1,5 +1,5 @@
 /**
- * Owner: "assets". Pure format detection (ARCHITECTURE §15.2): the URL
+ * Pure format detection (ARCHITECTURE §15.2): the URL
  * extension gives a first guess, the first bytes confirm or override it.
  * Kept compact: the `renderer.assets` proxy imports it statically.
  */

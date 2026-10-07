@@ -1,5 +1,5 @@
 /**
- * Owner: "assets". Intrusive doubly linked LRU list: `touch` moves a node to
+ * Intrusive doubly linked LRU list: `touch` moves a node to
  * the most-recently-used end in O(1) without allocating (it runs from
  * `TextureProvider.upload`, i.e. per drawn texture per frame).
  */

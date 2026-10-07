@@ -9,14 +9,17 @@
  * Float32Array / Uint32Array views can be taken without copying.
  */
 
+import type { GfxOpcode } from './gfxOpcodes';
+
 /**
  * 2 = M2 (new 0x01 texture/pick opcodes, SWARM_SET_PICK).
  * 3 = M2.5 (SWARM_SET_SOURCE; the pick texel is rgba32uint with a user id).
  * 4 = M3 (mask 0x04 and filter 0x05 ranges, PASS_BREAK, sprite effects,
  *     SWARM_SET_CURVES).
+ * 5 = M4 (graphics 0x06 range, MASK_GEOMETRY_END + MaskFlag.EXTERNAL).
  * Front and worker bundle must match.
  */
-export const PROTOCOL_VERSION = 4;
+export const PROTOCOL_VERSION = 5;
 /** 'CZG1' read as little-endian u32. */
 export const PACKET_MAGIC = 0x3147_5a43;
 
@@ -58,7 +61,8 @@ export const OpcodeRange = {
   SWARM: 0x03, // swarm (swarm)
   MASK: 0x04, // M3 masks: scissor, stencil, alpha (masking)
   FILTER: 0x05, // M3 filter chains and render targets (filters)
-  // 0x06–0x7f reserved for future first-party systems
+  GRAPHICS: 0x06, // M4 vector shapes: SDF shape instances and meshes
+  // 0x07–0x7f reserved for future first-party systems
   EXTENSION: 0x80, // 0x80–0xff third-party / experimental
 } as const;
 
@@ -239,6 +243,15 @@ export const MaskOp = {
    * u32 maskId — pops the innermost mask pushed with the same id.
    */
   MASK_POP: 0x0418,
+  /**
+   * M4 (ARCHITECTURE §26.8). DRAW, + PASS_BREAK for an alpha mask.
+   * u32 maskId. Ends the mask geometry that another system drew after a
+   * MASK_PUSH_STENCIL / MASK_PUSH_ALPHA carrying MaskFlag.EXTERNAL (a
+   * Graphics used as a mask): a stencil mask takes the incremented reference
+   * from here on; an alpha mask leaves its coverage target and opens the
+   * capture target of the subtree.
+   */
+  MASK_GEOMETRY_END: 0x0419,
 } as const;
 
 /** M3 filter opcodes (ARCHITECTURE §22). Own table, see `MaskOp`. */
@@ -274,6 +287,12 @@ export const MaskFlag = {
   INVERT: 1 << 0,
   /** Mask texels below `threshold` are transparent (stencil/alpha masks). */
   ALPHA_TEST: 1 << 1,
+  /**
+   * M4 (ARCHITECTURE §26.8). MASK_PUSH_STENCIL / MASK_PUSH_ALPHA with
+   * count 0: the mask geometry is drawn by the DRAW commands of another
+   * system that follow, up to MASK_GEOMETRY_END.
+   */
+  EXTERNAL: 1 << 2,
 } as const;
 
 /** M3. FILTER_DEFINE / FILTER_BEGIN flags. */
@@ -304,7 +323,8 @@ export const SwarmSourceFlag = {
 export type Opcode =
   | (typeof Op)[keyof typeof Op]
   | (typeof MaskOp)[keyof typeof MaskOp]
-  | (typeof FilterOp)[keyof typeof FilterOp];
+  | (typeof FilterOp)[keyof typeof FilterOp]
+  | GfxOpcode;
 
 export function opcodeRange(opcode: number): number {
   return opcode >>> 8;

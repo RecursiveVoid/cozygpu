@@ -1,5 +1,5 @@
 /**
- * Owner: "sprites". Incremental structure pass of the ScenePacker
+ * Incremental structure pass of the ScenePacker
  * (ARCHITECTURE §16.2), split out of front.ts and loaded with a dynamic
  * import the first time the scene structure changes after the first frame
  * (see `loadPatcher` in front.ts). Until it lands, structure changes take the

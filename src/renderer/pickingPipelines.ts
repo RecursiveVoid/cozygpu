@@ -1,5 +1,5 @@
 /**
- * Owner: "sprites". Pick pipeline readiness per core (ARCHITECTURE §16.3).
+ * Pick pipeline readiness per core (ARCHITECTURE §16.3).
  * DOM-free.
  *
  * Systems create their pick pipelines lazily, on their first `drawPick`

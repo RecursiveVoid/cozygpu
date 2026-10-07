@@ -1,5 +1,5 @@
 /**
- * Owner: "swarm". GLSL ES 3.0 swarm composer (WebGL2 transform feedback,
+ * GLSL ES 3.0 swarm composer (WebGL2 transform feedback,
  * ARCHITECTURE §14.2). `installGlslComposer()` registers it with
  * `composeSwarmShaders(…, 'glsl300es')` (an explicit call, not an import side
  * effect, so `sideEffects`-aware bundlers keep it). Swarm loads this module

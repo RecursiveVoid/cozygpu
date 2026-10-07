@@ -1,5 +1,5 @@
 /**
- * Owner: "webgl2" (M2; was "backend"). Backend-agnostic helpers shared by RHI
+ * Backend-agnostic helpers shared by RHI
  * implementations and the core.
  */
 import type { TextureFormat } from './types';

@@ -43,6 +43,7 @@
         <ul class="pills" aria-label="Highlights">
           <li>WebGPU, then WebGL2</li>
           <li>Sprites · Swarm · Particles</li>
+          <li>Vector graphics</li>
           <li>MSDF text</li>
           <li>Filters &amp; masks</li>
           <li>Worker mode</li>
@@ -148,6 +149,14 @@
             </p>
           </article>
           <article>
+            <h3>Graphics</h3>
+            <p>
+              Rects, circles, arcs, lines, curves and paths with holes, in a
+              Pixi-style API. Simple shapes are drawn analytically, one small
+              instance each; paths are tessellated once and shared.
+            </p>
+          </article>
+          <article>
             <h3>Swarm</h3>
             <p>
               GPU-resident objects with composable behaviors: velocity, gravity,
@@ -179,6 +188,14 @@
             </p>
           </article>
           <article>
+            <h3>Assets &amp; picking</h3>
+            <p>
+              PNG, WebP and compressed KTX2 textures, atlases and bundles. GPU
+              picking returns the exact node under the pointer, following each
+              shape's real outline.
+            </p>
+          </article>
+          <article>
             <h3>Worker mode</h3>
             <p>
               Move the whole GPU side into a worker with one option. The scene
@@ -192,9 +209,9 @@
       <section id="numbers" class="numbers wrap" aria-labelledby="numbers-h">
         <h2 id="numbers-h">Headline numbers</h2>
         <p class="lede small">
-          From the repository's benchmark suite (run <code>m25-final</code>, 19
-          September 2026). Lower is better in every chart; cozygpu is
-          highlighted.
+          From the repository's benchmark suite (runs <code>m25-final</code>, 19
+          September 2026, and <code>m4-graphics</code>, 7 October 2026). Lower
+          is better in every chart; cozygpu is highlighted.
         </p>
 
         <div class="stats">
@@ -257,6 +274,35 @@
               <span class="name">three · WebGL (InstancedMesh)</span>
               <span class="bar" style="--v: 100%"></span>
               <span class="val">25.77 ms · 38.8 fps</span>
+            </li>
+          </ol>
+        </figure>
+
+        <figure class="chart">
+          <figcaption>
+            Graphics, 10,000 moving circles redrawn every frame: average frame
+            time
+          </figcaption>
+          <ol class="bars">
+            <li class="me">
+              <span class="name">cozygpu · WebGL2 (SDF shapes)</span>
+              <span class="bar" style="--v: 8.4%"></span>
+              <span class="val">2.05 ms · 486.9 fps</span>
+            </li>
+            <li class="me">
+              <span class="name">cozygpu · WebGPU (SDF shapes)</span>
+              <span class="bar" style="--v: 9.7%"></span>
+              <span class="val">2.35 ms · 425.5 fps</span>
+            </li>
+            <li>
+              <span class="name">pixi · WebGL (Graphics)</span>
+              <span class="bar" style="--v: 92%"></span>
+              <span class="val">22.41 ms · 44.6 fps</span>
+            </li>
+            <li>
+              <span class="name">pixi · WebGPU (Graphics)</span>
+              <span class="bar" style="--v: 100%"></span>
+              <span class="val">24.35 ms · 41.1 fps</span>
             </li>
           </ol>
         </figure>

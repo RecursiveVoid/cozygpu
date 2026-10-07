@@ -1,5 +1,5 @@
 /**
- * Owner: "webgl2". GLSL ES 3.0 program compile + link (ARCHITECTURE §13.3).
+ * GLSL ES 3.0 program compile + link (ARCHITECTURE §13.3).
  *
  * - Async: with KHR_parallel_shader_compile the link status is polled via
  *   COMPLETION_STATUS_KHR, otherwise the (blocking) status query runs in a

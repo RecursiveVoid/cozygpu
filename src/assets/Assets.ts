@@ -1,5 +1,5 @@
 /**
- * Owner: "assets". M2 asset manager (ARCHITECTURE §15). Loaded lazily through
+ * M2 asset manager (ARCHITECTURE §15). Loaded lazily through
  * ./proxy.ts (`renderer.assets`) or used directly as
  * `new GPU.Assets(renderer, options)`.
  *

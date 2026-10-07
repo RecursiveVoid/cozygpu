@@ -1,4 +1,4 @@
-// cozygpu swarm spawn programs (WebGL2 transform feedback). Owner: "swarm".
+// cozygpu swarm spawn programs (WebGL2 transform feedback).
 // No inputs: gl_VertexID runs over [first, first + count) and is the slot.
 // Without SWARM_SPAWN_COLD it writes hot records (h0, h1, h2); with it, cold
 // records (c0). Same math as cs_spawn in compute.wgsl.

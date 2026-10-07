@@ -1,5 +1,5 @@
 /**
- * Owner: "swarm". Core-side per-swarm op queue shared by the WebGPU
+ * Core-side per-swarm op queue shared by the WebGPU
  * (./core.ts) and WebGL2 (./coreGl.ts) swarm cores. Ops are u32 words in
  * one growable array; nothing allocates in steady state.
  */

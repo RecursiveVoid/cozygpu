@@ -1,5 +1,5 @@
 /**
- * Owner: "swarm". WebGL2 swarm core (ARCHITECTURE §14.2). DOM-free.
+ * WebGL2 swarm core (ARCHITECTURE §14.2). DOM-free.
  * Selected by `createSwarmCoreSystem` when the backend has transform feedback
  * but no compute.
  *

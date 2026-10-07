@@ -7,7 +7,13 @@ import {
   SWARM_HOT_BYTES,
   SWARM_SPAWN_BYTES,
 } from '../types/layouts';
+import {
+  GFX_MESH_VERTEX_BYTES,
+  GFX_NODE_BYTES,
+  GFX_SHAPE_BYTES,
+} from '../types/gfxLayouts';
 import { FilterFlag, FilterOp, MaskFlag, MaskOp } from './opcodes';
+import { GfxDrawFlag, GfxMeshFlag, GfxOp } from './gfxOpcodes';
 import {
   COMMAND_HEADER_BYTES,
   CommandFlag,
@@ -180,6 +186,53 @@ const specs: Array<[number, number, Field[]]> = [
     CommandFlag.DRAW | CommandFlag.PASS_BREAK,
     [u(12), u(0), f(1), u(2), u(5), u(6)],
   ],
+  // M4 graphics (ARCHITECTURE §26)
+  [
+    MaskOp.MASK_GEOMETRY_END,
+    CommandFlag.DRAW | CommandFlag.PASS_BREAK,
+    [u(11)],
+  ],
+  [GfxOp.GFX_SHAPE_BUFFER_ALLOC, 0, [u(1), u(128)]],
+  [GfxOp.GFX_SHAPE_BUFFER_DESTROY, 0, [u(1)]],
+  [GfxOp.GFX_SHAPE_UPLOAD, 0, [u(1), u(0), u(2), b(2 * GFX_SHAPE_BYTES)]],
+  [GfxOp.GFX_SHAPE_UPLOAD_SHARED, 0, [u(1), u(0), u(2), u(3), u(0)]],
+  [GfxOp.GFX_NODE_BUFFER_ALLOC, 0, [u(2), u(16)]],
+  [GfxOp.GFX_NODE_BUFFER_DESTROY, 0, [u(2)]],
+  [GfxOp.GFX_NODE_UPLOAD, 0, [u(2), u(0), u(1), b(GFX_NODE_BYTES)]],
+  [GfxOp.GFX_NODE_UPLOAD_SHARED, 0, [u(2), u(0), u(1), u(3), u(64)]],
+  [
+    GfxOp.GFX_MESH_UPLOAD,
+    0,
+    [u(4), u(3), u(3), u(0), b(3 * GFX_MESH_VERTEX_BYTES), b(6)],
+  ],
+  [
+    GfxOp.GFX_MESH_UPLOAD_SHARED,
+    0,
+    [u(4), u(3), u(3), u(GfxMeshFlag.U32_INDEX), u(3), u(0), u(36)],
+  ],
+  [GfxOp.GFX_MESH_DESTROY, 0, [u(4)]],
+  [GfxOp.GFX_DRAW_SHAPES, CommandFlag.DRAW, [u(1), u(0), u(2), u(0), u(0)]],
+  [
+    GfxOp.GFX_DRAW_MESH,
+    CommandFlag.DRAW,
+    [
+      u(4),
+      u(0),
+      u(3),
+      u(2),
+      u(0),
+      u(1),
+      u(7),
+      u(0),
+      u(GfxDrawFlag.TEXTURED),
+      f(1),
+      f(0),
+      f(0),
+      f(1),
+      f(0),
+      f(0),
+    ],
+  ],
   [Op.FRAME_END, 0, []],
 ];
 
@@ -258,7 +311,7 @@ function checkSpec(
 describe('command stream', () => {
   it('covers every opcode in the Op table', () => {
     const covered = new Set(specs.map(([op]) => op));
-    const all = { ...Op, ...MaskOp, ...FilterOp };
+    const all = { ...Op, ...MaskOp, ...FilterOp, ...GfxOp };
     for (const op of Object.values(all)) expect(covered.has(op)).toBe(true);
   });
 

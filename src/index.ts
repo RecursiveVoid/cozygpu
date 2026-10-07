@@ -101,6 +101,28 @@ export type {
   ParticlesOptions,
 } from './particles';
 
+// ─── Graphics (M4) ───────────────────────────────────────────────────────────
+// Vector shapes: SDF instances for primitives, cached meshes for paths
+// (ARCHITECTURE §26). The shell records; drawing and tessellation are chunks
+// loaded on first use, `loadGraphics()` preloads them.
+export { Graphics, GraphicsContext, loadGraphics } from './graphics';
+export type {
+  Affine2D,
+  FillStyle,
+  GraphicsBounds,
+  GraphicsBuilder,
+  GraphicsContextApi,
+  GraphicsContextOptions,
+  GraphicsDestroyOptions,
+  GraphicsInfo,
+  GraphicsNode,
+  GraphicsOptions,
+  LineCap,
+  LineJoin,
+  PolygonPoints,
+  StrokeStyle,
+} from './graphics';
+
 // ─── Swarm (tier 2) ──────────────────────────────────────────────────────────
 export { Swarm, behaviors, defineBehavior } from './swarm';
 /** WebGL2 swarm ceilings: refuse above MAX, warn once above WARN (§14.2). */

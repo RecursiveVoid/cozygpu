@@ -12,6 +12,7 @@ import {
   TextureFlag,
   TextureFormatId,
 } from '../commands/opcodes';
+import { GfxOp } from '../commands/gfxOpcodes';
 import { SPRITE_BLEND_MODES } from '../sprites/pipeline';
 import { BLEND_MODES, SwarmReadbackKind } from '../swarm/constants';
 
@@ -37,7 +38,8 @@ describe('ARCHITECTURE §3.4 opcode table ↔ src/commands/opcodes.ts', () => {
   it('lists every opcode exactly once with the same value', () => {
     // M3: masks and filters keep their own tables so an unused one is
     // tree-shaken (ARCHITECTURE §21.6); the doc table lists them together.
-    const all = { ...Op, ...MaskOp, ...FilterOp };
+    // M4: graphics likewise (§26).
+    const all = { ...Op, ...MaskOp, ...FilterOp, ...GfxOp };
     expect(rows.length).toBe(Object.keys(all).length);
     const table = all as Record<string, number>;
     for (const row of rows)
@@ -54,6 +56,9 @@ describe('ARCHITECTURE §3.4 opcode table ↔ src/commands/opcodes.ts', () => {
     expect(withFlag('DRAW')).toEqual([
       'FILTER_BEGIN',
       'FILTER_END',
+      'GFX_DRAW_MESH',
+      'GFX_DRAW_SHAPES',
+      'MASK_GEOMETRY_END',
       'MASK_POP',
       'MASK_PUSH_ALPHA',
       'MASK_PUSH_SCISSOR',
@@ -73,6 +78,7 @@ describe('ARCHITECTURE §3.4 opcode table ↔ src/commands/opcodes.ts', () => {
     expect(breaks).toEqual([
       'FILTER_BEGIN',
       'FILTER_END',
+      'MASK_GEOMETRY_END',
       'MASK_POP',
       'MASK_PUSH_ALPHA',
       'MASK_PUSH_STENCIL',
